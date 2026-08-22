@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import math
 
 from universal_bot.config import Settings
 from universal_bot.models import Position
+from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
 
 
@@ -36,14 +36,9 @@ class TradingEngine:
         if self.settings.bot_mode.upper() == "LIVE":
             self.adapter.market_order(self.settings.symbol, "buy" if side == "LONG" else "sell", amount)
         if self.position.flat:
-            self.position = Position(
-                side=side,
-                size=amount if side == "LONG" else -amount,
-                entry_price=price,
-                tp=price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100),
-                sl=price * (1 - sl_pct / 100) if side == "LONG" else price * (1 + sl_pct / 100),
-                entries=1,
-            )
+            self.position = Position(side=side, size=amount if side == "LONG" else -amount, entry_price=price,
+                                      tp=price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100),
+                                      sl=price * (1 - sl_pct / 100) if side == "LONG" else price * (1 + sl_pct / 100), entries=1)
         else:
             self.position.entries += 1
             self.position.size += amount if side == "LONG" else -amount
@@ -70,7 +65,19 @@ class TradingEngine:
         self.bar_number += 1
         bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
         bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
-        result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit)
+
+        normalized_volume = None
+        if self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto":
+            try:
+                sources = self.adapter.fetch_volume_sources(self.settings.symbol, self.settings.timeframe, len(df))
+                if len(sources) >= 1:
+                    normalized_volume = normalize_exchange_volume(sources, self.settings.volume_lookback)
+                    normalized_volume = normalized_volume.reindex(df.index).ffill()
+            except Exception:
+                normalized_volume = None
+
+        result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position,
+                                        bars_since_entry, bars_since_exit, normalized_volume)
         price = float(df.close.iloc[-1])
 
         if not self.position.flat:
@@ -83,9 +90,7 @@ class TradingEngine:
         can_pyramid = self.position.entries < self.settings.max_pyramiding
         same_direction = self.position.flat or self.position.side == signal
         new_entry_this_bar = self.last_entry_bar != self.bar_number
-        if signal and can_pyramid and same_direction and new_entry_this_bar and self.position.flat:
-            self._open(signal, price, float(result.state.values["final_tp_percent"]), float(result.state.values["final_sl_percent"]))
-        elif signal and can_pyramid and same_direction and new_entry_this_bar and not self.position.flat:
+        if signal and can_pyramid and same_direction and new_entry_this_bar:
             self._open(signal, price, float(result.state.values["final_tp_percent"]), float(result.state.values["final_sl_percent"]))
 
         result.state.position = self.position
