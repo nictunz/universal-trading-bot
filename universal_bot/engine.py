@@ -23,6 +23,8 @@ class TradingEngine:
         self.winning_trades = 0
         self.gross_profit = 0.0
         self.gross_loss = 0.0
+        self.trade_log: list[dict] = []
+        self.equity_curve: list[dict] = []
 
     def _amount(self, price: float) -> float:
         equity = self.settings.initial_capital if self.settings.bot_mode.upper() != "LIVE" else self.adapter.equity()
@@ -48,9 +50,11 @@ class TradingEngine:
         if self.position.flat or self.position.entry_price is None:
             return
         qty = abs(self.position.size)
-        pnl = (price - self.position.entry_price) * qty if self.position.side == "LONG" else (self.position.entry_price - price) * qty
+        side = self.position.side
+        entry = self.position.entry_price
+        pnl = (price - entry) * qty if side == "LONG" else (entry - price) * qty
         if self.settings.bot_mode.upper() == "LIVE":
-            self.adapter.market_order(self.settings.symbol, "sell" if self.position.side == "LONG" else "buy", qty, reduce_only=True)
+            self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
         self.realized_pnl += pnl
         self.closed_trades += 1
         if pnl >= 0:
@@ -58,6 +62,7 @@ class TradingEngine:
             self.gross_profit += pnl
         else:
             self.gross_loss += abs(pnl)
+        self.trade_log.append({"trade": self.closed_trades, "side": side, "entry_price": entry, "exit_price": price, "qty": qty, "pnl": pnl, "pnl_percent": pnl / abs(entry * qty) * 100 if entry and qty else 0.0, "reason": reason, "bar": self.bar_number})
         self.position = Position()
         self.last_exit_bar = self.bar_number
 
@@ -102,4 +107,5 @@ class TradingEngine:
             "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0,
         }
         self.last_state = result.state
+        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": self.settings.initial_capital + self.realized_pnl})
         return result.state
