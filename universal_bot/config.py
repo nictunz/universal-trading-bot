@@ -1,17 +1,17 @@
 from __future__ import annotations
-
 from datetime import datetime
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
-
     bot_mode: str = "PAPER"
-    symbol: str = "BTC/USDT"
+    exchange: str = "bitget"
+    symbol: str = "BTC/USDT:USDT"
     timeframe: str = "5m"
-    symbols: str = "BTC/USDT,ETH/USDT"
-
+    symbols: str = "BTC/USDT:USDT,ETH/USDT:USDT"
+    asset_class: str = "crypto"
+    poll_seconds: int = 10
     volume_lookback: int = 70
     volume_break_multiplier: float = 8.0
     use_four_crypto_exchanges: bool = True
@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     excluded_hours: str = "00"
     order_percent_of_equity: float = 5.0
     initial_capital: float = 1_000_000.0
-
     binance_api_key: str = ""
     binance_api_secret: str = ""
     bitget_api_key: str = ""
@@ -59,13 +58,13 @@ class Settings(BaseSettings):
     okx_api_passphrase: str = ""
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
+    bybit_api_passphrase: str = ""
     stock_data_provider: str = "yfinance"
     broker_api_key: str = ""
     broker_api_secret: str = ""
     database_url: str = "sqlite:///data/universal_bot.db"
     dashboard_host: str = "0.0.0.0"
     dashboard_port: int = 8000
-
     @property
     def symbol_list(self) -> list[str]:
         return [x.strip() for x in self.symbols.split(",") if x.strip()]
