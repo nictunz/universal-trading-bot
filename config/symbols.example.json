@@ -1,0 +1,18 @@
+{
+  "crypto": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "XRP/USDT"
+  ],
+  "stocks": [
+    "AAPL",
+    "NVDA",
+    "TSLA"
+  ],
+  "etfs": [
+    "SPY",
+    "QQQ",
+    "SOXL"
+  ]
+}
