@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal-trading-bot"
+version = "0.1.0"
+description = "Universal multi-asset trading bot implementing Volume Strategy FINAL Universal v15"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.0",
+  "numpy>=1.24",
+  "python-dotenv>=1.0",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "ccxt>=4.0",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["universal_bot*"]
+
+[project.scripts]
+universal-bot = "universal_bot.main:main"
