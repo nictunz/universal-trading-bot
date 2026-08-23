@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
     bot_mode: str = "PAPER"
@@ -48,6 +49,12 @@ class Settings(BaseSettings):
     excluded_hours: str = "00"
     order_percent_of_equity: float = 5.0
     initial_capital: float = 1_000_000.0
+
+    # Historical/PAPER verification assumptions. These are deliberately explicit
+    # so profitability is not reported without execution costs.
+    backtest_fee_percent: float = 0.06
+    backtest_slippage_percent: float = 0.02
+
     leverage: int = 50
     margin_mode: str = "cross"
     require_exchange_protection: bool = True
@@ -73,6 +80,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///data/universal_bot.db"
     dashboard_host: str = "0.0.0.0"
     dashboard_port: int = 8000
+
     @property
     def symbol_list(self) -> list[str]:
         return [x.strip() for x in self.symbols.split(",") if x.strip()]
