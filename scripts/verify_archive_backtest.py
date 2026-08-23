@@ -6,8 +6,8 @@ from pathlib import Path
 
 from universal_bot.backtest_service import run_symbol_backtest
 
-# This script intentionally uses a fixed, fully archived two-day window so the
-# self-hosted smoke test is deterministic and does not depend on today's files.
+# A fixed fully archived day keeps the self-hosted smoke deterministic while
+# remaining light enough for the 1 GB server.
 
 
 def main() -> None:
@@ -27,7 +27,7 @@ def main() -> None:
         asset_class="crypto",
         exchange="bitget",
         timeframe="5m",
-        start="2026-08-20",
+        start="2026-08-21",
         end="2026-08-21",
     )
     summary = {
@@ -44,7 +44,7 @@ def main() -> None:
     required = {"binance", "bitget", "okx", "bybit"}
     assert result["four_exchange_volume"] is True
     assert set(result["volume_source_bars"]) == required
-    assert all(int(result["volume_source_bars"][x]) >= 500 for x in required)
+    assert all(int(result["volume_source_bars"][x]) >= 280 for x in required)
     assert result["volume_source_status"]["binance"]["mode"] == "OFFICIAL_ARCHIVE"
     assert result["volume_source_status"]["bybit"]["mode"] == "OFFICIAL_ARCHIVE"
     print(json.dumps(summary, ensure_ascii=False, indent=2))
