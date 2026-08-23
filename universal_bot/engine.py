@@ -44,28 +44,19 @@ class TradingEngine:
         if not self.live or self._live_initialized:
             return
         try:
-            result = self.adapter.configure_live(
-                self.settings.symbol,
-                int(self.settings.leverage),
-                str(self.settings.margin_mode).lower(),
-                bool(self.settings.live_require_one_way_mode),
-            )
+            result = self.adapter.configure_live(self.settings.symbol, int(self.settings.leverage), str(self.settings.margin_mode).lower(), bool(self.settings.live_require_one_way_mode))
             if not result.get("ok"):
                 self.safety.fail(f"LIVE_CONFIGURATION_FAILED: {result.get('reason', result)}")
                 return
             exchange_pos = self.adapter.position(self.settings.symbol)
             if exchange_pos.get("side") != "FLAT":
-                self.position = Position(
-                    side=exchange_pos["side"],
-                    size=exchange_pos["size"] if exchange_pos["side"] == "LONG" else -exchange_pos["size"],
-                    entry_price=exchange_pos.get("entry_price") or None,
-                    entries=1,
-                )
+                self.position = Position(side=exchange_pos["side"], size=exchange_pos["size"] if exchange_pos["side"] == "LONG" else -exchange_pos["size"], entry_price=exchange_pos.get("entry_price") or None, entries=1)
                 self.entry_notional = abs(self.position.size) * float(self.position.entry_price or 0.0)
-            self.safety.reconcile(self._internal_position_dict(), exchange_pos)
+            if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
+                return
             protection = self.adapter.protection_status(self.settings.symbol)
             self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
-            if not self.position.flat and not self.safety.protection_ok and self.settings.require_exchange_protection:
+            if not self.position.flat and self.settings.require_exchange_protection and not self.safety.protection_ok:
                 self.safety.fail("EXISTING_POSITION_HAS_NO_VERIFIED_PROTECTION")
                 return
             self._live_initialized = True
@@ -77,8 +68,7 @@ class TradingEngine:
             return
         try:
             exchange_pos = self.adapter.position(self.settings.symbol)
-            ok = self.safety.reconcile(self._internal_position_dict(), exchange_pos)
-            if not ok:
+            if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
             protection = self.adapter.protection_status(self.settings.symbol)
             self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
@@ -91,6 +81,11 @@ class TradingEngine:
         amount = self._amount(price)
         if amount <= 0:
             return
+        equity = self.adapter.equity() if self.live else self.settings.initial_capital
+        intended_notional = amount * price
+        if self.live and intended_notional > equity * float(self.settings.live_max_position_notional_percent) / 100.0:
+            self.safety.fail("LIVE_POSITION_SIZE_LIMIT_EXCEEDED")
+            return
         tp_price = price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100)
         sl_price = price * (1 - sl_pct / 100) if side == "LONG" else price * (1 + sl_pct / 100)
         actual_price = price
@@ -98,14 +93,7 @@ class TradingEngine:
         if self.live:
             if not self.safety.can_open:
                 return
-            order = self.adapter.market_order(
-                self.settings.symbol,
-                "buy" if side == "LONG" else "sell",
-                amount,
-                tp_price=tp_price,
-                sl_price=sl_price,
-                trigger_protection=True,
-            )
+            order = self.adapter.market_order(self.settings.symbol, "buy" if side == "LONG" else "sell", amount, tp_price=tp_price, sl_price=sl_price)
             if not order:
                 self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
                 return
@@ -125,6 +113,10 @@ class TradingEngine:
             self.position.size += signed_amount
             self.entry_notional += actual_amount * actual_price
         self.last_entry_bar = self.bar_number
+        if self.live:
+            exchange_pos = self.adapter.position(self.settings.symbol)
+            if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
+                return
 
     def _open_pnl(self, price: float) -> float:
         if self.position.flat or not self.position.entry_price:
@@ -158,6 +150,10 @@ class TradingEngine:
         self.position = Position()
         self.entry_notional = 0.0
         self.last_exit_bar = self.bar_number
+        if self.live:
+            exchange_pos = self.adapter.position(self.settings.symbol)
+            if exchange_pos.get("side") != "FLAT" or float(exchange_pos.get("size") or 0) > 1e-9:
+                self.safety.fail("EXIT_ORDER_DID_NOT_FLATTEN_POSITION")
 
     def step(self, df, precomputed: dict[str, float] | None = None):
         self.bar_number += 1
@@ -211,9 +207,8 @@ class TradingEngine:
         return result.state
 
     def _halted_state(self, df):
-        timestamp = df.index[-1].to_pydatetime() if len(df.index) and hasattr(df.index[-1], "to_pydatetime") else datetime.now(timezone.utc)
         state = self.strategy._not_ready(self.settings.symbol, self.settings.timeframe, f"LIVE_HALTED:{self.safety.reason}", df).state
         state.position = self.position
-        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.settings.initial_capital, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok, "timestamp": timestamp.isoformat()}
+        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.settings.initial_capital, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
         self.last_state = state
         return state
