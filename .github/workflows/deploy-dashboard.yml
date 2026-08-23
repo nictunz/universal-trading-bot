@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'universal_bot/**'
+      - 'scripts/start_paper_dashboard.sh'
       - 'pyproject.toml'
       - '.github/workflows/deploy-dashboard.yml'
   workflow_dispatch:
@@ -30,75 +31,20 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
-          VENV=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv
           mkdir -p "$APP_DIR" /home/kpj3669/.cache/universal-trading-bot
-          find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' -exec rm -rf {} +
+          find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           tar --exclude='.git' --exclude='.env' --exclude='data' -cf - . | tar -xf - -C "$APP_DIR"
-          if [[ ! -x "$VENV/bin/python" ]]; then
-            python3 -m venv "$VENV"
-            "$VENV/bin/python" -m pip install --upgrade pip
-          fi
-          "$VENV/bin/pip" install -e "$APP_DIR"
-          cat > "$APP_DIR/.env" <<'EOF'
-          BOT_MODE=PAPER
-          EXCHANGE=bitget
-          ASSET_CLASS=crypto
-          SYMBOL=ETH/USDT:USDT
-          SYMBOLS=ETH/USDT:USDT
-          TIMEFRAME=5m
-          USE_FOUR_CRYPTO_EXCHANGES=true
-          DATABASE_URL=sqlite:////home/kpj3669/.cache/universal-trading-bot/historical.db
-          DASHBOARD_HOST=0.0.0.0
-          DASHBOARD_PORT=8000
-          EOF
           echo 'runtime_deploy=success' | tee /tmp/dashboard-runtime.txt
 
-      - name: Install or restart dashboard service
+      - name: Start dashboard
         id: service
         if: ${{ steps.deploy_runtime.outcome == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
-          cat > /tmp/universal-trading-bot-dashboard.service <<'EOF'
-          [Unit]
-          Description=Universal Trading Bot PAPER Dashboard
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=simple
-          User=kpj3669
-          WorkingDirectory=/home/kpj3669/universal-trading-bot-dashboard
-          EnvironmentFile=/home/kpj3669/universal-trading-bot-dashboard/.env
-          ExecStart=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python -m universal_bot.main
-          Restart=always
-          RestartSec=5
-          KillSignal=SIGINT
-          TimeoutStopSec=15
-
-          [Install]
-          WantedBy=multi-user.target
-          EOF
-          if sudo -n true 2>/dev/null; then
-            sudo -n install -m 0644 /tmp/universal-trading-bot-dashboard.service /etc/systemd/system/universal-trading-bot-dashboard.service
-            sudo -n systemctl daemon-reload
-            sudo -n systemctl enable universal-trading-bot-dashboard.service
-            sudo -n systemctl restart universal-trading-bot-dashboard.service
-            sleep 8
-            sudo -n systemctl --no-pager --full status universal-trading-bot-dashboard.service | tee /tmp/dashboard-service-status.txt
-          else
-            echo 'passwordless sudo unavailable; using detached user process' | tee /tmp/dashboard-service-status.txt
-            if [[ -f /home/kpj3669/.cache/universal-trading-bot-dashboard.pid ]]; then
-              oldpid=$(cat /home/kpj3669/.cache/universal-trading-bot-dashboard.pid || true)
-              [[ -n "$oldpid" ]] && kill "$oldpid" 2>/dev/null || true
-            fi
-            cd /home/kpj3669/universal-trading-bot-dashboard
-            set -a; source .env; set +a
-            RUNNER_TRACKING_ID='' nohup /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python -m universal_bot.main >/home/kpj3669/.cache/universal-trading-bot-dashboard.log 2>&1 </dev/null &
-            echo $! >/home/kpj3669/.cache/universal-trading-bot-dashboard.pid
-            sleep 8
-            ps -fp "$(cat /home/kpj3669/.cache/universal-trading-bot-dashboard.pid)" | tee -a /tmp/dashboard-service-status.txt
-          fi
+          cd /home/kpj3669/universal-trading-bot-dashboard
+          chmod +x scripts/start_paper_dashboard.sh
+          bash scripts/start_paper_dashboard.sh | tee /tmp/dashboard-service-status.txt
 
       - name: Verify dashboard locally
         id: http
@@ -107,23 +53,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY' | tee /tmp/dashboard-http-status.txt
-          import time, urllib.request
-          urls = [
-              'http://127.0.0.1:8000/health',
-              'http://127.0.0.1:8000/api/state',
-              'http://127.0.0.1:8000/',
-          ]
-          for attempt in range(20):
-              try:
-                  for u in urls:
-                      with urllib.request.urlopen(u, timeout=5) as r:
-                          body = r.read().decode('utf-8')
-                          print(u, r.status, body[:500])
-                  break
-              except Exception:
-                  if attempt == 19:
-                      raise
-                  time.sleep(2)
+          import json, urllib.request
+          for u in ['http://127.0.0.1:8000/health','http://127.0.0.1:8000/api/state','http://127.0.0.1:8000/']:
+              with urllib.request.urlopen(u, timeout=5) as r:
+                  body = r.read().decode('utf-8')
+                  print(u, r.status, body[:700])
           PY
 
       - name: Show listening socket
@@ -132,7 +66,7 @@ jobs:
         continue-on-error: true
         run: |
           ss -ltnp | grep ':8000' | tee /tmp/dashboard-socket.txt || true
-          tail -n 80 /home/kpj3669/.cache/universal-trading-bot-dashboard.log 2>/dev/null | tee /tmp/dashboard-app-log.txt || true
+          tail -n 100 /home/kpj3669/.cache/universal-trading-bot-dashboard.log 2>/dev/null | tee /tmp/dashboard-app-log.txt || true
 
       - name: Publish deployment report
         if: always()
@@ -161,27 +95,11 @@ jobs:
             echo "- HTTP: ${HTTP_OUTCOME:-not-run}"
             echo "- Socket: ${SOCKET_OUTCOME:-not-run}"
             echo
-            echo '## Service'
-            echo '```text'
-            cat /tmp/dashboard-service-status.txt 2>/dev/null || true
-            echo '```'
-            echo
-            echo '## HTTP checks'
-            echo '```text'
-            cat /tmp/dashboard-http-status.txt 2>/dev/null || true
-            echo '```'
-            echo
-            echo '## Socket'
-            echo '```text'
-            cat /tmp/dashboard-socket.txt 2>/dev/null || true
-            echo '```'
-            echo
-            echo '## App log'
-            echo '```text'
-            cat /tmp/dashboard-app-log.txt 2>/dev/null || true
-            echo '```'
+            echo '## Service'; echo '```text'; cat /tmp/dashboard-service-status.txt 2>/dev/null || true; echo '```'
+            echo; echo '## HTTP checks'; echo '```text'; cat /tmp/dashboard-http-status.txt 2>/dev/null || true; echo '```'
+            echo; echo '## Socket'; echo '```text'; cat /tmp/dashboard-socket.txt 2>/dev/null || true; echo '```'
+            echo; echo '## App log'; echo '```text'; cat /tmp/dashboard-app-log.txt 2>/dev/null || true; echo '```'
           } > "$REPORT"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
