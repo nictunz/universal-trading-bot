@@ -49,6 +49,9 @@ class TradingEngine:
     def _initialize_live(self) -> None:
         if not self.live or self._live_initialized:
             return
+        if self.settings.exchange.lower() != "bitget" or self.settings.asset_class.lower() != "crypto":
+            self.safety.fail("LIVE_RESTRICTED_TO_BITGET_CRYPTO")
+            return
         try:
             result = self.adapter.configure_live(self.settings.symbol, int(self.settings.leverage), str(self.settings.margin_mode).lower(), bool(self.settings.live_require_one_way_mode))
             if not result.get("ok"):
@@ -172,7 +175,6 @@ class TradingEngine:
             self._reconcile_live()
             if self.safety.halted:
                 return self._halted_state(df)
-
         normalized_volume = None
         if precomputed is None and self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto":
             try:
@@ -182,7 +184,6 @@ class TradingEngine:
                     normalized_volume = normalized_volume.reindex(df.index).ffill()
             except Exception:
                 normalized_volume = None
-
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
         if self.live and len(df.index):
@@ -195,7 +196,6 @@ class TradingEngine:
             if self.safety.stale(datetime.now(timezone.utc), int(self.settings.stale_data_seconds)):
                 self.safety.fail("STALE_MARKET_DATA")
                 return self._halted_state(df)
-
         if not self.position.flat:
             hit_tp = (self.position.side == "LONG" and price >= self.position.tp) or (self.position.side == "SHORT" and price <= self.position.tp)
             hit_sl = (self.position.side == "LONG" and price <= self.position.sl) or (self.position.side == "SHORT" and price >= self.position.sl)
