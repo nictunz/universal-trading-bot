@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T17:35:10Z
-- Source commit: 33f8df240c983869a291a6771ba0c03015956a41
+- Generated UTC: 2026-08-23T17:47:07Z
+- Source commit: 84dcda036d406eb08ce7b9c4406d7a2f54c424aa
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -20,7 +20,7 @@
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    11778
+PID:    13159
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
@@ -37,7 +37,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#ee
 
 ## Socket
 ```text
-LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=11778,fd=12))
+LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=13159,fd=12))
 ```
 
 ## App log
