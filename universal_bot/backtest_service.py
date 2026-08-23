@@ -93,7 +93,11 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         values["use_start_date"] = True
     settings = settings.model_copy(update=values)
 
-    manager = HistoricalDataManager(settings.database_url)
+    manager = HistoricalDataManager(
+        settings.database_url,
+        coinapi_api_key=settings.coinapi_api_key if settings.crypto_volume_provider.lower() == "coinapi" else "",
+        fallback_exchanges=settings.crypto_fallback_exchange_list,
+    )
     request = DataRequest(symbol=symbol, timeframe=timeframe, start=start_dt or settings.start_date, end=end_dt, asset_class=asset_class.lower(), exchange=exchange.lower())
     inserted, df = manager.sync(request)
     if df.empty:
@@ -127,6 +131,7 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         "inserted": inserted,
         "four_exchange_volume": bool(normalized_volume_ratio is not None),
         "volume_source_bars": source_bars,
+        "volume_source_status": dict(manager.last_fetch_status),
         "trades": result.trades,
         "wins": result.wins,
         "win_rate": result.win_rate,
