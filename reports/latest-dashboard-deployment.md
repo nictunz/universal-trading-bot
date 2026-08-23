@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T16:21:57Z
-- Source commit: d05dd4070192529e3956a573a60705f3bf47aabb
+- Generated UTC: 2026-08-23T17:35:10Z
+- Source commit: 33f8df240c983869a291a6771ba0c03015956a41
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -10,18 +10,24 @@
 ## Outcomes
 
 - Runtime deploy: success
-- Service: failure
-- HTTP: skipped
+- Service: success
+- HTTP: success
 - Socket: success
 
 ## Service
 ```text
+{"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":[]}
+Dashboard started in PAPER mode.
+Local:  http://127.0.0.1:8000/
+Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
+PID:    11778
+Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
 ```text
 http://127.0.0.1:8000/health 200 {"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":[]}
-http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"ETH/USDT:USDT","status":"WAITING","error":"","live_safety":{"enabled":false,"halted":false,"reason":"","consecutive_errors":0,"last_reconciliation":null,"last_data":null,"protection_ok":false,"exchange_position":null,"internal_position":null,"metadata":{}}}]}
+http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"ETH/USDT:USDT","status":"WAITING","error":"","volume_sources":{},"live_safety":{"enabled":false,"halted":false,"reason":"","consecutive_errors":0,"last_reconciliation":null,"last_data":null,"protection_ok":false,"exchange_position":null,"internal_position":null,"metadata":{}}}]}
 http://127.0.0.1:8000/ 200 <!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Universal Trading Bot</title>
@@ -31,6 +37,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#ee
 
 ## Socket
 ```text
+LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=11778,fd=12))
 ```
 
 ## App log
