@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
 
+    # Crypto market-data routing. Direct venue APIs remain preferred. When a
+    # public venue endpoint is unavailable from the server region, the bot may
+    # use an authorized read-only market-data provider for that venue instead.
+    crypto_volume_provider: str = "coinapi"
+    crypto_volume_fallback_exchanges: str = "binance,bybit"
+    coinapi_api_key: str = ""
+
     leverage: int = 50
     margin_mode: str = "cross"
     require_exchange_protection: bool = True
@@ -84,3 +91,7 @@ class Settings(BaseSettings):
     @property
     def symbol_list(self) -> list[str]:
         return [x.strip() for x in self.symbols.split(",") if x.strip()]
+
+    @property
+    def crypto_fallback_exchange_list(self) -> list[str]:
+        return [x.strip().lower() for x in self.crypto_volume_fallback_exchanges.split(",") if x.strip()]
