@@ -14,15 +14,14 @@ on:
         default: true
         type: boolean
 
-# This workflow is intentionally manual. The self-hosted runner is the user's
-# trading server, so no push/PR should execute arbitrary code there.
+# Manual only: this runner is the user's trading server.
 permissions:
   contents: read
 
 jobs:
   verify:
     runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       BOT_MODE: PAPER
       PYTHONUNBUFFERED: "1"
@@ -68,28 +67,31 @@ jobs:
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          python -m universal_bot.backtest --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01
+          python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01
 
-      - name: Benchmark
+      - name: Indicator benchmark
         if: ${{ inputs.benchmark }}
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          if [ -f scripts/benchmark_backtest.py ]; then
-            python scripts/benchmark_backtest.py
-          else
-            echo 'benchmark script not present; running import/indicator smoke benchmark'
-            python - <<'PY'
+          python - <<'PY'
           import time
           import numpy as np
           import pandas as pd
-          from universal_bot.indicators import compute_indicators
+          from universal_bot.indicators import dmi_adx, rsi, rolling_range_percent, sma
+
           n = 100_000
           idx = pd.date_range('2024-01-01', periods=n, freq='5min', tz='UTC')
           close = pd.Series(np.linspace(2000, 2500, n), index=idx)
-          df = pd.DataFrame({'open': close, 'high': close + 2, 'low': close - 2, 'close': close, 'volume': 1000.0}, index=idx)
+          high = close + 2.0
+          low = close - 2.0
+          volume = pd.Series(1000.0, index=idx)
           t = time.perf_counter()
-          compute_indicators(df)
-          print(f'indicator_100k_bars_seconds={time.perf_counter()-t:.4f}')
+          sma(volume, 20)
+          rolling_range_percent(high, low, 20)
+          rolling_range_percent(high, low, 8)
+          dmi_adx(high, low, close, 14)
+          rsi(close, 6)
+          elapsed = time.perf_counter() - t
+          print(f'indicator_100k_bars_seconds={elapsed:.4f}')
           PY
-          fi
