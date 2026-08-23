@@ -13,13 +13,10 @@ from universal_bot.strategy.v15 import UniversalV15Strategy
 
 class DummyAdapter:
     asset_class = "crypto"
-
     def market_order(self, *args, **kwargs):
         return None
-
     def equity(self):
         return 1_000_000.0
-
     def fetch_volume_sources(self, *args, **kwargs):
         return {}
 
@@ -69,7 +66,7 @@ def test_pyramiding_pnl_uses_weighted_average_entry():
 def test_precomputed_indicator_path_matches_direct_strategy():
     settings = Settings(use_start_date=False, use_nbar_volatility_block=False, use_adx_filter=True)
     df = make_ohlcv()
-    close, open_, high, low, volume = df.close, df.open, df.high, df.low, df.volume
+    close, high, low, volume = df.close, df.high, df.low, df.volume
     cached = {
         "volume_ratio": float((volume / sma(volume, settings.volume_lookback)).iloc[-1]),
         "n_range": float(rolling_range_percent(high, low, settings.volatility_bars).iloc[-1]),
@@ -83,3 +80,7 @@ def test_precomputed_indicator_path_matches_direct_strategy():
     assert cached_result.signal.side == direct.signal.side
     assert cached_result.signal.reason == direct.signal.reason
     assert abs(cached_result.state.values["adx"] - direct.state.values["adx"]) < 1e-12
+
+
+def test_default_start_date_is_timezone_aware():
+    assert Settings().start_date.tzinfo is not None
