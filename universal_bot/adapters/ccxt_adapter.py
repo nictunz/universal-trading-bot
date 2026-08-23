@@ -161,10 +161,13 @@ class CCXTAdapter(MarketAdapter):
 
     def cancel_protection(self, symbol: str) -> None:
         try:
-            self.exchange.cancel_all_orders(symbol, params={"trigger": True})
+            orders = self.exchange.fetch_open_orders(symbol, params={"planType": "profit_loss", "trigger": True})
         except Exception:
-            pass
-        try:
-            self.exchange.cancel_all_orders(symbol)
-        except Exception:
-            pass
+            orders = []
+        for o in orders:
+            oid = o.get("id")
+            if oid:
+                try:
+                    self.exchange.cancel_order(oid, symbol, {"trigger": True})
+                except Exception:
+                    pass
