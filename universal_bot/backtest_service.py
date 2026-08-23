@@ -8,6 +8,7 @@ import pandas as pd
 from universal_bot.backtest import run_backtest
 from universal_bot.config import Settings
 from universal_bot.historical import DataRequest, HistoricalDataManager
+from universal_bot.archive_historical import OfficialArchiveHistoricalDataManager
 from universal_bot.paper import normalize_exchange_volume
 
 
@@ -97,7 +98,7 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         values["use_start_date"] = True
     settings = settings.model_copy(update=values)
 
-    manager = HistoricalDataManager(
+    manager = OfficialArchiveHistoricalDataManager(
         settings.database_url,
         coinapi_api_key=settings.coinapi_api_key if settings.crypto_volume_provider.lower() == "coinapi" else "",
         fallback_exchanges=settings.crypto_fallback_exchange_list,
