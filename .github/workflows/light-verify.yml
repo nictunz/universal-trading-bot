@@ -39,17 +39,22 @@ jobs:
       - name: Compile
         id: compile
         continue-on-error: true
-        run: "$CI_VENV/bin/python -m compileall -q universal_bot scripts"
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m compileall -q universal_bot scripts
 
       - name: Tests
         id: tests
         continue-on-error: true
-        run: "$CI_VENV/bin/pytest -q | tee /tmp/light-tests.txt"
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/pytest" -q | tee /tmp/light-tests.txt
 
       - name: Dashboard smoke
         id: dashboard
         continue-on-error: true
         run: |
+          set -euo pipefail
           "$CI_VENV/bin/python" scripts/dashboard_smoke.py >/tmp/light-dashboard-server.txt 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
@@ -77,6 +82,7 @@ jobs:
         id: provider
         continue-on-error: true
         run: |
+          set -euo pipefail
           "$CI_VENV/bin/python" - <<'PY' | tee /tmp/light-provider.txt
           from universal_bot.providers.coinapi import CoinAPIMarketData
           p=CoinAPIMarketData('test')
@@ -133,6 +139,7 @@ jobs:
           DASHBOARD: ${{ steps.dashboard.outcome }}
           PROVIDER: ${{ steps.provider.outcome }}
         run: |
+          set -euo pipefail
           for x in "$COMPILE" "$TESTS" "$DASHBOARD" "$PROVIDER"; do
             [[ "$x" != failure ]] || exit 1
           done
