@@ -82,8 +82,12 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         raise ValueError(f"unsupported timeframe: {timeframe}")
 
     settings = Settings()
+    asset = asset_class.lower()
+    if asset in {"stocks", "equity"}:
+        asset = "stock"
+    effective_exchange = settings.stock_data_provider.lower() if asset in {"stock", "etf"} else exchange.lower()
     values = dict(overrides or {})
-    values.update({"symbol": symbol, "symbols": symbol, "asset_class": asset_class.lower(), "exchange": exchange.lower(), "timeframe": timeframe})
+    values.update({"symbol": symbol, "symbols": symbol, "asset_class": asset, "exchange": effective_exchange, "timeframe": timeframe})
     start_dt = _dt(start)
     end_dt = _dt(end, end_of_day=True)
     if start_dt and end_dt and start_dt > end_dt:
@@ -98,17 +102,17 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         coinapi_api_key=settings.coinapi_api_key if settings.crypto_volume_provider.lower() == "coinapi" else "",
         fallback_exchanges=settings.crypto_fallback_exchange_list,
     )
-    request = DataRequest(symbol=symbol, timeframe=timeframe, start=start_dt or settings.start_date, end=end_dt, asset_class=asset_class.lower(), exchange=exchange.lower())
+    request = DataRequest(symbol=symbol, timeframe=timeframe, start=start_dt or settings.start_date, end=end_dt, asset_class=asset, exchange=effective_exchange)
     inserted, df = manager.sync(request)
     if df.empty:
-        raise ValueError(f"no OHLCV data for {symbol} ({asset_class}/{exchange}/{timeframe}) in the requested range")
+        raise ValueError(f"no OHLCV data for {symbol} ({asset}/{effective_exchange}/{timeframe}) in the requested range")
     if len(df) < 10:
         raise ValueError(f"insufficient OHLCV data: only {len(df)} bars returned")
 
     normalized_volume_ratio = None
     source_bars: dict[str, int] = {}
-    if asset_class.lower() == "crypto":
-        _validate_crypto_data(df, timeframe, label=exchange.lower())
+    if asset == "crypto":
+        _validate_crypto_data(df, timeframe, label=effective_exchange)
         if settings.use_four_crypto_exchanges:
             normalized_volume_ratio, source_inserted, source_bars = _historical_four_exchange_ratio(manager, symbol, timeframe, request.start, request.end, settings.volume_lookback)
             inserted += source_inserted
@@ -120,8 +124,8 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
     return {
         "strategy": "Volume Strategy FINAL Universal v15",
         "symbol": symbol,
-        "asset_class": asset_class.lower(),
-        "exchange": exchange.lower(),
+        "asset_class": asset,
+        "exchange": effective_exchange,
         "timeframe": timeframe,
         "requested_start": request.start.isoformat() if request.start else None,
         "requested_end": request.end.isoformat() if request.end else None,
