@@ -3,7 +3,7 @@ from datetime import timezone
 import numpy as np
 import pandas as pd
 
-from universal_bot.backtest import run_backtest
+from universal_bot.backtest import _apply_execution_costs, run_backtest
 from universal_bot.backtest_service import _dt
 from universal_bot.config import Settings
 from universal_bot.engine import TradingEngine
@@ -45,6 +45,18 @@ def test_backtest_empty_safe():
     result = run_backtest(pd.DataFrame(columns=["open", "high", "low", "close", "volume"]), settings)
     assert result.trades == 0
     assert result.pnl == 0.0
+
+
+def test_backtest_execution_costs_reduce_gross_pnl():
+    settings = Settings(backtest_fee_percent=0.06, backtest_slippage_percent=0.02)
+    trades = [{"qty": 1.0, "avg_entry_price": 100.0, "exit_price": 101.0, "pnl": 1.0, "pnl_percent": 1.0}]
+    adjusted, costs, net, wins, pf = _apply_execution_costs(trades, settings)
+    expected_cost = (100.0 + 101.0) * 0.0008
+    assert abs(costs - expected_cost) < 1e-12
+    assert abs(net - (1.0 - expected_cost)) < 1e-12
+    assert adjusted[0]["gross_pnl"] == 1.0
+    assert wins == 1
+    assert pf is None
 
 
 def test_pyramiding_pnl_uses_weighted_average_entry():
@@ -101,13 +113,7 @@ def test_four_exchange_volume_requires_every_source_on_each_bar():
 
 
 def test_same_closed_candle_is_processed_only_once():
-    settings = Settings(
-        bot_mode="PAPER",
-        use_start_date=False,
-        use_four_crypto_exchanges=False,
-        use_nbar_volatility_block=False,
-        volume_break_multiplier=999.0,
-    )
+    settings = Settings(bot_mode="PAPER", use_start_date=False, use_four_crypto_exchanges=False, use_nbar_volatility_block=False, volume_break_multiplier=999.0)
     engine = TradingEngine(settings, DummyAdapter(), UniversalV15Strategy(settings))
     df = make_ohlcv()
     first = engine.step(df)
