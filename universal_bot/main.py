@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 import threading
 import time
 import uvicorn
@@ -25,7 +25,14 @@ def build_adapter(settings: Settings):
     }
     exchange = settings.exchange.lower()
     key, secret, password = keys.get(exchange, ("", "", ""))
-    return CCXTAdapter(exchange, key, secret, password)
+    return CCXTAdapter(
+        exchange,
+        key,
+        secret,
+        password,
+        coinapi_api_key=settings.coinapi_api_key if settings.crypto_volume_provider.lower() == "coinapi" else "",
+        fallback_exchanges=settings.crypto_fallback_exchange_list,
+    )
 
 
 def timeframe_delta(tf: str) -> timedelta:
