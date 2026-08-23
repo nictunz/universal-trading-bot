@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     margin_mode: str = "cross"
     require_exchange_protection: bool = True
     reconciliation_interval_seconds: int = 10
-    stale_data_seconds: int = 90
+    stale_data_seconds: int = 600
     max_consecutive_api_errors: int = 3
     live_max_position_notional_percent: float = 10.0
     live_require_one_way_mode: bool = True
