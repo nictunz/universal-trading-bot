@@ -67,8 +67,29 @@ class CCXTAdapter(MarketAdapter):
         usdt = balance.get("USDT") or balance.get("USDT:USDT") or {}
         return float(usdt.get("free", 0.0) or usdt.get("total", 0.0) or 0.0)
 
+    def _market(self, symbol: str) -> dict:
+        market = self.exchange.market(symbol)
+        if not market:
+            raise RuntimeError(f"unknown market: {symbol}")
+        return market
+
+    def _to_exchange_amount(self, symbol: str, base_amount: float) -> float:
+        market = self._market(symbol)
+        if market.get("contract") and market.get("contractSize"):
+            contracts = base_amount / float(market["contractSize"])
+            contracts = float(self.exchange.amount_to_precision(symbol, contracts))
+            if contracts <= 0:
+                raise RuntimeError("calculated contract amount is below exchange precision/minimum")
+            return contracts
+        return float(self.exchange.amount_to_precision(symbol, base_amount))
+
+    def _from_exchange_contracts(self, symbol: str, contracts: float) -> float:
+        market = self._market(symbol)
+        if market.get("contract") and market.get("contractSize"):
+            return abs(contracts) * float(market["contractSize"])
+        return abs(contracts)
+
     def position(self, symbol: str):
-        """Return one-way net position. Fail closed if the exchange cannot answer."""
         if not self.exchange.has.get("fetchPositions"):
             raise RuntimeError("exchange does not support fetchPositions")
         positions = self.exchange.fetch_positions([symbol])
@@ -83,9 +104,11 @@ class CCXTAdapter(MarketAdapter):
                 side = "LONG" if signed > 0 else "SHORT"
             else:
                 side = side.upper()
+            base_size = self._from_exchange_contracts(symbol, contracts)
             nonzero.append({
                 "side": side,
-                "size": abs(contracts),
+                "size": base_size,
+                "contracts": abs(contracts),
                 "entry_price": float(p.get("entryPrice") or 0.0),
                 "mark_price": float(p.get("markPrice") or 0.0),
                 "notional": abs(float(p.get("notional") or 0.0)),
@@ -100,10 +123,8 @@ class CCXTAdapter(MarketAdapter):
     def configure_live(self, symbol: str, leverage: int, margin_mode: str, require_one_way: bool = True) -> dict:
         if self.exchange_id != "bitget":
             return {"ok": False, "supported": False, "reason": "live configuration is restricted to Bitget"}
-        if not self.exchange.has.get("setLeverage"):
-            return {"ok": False, "supported": False, "reason": "setLeverage unsupported"}
-        if not self.exchange.has.get("setMarginMode"):
-            return {"ok": False, "supported": False, "reason": "setMarginMode unsupported"}
+        if not self.exchange.has.get("setLeverage") or not self.exchange.has.get("setMarginMode"):
+            return {"ok": False, "supported": False, "reason": "Bitget leverage/margin API unsupported by installed CCXT"}
         self.exchange.set_margin_mode(margin_mode, symbol)
         self.exchange.set_leverage(int(leverage), symbol)
         if require_one_way and self.exchange.has.get("setPositionMode"):
@@ -118,27 +139,15 @@ class CCXTAdapter(MarketAdapter):
         return f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:6]}"[:32]
 
     def market_order(self, symbol: str, side: str, amount: float, reduce_only: bool = False, **kwargs):
+        exchange_amount = self._to_exchange_amount(symbol, amount)
         params = {"reduceOnly": bool(reduce_only), "clientOid": self._client_oid()}
         if kwargs.get("tp_price") is not None:
-            params.update({
-                "takeProfitPrice": float(kwargs["tp_price"]),
-                "tpTriggerBy": "mark",
-                "tpOrderType": "market",
-            })
+            params.update({"takeProfitPrice": float(kwargs["tp_price"]), "tpTriggerBy": "mark", "tpOrderType": "market"})
         if kwargs.get("sl_price") is not None:
-            params.update({
-                "stopLossPrice": float(kwargs["sl_price"]),
-                "slTriggerBy": "mark",
-                "slOrderType": "market",
-            })
-        if kwargs.get("trigger_protection"):
-            params["stopLossPrice"] = float(kwargs["sl_price"])
-            params["takeProfitPrice"] = float(kwargs["tp_price"])
-        order = self.exchange.create_order(symbol, "market", side.lower(), amount, None, params)
-        return order
+            params.update({"stopLossPrice": float(kwargs["sl_price"]), "slTriggerBy": "mark", "slOrderType": "market"})
+        return self.exchange.create_order(symbol, "market", side.lower(), exchange_amount, None, params)
 
     def protection_status(self, symbol: str) -> dict:
-        """Best-effort verification of exchange-side conditional orders."""
         try:
             orders = self.exchange.fetch_open_orders(symbol)
             protected = []
