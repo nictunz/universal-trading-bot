@@ -105,17 +105,7 @@ class CCXTAdapter(MarketAdapter):
             else:
                 side = side.upper()
             base_size = self._from_exchange_contracts(symbol, contracts)
-            nonzero.append({
-                "side": side,
-                "size": base_size,
-                "contracts": abs(contracts),
-                "entry_price": float(p.get("entryPrice") or 0.0),
-                "mark_price": float(p.get("markPrice") or 0.0),
-                "notional": abs(float(p.get("notional") or 0.0)),
-                "leverage": float(p.get("leverage") or 0.0),
-                "margin_mode": p.get("marginMode"),
-                "raw": p,
-            })
+            nonzero.append({"side": side, "size": base_size, "contracts": abs(contracts), "entry_price": float(p.get("entryPrice") or 0.0), "mark_price": float(p.get("markPrice") or 0.0), "notional": abs(float(p.get("notional") or 0.0)), "leverage": float(p.get("leverage") or 0.0), "margin_mode": p.get("marginMode"), "raw": p})
         if len(nonzero) > 1:
             raise RuntimeError(f"multiple non-zero positions returned for {symbol}; one-way mode required")
         return nonzero[0] if nonzero else {"side": "FLAT", "size": 0.0, "entry_price": 0.0, "notional": 0.0}
@@ -142,19 +132,28 @@ class CCXTAdapter(MarketAdapter):
         exchange_amount = self._to_exchange_amount(symbol, amount)
         params = {"reduceOnly": bool(reduce_only), "clientOid": self._client_oid()}
         if kwargs.get("tp_price") is not None:
-            params.update({"takeProfitPrice": float(kwargs["tp_price"]), "tpTriggerBy": "mark", "tpOrderType": "market"})
+            params["takeProfit"] = {"triggerPrice": float(kwargs["tp_price"]), "type": "market"}
         if kwargs.get("sl_price") is not None:
-            params.update({"stopLossPrice": float(kwargs["sl_price"]), "slTriggerBy": "mark", "slOrderType": "market"})
+            params["stopLoss"] = {"triggerPrice": float(kwargs["sl_price"]), "type": "market"}
+        if kwargs.get("tp_price") is not None or kwargs.get("sl_price") is not None:
+            params["triggerType"] = "mark_price"
         return self.exchange.create_order(symbol, "market", side.lower(), exchange_amount, None, params)
 
     def protection_status(self, symbol: str) -> dict:
         try:
-            orders = self.exchange.fetch_open_orders(symbol)
+            regular = self.exchange.fetch_open_orders(symbol)
+            trigger = self.exchange.fetch_open_orders(symbol, params={"trigger": True})
+            tpsl = self.exchange.fetch_open_orders(symbol, params={"planType": "profit_loss", "trigger": True})
+            orders = regular + trigger + tpsl
             protected = []
+            seen = set()
             for o in orders:
-                info = o.get("info") or {}
-                text = str(info).lower()
-                if o.get("reduceOnly") or "stoploss" in text or "takeprofit" in text or "tpsl" in text or "trigger" in text:
+                oid = o.get("id") or str(o.get("info"))
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                text = str(o.get("info") or {}).lower()
+                if o.get("reduceOnly") or "stoploss" in text or "takeprofit" in text or "tpsl" in text or "trigger" in text or o.get("stopLossPrice") or o.get("takeProfitPrice"):
                     protected.append(o)
             return {"ok": bool(protected), "supported": True, "count": len(protected), "orders": protected}
         except Exception as exc:
@@ -162,11 +161,10 @@ class CCXTAdapter(MarketAdapter):
 
     def cancel_protection(self, symbol: str) -> None:
         try:
-            for o in self.exchange.fetch_open_orders(symbol):
-                if o.get("reduceOnly") or "trigger" in str(o.get("info") or {}).lower() or "tpsl" in str(o.get("info") or {}).lower():
-                    try:
-                        self.exchange.cancel_order(o["id"], symbol)
-                    except Exception:
-                        pass
+            self.exchange.cancel_all_orders(symbol, params={"trigger": True})
+        except Exception:
+            pass
+        try:
+            self.exchange.cancel_all_orders(symbol)
         except Exception:
             pass
