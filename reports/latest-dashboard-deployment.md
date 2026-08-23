@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T15:52:52Z
-- Source commit: 4543473f280471f1761711e698d4cd730816d9d8
+- Generated UTC: 2026-08-23T16:14:57Z
+- Source commit: a382b53d2a6491e8415897f8ae722e57ea470827
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -10,12 +10,18 @@
 ## Outcomes
 
 - Runtime deploy: success
-- Service: failure
+- Service: cancelled
 - HTTP: skipped
 - Socket: success
 
 ## Service
 ```text
+{"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":[]}
+Dashboard started in PAPER mode.
+Local:  http://127.0.0.1:8000/
+Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
+PID:    8286
+Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
@@ -31,6 +37,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#ee
 
 ## Socket
 ```text
+LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=8286,fd=13))
 ```
 
 ## App log
