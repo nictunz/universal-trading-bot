@@ -36,11 +36,17 @@ jobs:
 
       - name: Unit tests
         id: unit
-        run: "$VENV/bin/pytest -q tests/test_official_archives.py | tee /tmp/archive-unit.txt"
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          "$VENV/bin/pytest" -q tests/test_official_archives.py | tee /tmp/archive-unit.txt
 
       - name: Real network two-day four-exchange backtest
         id: smoke
-        run: "$VENV/bin/python scripts/verify_archive_backtest.py | tee /tmp/archive-smoke.txt"
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          "$VENV/bin/python" scripts/verify_archive_backtest.py | tee /tmp/archive-smoke.txt
 
       - name: Publish report
         if: always()
@@ -81,5 +87,6 @@ jobs:
           UNIT: ${{ steps.unit.outcome }}
           SMOKE: ${{ steps.smoke.outcome }}
         run: |
+          set -euo pipefail
           [[ "$UNIT" == success ]]
           [[ "$SMOKE" == success ]]
