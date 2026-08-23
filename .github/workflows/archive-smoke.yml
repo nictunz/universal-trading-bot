@@ -1,6 +1,7 @@
 name: official-archive-smoke
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -13,7 +14,7 @@ on:
 
 concurrency:
   group: official-archive-smoke
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
