@@ -42,9 +42,16 @@ class HistoricalDataManager:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp() * 1000)
 
+    @staticmethod
+    def _timeframe_ms(timeframe: str) -> int | None:
+        try:
+            value, unit = int(timeframe[:-1]), timeframe[-1]
+        except (TypeError, ValueError, IndexError):
+            return None
+        seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit)
+        return value * seconds * 1000 if seconds else None
+
     def _bounds(self, request: DataRequest) -> tuple[int | None, int | None]:
-        start = self._ms(request.start)
-        end = self._ms(request.end)
         with self._connect() as con:
             row = con.execute("SELECT MIN(timestamp), MAX(timestamp) FROM ohlcv WHERE asset_class=? AND exchange=? AND symbol=? AND timeframe=?", (request.asset_class, request.exchange, request.symbol, request.timeframe)).fetchone()
         return row[0], row[1]
@@ -78,7 +85,7 @@ class HistoricalDataManager:
             if not batch:
                 break
             rows.extend(batch)
-            last = batch[-1][0]
+            last = int(batch[-1][0])
             if last <= since:
                 break
             since = last + 1
@@ -137,6 +144,33 @@ class HistoricalDataManager:
         df["timestamp"] = pd.to_datetime(df.timestamp, unit="ms", utc=True)
         return df.set_index("timestamp")
 
+    def _repair_crypto_gaps(self, request: DataRequest, df: pd.DataFrame, max_gaps: int = 250) -> int:
+        interval_ms = self._timeframe_ms(request.timeframe)
+        if interval_ms is None or len(df) < 2:
+            return 0
+        stamps = (df.index.view("int64") // 1_000_000).astype("int64")
+        missing_ranges: list[tuple[int, int]] = []
+        for left, right in zip(stamps[:-1], stamps[1:]):
+            if right - left > int(interval_ms * 1.5):
+                gap_start = int(left + interval_ms)
+                gap_end = int(right - interval_ms)
+                if gap_start <= gap_end:
+                    missing_ranges.append((gap_start, gap_end))
+                    if len(missing_ranges) >= max_gaps:
+                        break
+        inserted = 0
+        for start_ms, end_ms in missing_ranges:
+            sub = DataRequest(
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                start=datetime.fromtimestamp(start_ms / 1000, timezone.utc),
+                end=datetime.fromtimestamp(end_ms / 1000, timezone.utc),
+                asset_class=request.asset_class,
+                exchange=request.exchange,
+            )
+            inserted += self.fetch_and_store(sub)
+        return inserted
+
     def sync(self, request: DataRequest) -> tuple[int, pd.DataFrame]:
         requested_start = self._ms(request.start)
         requested_end = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -152,4 +186,16 @@ class HistoricalDataManager:
                 raise ValueError("historical request requires a start date")
             right = DataRequest(request.symbol, request.timeframe, datetime.fromtimestamp(right_start_ms / 1000, timezone.utc), request.end, request.asset_class, request.exchange)
             inserted += self.fetch_and_store(right)
-        return inserted, self.read(request)
+
+        df = self.read(request)
+        if request.asset_class == "crypto":
+            # Old/interrupted downloads can leave holes inside otherwise valid
+            # min/max bounds. Repair those ranges instead of silently failing or
+            # re-downloading the entire year on every verification run.
+            for _ in range(2):
+                repaired = self._repair_crypto_gaps(request, df)
+                inserted += repaired
+                if repaired == 0:
+                    break
+                df = self.read(request)
+        return inserted, df
