@@ -35,6 +35,7 @@ class CCXTAdapter(MarketAdapter):
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
         self._coinapi = CoinAPIMarketData(coinapi_api_key)
         self._volume_status: dict[str, dict[str, str]] = {}
+        self._provider_volume_cache: dict[tuple[str, str, str], pd.Series] = {}
 
     @staticmethod
     def _candidates(symbol: str) -> list[str]:
@@ -73,6 +74,23 @@ class CCXTAdapter(MarketAdapter):
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 1000) -> pd.DataFrame:
         return self._fetch(self.exchange, symbol, timeframe, limit)
 
+    def _provider_volume(self, exchange_id: str, symbol: str, timeframe: str, limit: int) -> pd.Series:
+        key = (exchange_id, symbol, timeframe)
+        cached = self._provider_volume_cache.get(key)
+        # First request seeds enough history for the volume SMA. Later completed
+        # bars only need a few newest candles; merge them into the local cache.
+        request_limit = limit if cached is None or len(cached) < min(limit, 100) else 3
+        frame = self._coinapi.fetch_latest(exchange_id, symbol, timeframe, request_limit)
+        if frame.empty:
+            raise RuntimeError("empty provider OHLCV response")
+        latest = frame.volume.astype(float)
+        if cached is not None and not cached.empty:
+            latest = pd.concat([cached, latest]).sort_index()
+            latest = latest.loc[~latest.index.duplicated(keep="last")]
+        latest = latest.tail(limit)
+        self._provider_volume_cache[key] = latest
+        return latest
+
     def fetch_volume_sources(self, symbol: str, timeframe: str, limit: int = 1000) -> dict[str, pd.Series]:
         out: dict[str, pd.Series] = {}
         status: dict[str, dict[str, str]] = {}
@@ -91,12 +109,9 @@ class CCXTAdapter(MarketAdapter):
 
             if exchange_id in self._fallback_exchanges and self._coinapi.enabled:
                 try:
-                    df = self._coinapi.fetch_latest(exchange_id, symbol, timeframe, limit)
-                    if not df.empty:
-                        out[exchange_id] = df.volume.astype(float)
-                        status[exchange_id] = {"mode": "PROVIDER", "status": "OK"}
-                        continue
-                    raise RuntimeError("empty provider OHLCV response")
+                    out[exchange_id] = self._provider_volume(exchange_id, symbol, timeframe, limit)
+                    status[exchange_id] = {"mode": "PROVIDER", "status": "OK"}
+                    continue
                 except Exception as exc:
                     status[exchange_id] = {"mode": "PROVIDER", "status": "FAIL", "error": str(exc)[:180]}
                     continue
