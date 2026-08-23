@@ -21,6 +21,7 @@ class CCXTAdapter(MarketAdapter):
         self.exchange_id = exchange_id
         self.exchange = exchange_class(params)
         self.exchange.load_markets()
+        self._volume_exchanges: dict[str, object] = {exchange_id: self.exchange}
 
     @staticmethod
     def _candidates(symbol: str) -> list[str]:
@@ -30,6 +31,15 @@ class CCXTAdapter(MarketAdapter):
             return [symbol, symbol.split(":")[0]]
         base, quote = symbol.split("/", 1)
         return [symbol, f"{base}/{quote}:{quote}"]
+
+    def _public_exchange(self, exchange_id: str):
+        cached = self._volume_exchanges.get(exchange_id)
+        if cached is not None:
+            return cached
+        ex = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+        ex.load_markets()
+        self._volume_exchanges[exchange_id] = ex
+        return ex
 
     def _fetch(self, exchange, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
         last_error = None
@@ -54,7 +64,7 @@ class CCXTAdapter(MarketAdapter):
         out: dict[str, pd.Series] = {}
         for exchange_id in ("binance", "bitget", "okx", "bybit"):
             try:
-                ex = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+                ex = self._public_exchange(exchange_id)
                 df = self._fetch(ex, symbol, timeframe, limit)
                 if not df.empty:
                     out[exchange_id] = df.volume
@@ -65,7 +75,10 @@ class CCXTAdapter(MarketAdapter):
     def equity(self) -> float:
         balance = self.exchange.fetch_balance()
         usdt = balance.get("USDT") or balance.get("USDT:USDT") or {}
-        return float(usdt.get("free", 0.0) or usdt.get("total", 0.0) or 0.0)
+        # Total equity is the correct sizing/reference basis for derivatives;
+        # free balance shrinks when margin is reserved and would otherwise make
+        # live sizing/statistics drift after opening a position.
+        return float(usdt.get("total", 0.0) or usdt.get("free", 0.0) or 0.0)
 
     def _market(self, symbol: str) -> dict:
         market = self.exchange.market(symbol)
@@ -81,13 +94,28 @@ class CCXTAdapter(MarketAdapter):
             if contracts <= 0:
                 raise RuntimeError("calculated contract amount is below exchange precision/minimum")
             return contracts
-        return float(self.exchange.amount_to_precision(symbol, base_amount))
+        amount = float(self.exchange.amount_to_precision(symbol, base_amount))
+        if amount <= 0:
+            raise RuntimeError("calculated amount is below exchange precision/minimum")
+        return amount
 
     def _from_exchange_contracts(self, symbol: str, contracts: float) -> float:
         market = self._market(symbol)
         if market.get("contract") and market.get("contractSize"):
             return abs(contracts) * float(market["contractSize"])
         return abs(contracts)
+
+    def _normalize_order_amounts(self, symbol: str, order: dict) -> dict:
+        result = dict(order)
+        for key in ("amount", "filled", "remaining"):
+            value = order.get(key)
+            if value is not None:
+                try:
+                    result[f"exchange_{key}"] = float(value)
+                    result[key] = self._from_exchange_contracts(symbol, float(value))
+                except (TypeError, ValueError):
+                    pass
+        return result
 
     def position(self, symbol: str):
         if not self.exchange.has.get("fetchPositions"):
@@ -138,7 +166,8 @@ class CCXTAdapter(MarketAdapter):
             params["stopLoss"] = {"triggerPrice": float(kwargs["sl_price"]), "type": "market"}
         if kwargs.get("tp_price") is not None or kwargs.get("sl_price") is not None:
             params["triggerType"] = "mark_price"
-        return self.exchange.create_order(symbol, "market", side.lower(), exchange_amount, None, params)
+        order = self.exchange.create_order(symbol, "market", side.lower(), exchange_amount, None, params)
+        return self._normalize_order_amounts(symbol, order)
 
     def protection_status(self, symbol: str) -> dict:
         try:
