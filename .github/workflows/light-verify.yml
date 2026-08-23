@@ -1,0 +1,138 @@
+name: light-server-verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.env.example'
+      - 'pyproject.toml'
+      - '.github/workflows/light-verify.yml'
+
+concurrency:
+  group: light-server-verification
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 15
+    env:
+      BOT_MODE: PAPER
+      CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then
+            python3 -m venv "$CI_VENV"
+          fi
+          "$CI_VENV/bin/python" -m pip install -q -e ".[dev]"
+
+      - name: Compile
+        id: compile
+        continue-on-error: true
+        run: "$CI_VENV/bin/python -m compileall -q universal_bot scripts"
+
+      - name: Tests
+        id: tests
+        continue-on-error: true
+        run: "$CI_VENV/bin/pytest -q | tee /tmp/light-tests.txt"
+
+      - name: Dashboard smoke
+        id: dashboard
+        continue-on-error: true
+        run: |
+          "$CI_VENV/bin/python" scripts/dashboard_smoke.py >/tmp/light-dashboard-server.txt 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          "$CI_VENV/bin/python" - <<'PY' | tee /tmp/light-dashboard.txt
+          import json, time, urllib.request
+          base='http://127.0.0.1:8765'
+          last=None
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(base+'/health', timeout=2) as r: health=json.load(r)
+                  with urllib.request.urlopen(base+'/api/state', timeout=2) as r: state=json.load(r)
+                  with urllib.request.urlopen(base+'/', timeout=2) as r: html=r.read().decode()
+                  assert health['status']=='ok'
+                  assert state['symbols'][0]['symbol']=='ETH/USDT:USDT'
+                  assert 'Volume Sources' in html
+                  print(json.dumps({'health':health,'state_symbols':len(state['symbols']),'html_bytes':len(html)}, ensure_ascii=False))
+                  break
+              except Exception as exc:
+                  last=exc; time.sleep(.5)
+          else:
+              raise RuntimeError(last)
+          PY
+
+      - name: Provider mapping smoke
+        id: provider
+        continue-on-error: true
+        run: |
+          "$CI_VENV/bin/python" - <<'PY' | tee /tmp/light-provider.txt
+          from universal_bot.providers.coinapi import CoinAPIMarketData
+          p=CoinAPIMarketData('test')
+          print('binance_eth=', p.symbol_id('binance','ETH/USDT:USDT'))
+          print('bybit_sol=', p.symbol_id('bybit','SOLUSDT'))
+          print('period_5m=', p._period_id('5m'))
+          PY
+
+      - name: Publish report
+        if: always()
+        env:
+          COMPILE: ${{ steps.compile.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DASHBOARD: ${{ steps.dashboard.outcome }}
+          PROVIDER: ${{ steps.provider.outcome }}
+        run: |
+          set -euo pipefail
+          report=$(mktemp)
+          {
+            echo '# Latest light self-hosted verification'
+            echo
+            echo "- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Runner: $(hostname)"
+            echo
+            echo '| Check | Outcome |'
+            echo '|---|---|'
+            echo "| Compile | $COMPILE |"
+            echo "| Pytest | $TESTS |"
+            echo "| Dashboard HTTP smoke | $DASHBOARD |"
+            echo "| Provider mapping | $PROVIDER |"
+            echo
+            echo '## Pytest'; echo '```text'; cat /tmp/light-tests.txt 2>/dev/null || true; echo '```'
+            echo '## Dashboard'; echo '```text'; cat /tmp/light-dashboard.txt 2>/dev/null || true; tail -20 /tmp/light-dashboard-server.txt 2>/dev/null || true; echo '```'
+            echo '## Provider'; echo '```text'; cat /tmp/light-provider.txt 2>/dev/null || true; echo '```'
+          } > "$report"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B light-report origin/main
+          mkdir -p reports
+          cp "$report" reports/latest-light-verification.md
+          git add reports/latest-light-verification.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: update light verification report [skip ci]'
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce
+        if: always()
+        env:
+          COMPILE: ${{ steps.compile.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DASHBOARD: ${{ steps.dashboard.outcome }}
+          PROVIDER: ${{ steps.provider.outcome }}
+        run: |
+          for x in "$COMPILE" "$TESTS" "$DASHBOARD" "$PROVIDER"; do
+            [[ "$x" != failure ]] || exit 1
+          done
