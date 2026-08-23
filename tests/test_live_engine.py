@@ -42,9 +42,21 @@ class FakeLiveAdapter:
 
 
 def frame():
-    idx = pd.date_range("2026-08-20", periods=400, freq="5min", tz="UTC")
+    # Keep the fixture current so the LIVE stale-data guard is tested independently
+    # from the calendar date on which pytest happens to run.
+    end = pd.Timestamp.now(tz="UTC").floor("5min")
+    idx = pd.date_range(end=end, periods=400, freq="5min")
     close = pd.Series(100.0, index=idx)
-    return pd.DataFrame({"open": close - 0.2, "high": close + 0.3, "low": close - 0.3, "close": close, "volume": 1_000_000.0}, index=idx)
+    return pd.DataFrame(
+        {
+            "open": close - 0.2,
+            "high": close + 0.3,
+            "low": close - 0.3,
+            "close": close,
+            "volume": 1_000_000.0,
+        },
+        index=idx,
+    )
 
 
 def test_live_initialization_fails_closed_without_protection():
