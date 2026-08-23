@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from universal_bot.config import Settings
 from universal_bot.models import Position
 from universal_bot.paper import normalize_exchange_volume
@@ -11,6 +13,8 @@ from universal_bot.live_safety import LiveSafety
 
 
 class TradingEngine:
+    REQUIRED_VOLUME_SOURCES = {"binance", "bitget", "okx", "bybit"}
+
     def __init__(self, settings: Settings, adapter, strategy: UniversalV15Strategy):
         self.settings = settings
         self.adapter = adapter
@@ -79,6 +83,7 @@ class TradingEngine:
             exchange_pos = self.adapter.position(self.settings.symbol)
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
+            self.safety.clear_error()
             protection = self.adapter.protection_status(self.settings.symbol)
             self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
             if not self.position.flat and self.settings.require_exchange_protection and not self.safety.protection_ok:
@@ -92,7 +97,8 @@ class TradingEngine:
             return
         equity = self.adapter.equity() if self.live else self.settings.initial_capital
         intended_notional = amount * price
-        if self.live and intended_notional > equity * float(self.settings.live_max_position_notional_percent) / 100.0:
+        existing_notional = abs(self.position.size) * price if not self.position.flat else 0.0
+        if self.live and existing_notional + intended_notional > equity * float(self.settings.live_max_position_notional_percent) / 100.0:
             self.safety.fail("LIVE_POSITION_SIZE_LIMIT_EXCEEDED")
             return
         tp_price = price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100)
@@ -143,13 +149,15 @@ class TradingEngine:
         side = self.position.side
         initial_entry = self.position.entry_price
         avg_entry = self.entry_notional / qty if qty and self.entry_notional else initial_entry
+        exit_price = price
         if self.live:
             order = self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
             if not order:
                 self.safety.fail("EXIT_ORDER_EMPTY_RESPONSE")
                 return
+            exit_price = float(order.get("average") or order.get("price") or price)
             self.adapter.cancel_protection(self.settings.symbol)
-        pnl = (price - avg_entry) * qty if side == "LONG" else (avg_entry - price) * qty
+        pnl = (exit_price - avg_entry) * qty if side == "LONG" else (avg_entry - exit_price) * qty
         self.realized_pnl += pnl
         self.closed_trades += 1
         if pnl >= 0:
@@ -157,7 +165,7 @@ class TradingEngine:
             self.gross_profit += pnl
         else:
             self.gross_loss += abs(pnl)
-        self.trade_log.append({"trade": self.closed_trades, "side": side, "entry_price": initial_entry, "avg_entry_price": avg_entry, "exit_price": price, "qty": qty, "pnl": pnl, "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0, "reason": reason, "bar": self.bar_number})
+        self.trade_log.append({"trade": self.closed_trades, "side": side, "entry_price": initial_entry, "avg_entry_price": avg_entry, "exit_price": exit_price, "qty": qty, "pnl": pnl, "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0, "reason": reason, "bar": self.bar_number})
         self.position = Position()
         self.entry_notional = 0.0
         self.last_exit_bar = self.bar_number
@@ -165,6 +173,18 @@ class TradingEngine:
             exchange_pos = self.adapter.position(self.settings.symbol)
             if exchange_pos.get("side") != "FLAT" or float(exchange_pos.get("size") or 0) > 1e-9:
                 self.safety.fail("EXIT_ORDER_DID_NOT_FLATTEN_POSITION")
+
+    def _normalized_live_volume(self, df) -> pd.Series | None:
+        if not (self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto"):
+            return None
+        try:
+            sources = self.adapter.fetch_volume_sources(self.settings.symbol, self.settings.timeframe, len(df))
+        except Exception:
+            sources = {}
+        if set(sources) != self.REQUIRED_VOLUME_SOURCES:
+            return pd.Series(math.nan, index=df.index, dtype=float)
+        ratio = normalize_exchange_volume(sources, self.settings.volume_lookback, required_sources=4)
+        return ratio.reindex(df.index)
 
     def step(self, df, precomputed: dict[str, float] | None = None):
         self.bar_number += 1
@@ -175,15 +195,8 @@ class TradingEngine:
             self._reconcile_live()
             if self.safety.halted:
                 return self._halted_state(df)
-        normalized_volume = None
-        if precomputed is None and self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto":
-            try:
-                sources = self.adapter.fetch_volume_sources(self.settings.symbol, self.settings.timeframe, len(df))
-                if len(sources) >= 1:
-                    normalized_volume = normalize_exchange_volume(sources, self.settings.volume_lookback)
-                    normalized_volume = normalized_volume.reindex(df.index).ffill()
-            except Exception:
-                normalized_volume = None
+
+        normalized_volume = self._normalized_live_volume(df) if precomputed is None else None
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
         if self.live and len(df.index):
@@ -209,14 +222,19 @@ class TradingEngine:
             self._open(signal, price, float(result.state.values["final_tp_percent"]), float(result.state.values["final_sl_percent"]))
         open_pnl = self._open_pnl(price)
         result.state.position = self.position
-        result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": (self.adapter.equity() if self.live else self.settings.initial_capital) + self.realized_pnl + open_pnl, "live_halted": self.safety.halted, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
+        if self.live:
+            exchange_equity = self.adapter.equity()
+            display_equity = exchange_equity
+        else:
+            display_equity = self.settings.initial_capital + self.realized_pnl + open_pnl
+        result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": display_equity, "live_halted": self.safety.halted, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
         self.last_state = result.state
-        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": (self.adapter.equity() if self.live else self.settings.initial_capital) + self.realized_pnl + open_pnl})
+        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": display_equity})
         return result.state
 
     def _halted_state(self, df):
         state = self.strategy._not_ready(self.settings.symbol, self.settings.timeframe, f"LIVE_HALTED:{self.safety.reason}", df).state
         state.position = self.position
-        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.settings.initial_capital, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
+        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.adapter.equity() if self.live else self.settings.initial_capital + self.realized_pnl, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
         self.last_state = state
         return state
