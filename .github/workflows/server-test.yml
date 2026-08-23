@@ -17,7 +17,7 @@ on:
         default: true
         type: boolean
       benchmark:
-        description: Run performance benchmark
+        description: Run performance benchmarks
         required: false
         default: true
         type: boolean
@@ -26,7 +26,6 @@ concurrency:
   group: server-verification
   cancel-in-progress: true
 
-# The runner may only write the generated verification report back to this repo.
 permissions:
   contents: write
 
@@ -76,7 +75,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          "$CI_VENV/bin/python" -m compileall -q universal_bot 2>&1 | tee .verification/compile.log
+          "$CI_VENV/bin/python" -m compileall -q universal_bot scripts 2>&1 | tee .verification/compile.log
 
       - name: Tests
         id: tests
@@ -85,6 +84,14 @@ jobs:
         run: |
           set -euo pipefail
           "$CI_VENV/bin/pytest" -q 2>&1 | tee .verification/tests.log
+
+      - name: Bitget public capability check
+        id: bitget_public
+        if: ${{ steps.prepare.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" scripts/verify_bitget_public.py 2>&1 | tee .verification/bitget_public.log
 
       - name: Backtest
         id: backtest
@@ -105,7 +112,7 @@ jobs:
           echo "wall_seconds=$((end_ts-start_ts))" > .verification/backtest_time.txt
           exit "$rc"
 
-      - name: Indicator benchmark
+      - name: Performance benchmarks
         id: benchmark
         if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.benchmark) }}
         continue-on-error: true
@@ -115,22 +122,37 @@ jobs:
           import time
           import numpy as np
           import pandas as pd
+          from universal_bot.backtest import run_backtest
+          from universal_bot.config import Settings
           from universal_bot.indicators import dmi_adx, rsi, rolling_range_percent, sma
 
           n = 100_000
           idx = pd.date_range('2024-01-01', periods=n, freq='5min', tz='UTC')
-          close = pd.Series(np.linspace(2000, 2500, n), index=idx)
-          high = close + 2.0
-          low = close - 2.0
-          volume = pd.Series(1000.0, index=idx)
+          close = pd.Series(2000 + np.linspace(0, 500, n) + np.sin(np.arange(n) / 17), index=idx)
+          open_ = close.shift(1).fillna(close.iloc[0])
+          high = pd.concat([open_, close], axis=1).max(axis=1) + 2.0
+          low = pd.concat([open_, close], axis=1).min(axis=1) - 2.0
+          volume = pd.Series(1000.0 + (np.arange(n) % 97), index=idx)
+
           t = time.perf_counter()
-          sma(volume, 20)
-          rolling_range_percent(high, low, 20)
-          rolling_range_percent(high, low, 8)
+          sma(volume, 70)
+          rolling_range_percent(high, low, 288)
+          rolling_range_percent(high, low, 200)
           dmi_adx(high, low, close, 14)
-          rsi(close, 6)
-          elapsed = time.perf_counter() - t
-          print(f'indicator_100k_bars_seconds={elapsed:.4f}')
+          rsi(close, 8)
+          indicator_elapsed = time.perf_counter() - t
+          print(f'indicator_100k_bars_seconds={indicator_elapsed:.4f}')
+
+          df = pd.DataFrame({'open': open_, 'high': high, 'low': low, 'close': close, 'volume': volume})
+          settings = Settings(
+              bot_mode='PAPER', use_start_date=False, use_four_crypto_exchanges=False,
+              use_nbar_volatility_block=False, volume_break_multiplier=999.0,
+          )
+          t = time.perf_counter()
+          result = run_backtest(df, settings)
+          backtest_elapsed = time.perf_counter() - t
+          print(f'cached_strategy_100k_bars_seconds={backtest_elapsed:.4f}')
+          print(f'cached_strategy_100k_trades={result.trades}')
           PY
 
       - name: Publish verification report
@@ -139,6 +161,7 @@ jobs:
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
           COMPILE_OUTCOME: ${{ steps.compile.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          BITGET_PUBLIC_OUTCOME: ${{ steps.bitget_public.outcome }}
           BACKTEST_OUTCOME: ${{ steps.backtest.outcome }}
           BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
         run: |
@@ -160,8 +183,9 @@ jobs:
             echo "| Prepare | ${PREPARE_OUTCOME:-not-run} |"
             echo "| Compile | ${COMPILE_OUTCOME:-not-run} |"
             echo "| Pytest | ${TESTS_OUTCOME:-not-run} |"
+            echo "| Bitget public capabilities | ${BITGET_PUBLIC_OUTCOME:-not-run} |"
             echo "| ETH/USDT 5m one-year backtest | ${BACKTEST_OUTCOME:-not-run} |"
-            echo "| 100k indicator benchmark | ${BENCHMARK_OUTCOME:-not-run} |"
+            echo "| Performance benchmarks | ${BENCHMARK_OUTCOME:-not-run} |"
             echo
             echo "## Runtime"
             echo '```text'
@@ -173,6 +197,11 @@ jobs:
             tail -n 120 .verification/tests.log 2>/dev/null || true
             echo '```'
             echo
+            echo "## Bitget public capabilities"
+            echo '```text'
+            cat .verification/bitget_public.log 2>/dev/null || true
+            echo '```'
+            echo
             echo "## Backtest"
             echo '```text'
             cat .verification/backtest_range.txt 2>/dev/null || true
@@ -180,7 +209,7 @@ jobs:
             tail -n 180 .verification/backtest.log 2>/dev/null || true
             echo '```'
             echo
-            echo "## Indicator benchmark"
+            echo "## Performance benchmarks"
             echo '```text'
             cat .verification/benchmark.log 2>/dev/null || true
             echo '```'
@@ -210,11 +239,12 @@ jobs:
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
           COMPILE_OUTCOME: ${{ steps.compile.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          BITGET_PUBLIC_OUTCOME: ${{ steps.bitget_public.outcome }}
           BACKTEST_OUTCOME: ${{ steps.backtest.outcome }}
           BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
         run: |
           set -euo pipefail
-          for outcome in "$PREPARE_OUTCOME" "$COMPILE_OUTCOME" "$TESTS_OUTCOME" "$BACKTEST_OUTCOME" "$BENCHMARK_OUTCOME"; do
+          for outcome in "$PREPARE_OUTCOME" "$COMPILE_OUTCOME" "$TESTS_OUTCOME" "$BITGET_PUBLIC_OUTCOME" "$BACKTEST_OUTCOME" "$BENCHMARK_OUTCOME"; do
             if [[ "$outcome" == "failure" ]]; then
               echo "Verification failed; see reports/latest-server-verification.md"
               exit 1
