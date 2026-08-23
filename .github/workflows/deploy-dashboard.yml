@@ -1,0 +1,105 @@
+name: deploy-paper-dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/**'
+      - 'pyproject.toml'
+      - '.github/workflows/deploy-dashboard.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-paper-dashboard
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy isolated PAPER runtime
+        run: |
+          set -euo pipefail
+          APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
+          VENV=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv
+          mkdir -p "$APP_DIR" /home/kpj3669/.cache/universal-trading-bot
+          rsync -a --delete --exclude '.git' --exclude '.env' --exclude 'data/' ./ "$APP_DIR/"
+          if [[ ! -x "$VENV/bin/python" ]]; then
+            python3 -m venv "$VENV"
+            "$VENV/bin/python" -m pip install --upgrade pip
+          fi
+          "$VENV/bin/pip" install -e "$APP_DIR"
+          cat > "$APP_DIR/.env" <<'EOF'
+          BOT_MODE=PAPER
+          EXCHANGE=bitget
+          ASSET_CLASS=crypto
+          SYMBOL=ETH/USDT:USDT
+          SYMBOLS=ETH/USDT:USDT
+          TIMEFRAME=5m
+          USE_FOUR_CRYPTO_EXCHANGES=true
+          DATABASE_URL=sqlite:////home/kpj3669/.cache/universal-trading-bot/historical.db
+          DASHBOARD_HOST=0.0.0.0
+          DASHBOARD_PORT=8000
+          EOF
+
+      - name: Install or restart dashboard service
+        run: |
+          set -euo pipefail
+          cat > /tmp/universal-trading-bot-dashboard.service <<'EOF'
+          [Unit]
+          Description=Universal Trading Bot PAPER Dashboard
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=kpj3669
+          WorkingDirectory=/home/kpj3669/universal-trading-bot-dashboard
+          EnvironmentFile=/home/kpj3669/universal-trading-bot-dashboard/.env
+          ExecStart=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python -m universal_bot.main
+          Restart=always
+          RestartSec=5
+          KillSignal=SIGINT
+          TimeoutStopSec=15
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo install -m 0644 /tmp/universal-trading-bot-dashboard.service /etc/systemd/system/universal-trading-bot-dashboard.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable universal-trading-bot-dashboard.service
+          sudo systemctl restart universal-trading-bot-dashboard.service
+          sleep 8
+          sudo systemctl --no-pager --full status universal-trading-bot-dashboard.service
+
+      - name: Verify dashboard locally
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, time, urllib.request
+          urls = [
+              'http://127.0.0.1:8000/health',
+              'http://127.0.0.1:8000/api/state',
+              'http://127.0.0.1:8000/',
+          ]
+          for attempt in range(20):
+              try:
+                  for u in urls:
+                      with urllib.request.urlopen(u, timeout=5) as r:
+                          body = r.read().decode('utf-8')
+                          print(u, r.status, body[:500])
+                  break
+              except Exception as exc:
+                  if attempt == 19:
+                      raise
+                  time.sleep(2)
+          PY
+
+      - name: Show listening socket
+        run: |
+          set -euo pipefail
+          ss -ltnp | grep ':8000' || true
