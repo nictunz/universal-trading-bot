@@ -1,6 +1,5 @@
 from datetime import timezone
 
-import numpy as np
 import pandas as pd
 
 from universal_bot.backtest import run_backtest
@@ -21,17 +20,6 @@ class DummyAdapter:
 
     def fetch_volume_sources(self, *args, **kwargs):
         return {}
-
-
-def make_ohlcv(n=400):
-    idx = pd.date_range("2024-01-01", periods=n, freq="5min", tz="UTC")
-    base = 100 + np.linspace(0, 4, n)
-    close = base + np.sin(np.arange(n) / 7)
-    open_ = close - 0.2
-    high = np.maximum(open_, close) + 0.3
-    low = np.minimum(open_, close) - 0.3
-    volume = np.full(n, 1_000_000.0)
-    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume}, index=idx)
 
 
 def test_end_date_is_inclusive():
@@ -57,6 +45,9 @@ def test_pyramiding_pnl_uses_weighted_average_entry():
     engine._open("LONG", 110.0, 1.0, 2.0)
     engine.bar_number = 3
     engine._close(110.0, "TP")
+    expected_qty = 10_000 / 100 + 10_000 / 110
+    expected_avg = 20_000 / expected_qty
+    expected_pnl = (110 - expected_avg) * expected_qty
     assert engine.closed_trades == 1
-    assert engine.trade_log[0]["avg_entry_price"] > 100.0
-    assert abs(engine.realized_pnl - 50.0) < 1e-9
+    assert abs(engine.trade_log[0]["avg_entry_price"] - expected_avg) < 1e-9
+    assert abs(engine.realized_pnl - expected_pnl) < 1e-9
