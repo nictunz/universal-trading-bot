@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,6 +39,12 @@ def month_chunks(start: datetime, end: datetime):
         cursor = next_month
 
 
+def symbol_slug(symbol: str) -> str:
+    base = symbol.split(":", 1)[0].split("/", 1)[0].strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return slug or "asset"
+
+
 def main() -> None:
     os.environ["CRYPTO_VOLUME_PROVIDER"] = "none"
     os.environ["COINAPI_API_KEY"] = ""
@@ -45,7 +52,8 @@ def main() -> None:
 
     cache_dir = Path.home() / ".cache" / "universal-trading-bot"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    db = Path(os.environ.get("ONE_YEAR_DB", str(cache_dir / "eth-1y-5m.db")))
+    slug = symbol_slug(SYMBOL)
+    db = Path(os.environ.get("ONE_YEAR_DB", str(cache_dir / f"{slug}-1y-{TIMEFRAME}.db")))
     os.environ["DATABASE_URL"] = f"sqlite:///{db}"
 
     start = parse_day(START)
@@ -57,11 +65,10 @@ def main() -> None:
         fallback_exchanges=[],
     )
 
+    print(f"SYMBOL={SYMBOL}", flush=True)
     print(f"ONE_YEAR_DB={db}", flush=True)
     print(f"WINDOW={start.isoformat()} .. {end.isoformat()}", flush=True)
 
-    # Populate one exchange/month at a time. The SQLite cache makes this resumable:
-    # re-running after an SSH/server interruption only fills missing ranges.
     for exchange in EXCHANGES:
         print(f"\n===== CACHE {exchange.upper()} =====", flush=True)
         for chunk_start, chunk_end in month_chunks(start, end):
@@ -116,10 +123,13 @@ def main() -> None:
     summary["requested_end"] = END
     summary["database"] = str(db)
 
-    out = cache_dir / "latest-one-year-backtest.json"
+    out = Path(os.environ.get("ONE_YEAR_RESULT", str(cache_dir / f"latest-{slug}-one-year-backtest.json")))
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    latest = cache_dir / "latest-one-year-backtest.json"
+    latest.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
     print(f"RESULT_FILE={out}", flush=True)
+    print("BACKTEST COMPLETE", flush=True)
 
 
 if __name__ == "__main__":
