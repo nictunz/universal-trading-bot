@@ -50,16 +50,15 @@ class Settings(BaseSettings):
     order_percent_of_equity: float = 5.0
     initial_capital: float = 1_000_000.0
 
-    # Historical/PAPER verification assumptions. These are deliberately explicit
-    # so profitability is not reported without execution costs.
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
 
-    # Crypto market-data routing. Direct venue APIs remain preferred. If Binance
-    # or Bybit public endpoints are blocked from the server region, PAPER mode
-    # can use Coin Metrics Community (no key) for the recent rolling volume
-    # window. CoinAPI remains optional as a secondary licensed fallback.
-    crypto_volume_provider: str = "community"
+    # Realtime crypto volume routing. "none" means direct venue public APIs only
+    # and therefore fail-closed on the US server when Binance/Bybit are blocked.
+    # "coinapi" enables the optional licensed read-only fallback. "community"
+    # is retained only for diagnostics; the tested Community account cannot read
+    # Binance/Bybit futures and is not the default.
+    crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
