@@ -15,9 +15,9 @@ def test_community_provider_supports_strategy_timeframe():
     assert "5m" in CoinMetricsCommunityMarketData.SUPPORTED
 
 
-def test_paper_defaults_do_not_require_coinapi_key():
+def test_paper_defaults_are_direct_only_and_require_no_provider_key():
     s = Settings(_env_file=None)
-    assert s.crypto_volume_provider == "community"
+    assert s.crypto_volume_provider == "none"
     assert s.coinapi_api_key == ""
     assert s.allow_community_market_data_live is False
     assert s.crypto_fallback_exchange_list == ["binance", "bybit"]
