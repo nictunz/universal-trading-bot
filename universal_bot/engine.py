@@ -183,9 +183,11 @@ class TradingEngine:
         except Exception:
             sources = {}
         if set(sources) != self.REQUIRED_VOLUME_SOURCES:
-            return pd.Series(math.nan, index=df.index, dtype=float)
+            # Keep the strict four-exchange gate closed without leaking NaN into
+            # dashboard/API JSON responses.
+            return pd.Series(0.0, index=df.index, dtype=float)
         ratio = normalize_exchange_volume(sources, self.settings.volume_lookback, required_sources=4)
-        return ratio.reindex(df.index)
+        return ratio.reindex(df.index).fillna(0.0)
 
     def _live_heartbeat(self, df):
         self._initialize_live()
@@ -209,7 +211,7 @@ class TradingEngine:
 
         bar_timestamp = df.index[-1]
         if self.last_processed_timestamp is not None and bar_timestamp == self.last_processed_timestamp:
-            # Polling may happen many times during the same 5-minute bar.  Keep
+            # Polling may happen many times during the same 5-minute bar. Keep
             # live reconciliation running, but never count the same candle as a
             # new bar or allow a duplicate/pyramiding entry from it.
             return self._live_heartbeat(df) if self.live else self.last_state
@@ -252,7 +254,18 @@ class TradingEngine:
             display_equity = self.adapter.equity()
         else:
             display_equity = self.settings.initial_capital + self.realized_pnl + open_pnl
-        result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": display_equity, "live_halted": self.safety.halted, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
+        result.state.stats = {
+            "closed_trades": float(self.closed_trades),
+            "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0,
+            "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else None,
+            "realized_pnl": self.realized_pnl,
+            "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0,
+            "open_pnl": open_pnl,
+            "equity": display_equity,
+            "live_halted": self.safety.halted,
+            "live_safety_reason": self.safety.reason,
+            "protection_ok": self.safety.protection_ok,
+        }
         self.last_state = result.state
         self.equity_curve.append({"bar": self.bar_number, "timestamp": bar_timestamp.isoformat() if hasattr(bar_timestamp, "isoformat") else str(bar_timestamp), "equity": display_equity})
         return result.state
@@ -260,6 +273,16 @@ class TradingEngine:
     def _halted_state(self, df):
         state = self.strategy._not_ready(self.settings.symbol, self.settings.timeframe, f"LIVE_HALTED:{self.safety.reason}", df).state
         state.position = self.position
-        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.adapter.equity() if self.live else self.settings.initial_capital + self.realized_pnl, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
+        state.stats = {
+            "closed_trades": float(self.closed_trades),
+            "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0,
+            "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else None,
+            "realized_pnl": self.realized_pnl,
+            "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0,
+            "equity": self.adapter.equity() if self.live else self.settings.initial_capital + self.realized_pnl,
+            "live_halted": True,
+            "live_safety_reason": self.safety.reason,
+            "protection_ok": self.safety.protection_ok,
+        }
         self.last_state = state
         return state
