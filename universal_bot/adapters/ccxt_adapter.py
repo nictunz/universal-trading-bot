@@ -6,14 +6,24 @@ import pandas as pd
 import ccxt
 
 from universal_bot.adapters.base import MarketAdapter
+from universal_bot.providers.coinapi import CoinAPIMarketData
 
 
 class CCXTAdapter(MarketAdapter):
     asset_class = "crypto"
 
-    def __init__(self, exchange_id: str, api_key: str = "", secret: str = "", password: str = ""):
+    def __init__(
+        self,
+        exchange_id: str,
+        api_key: str = "",
+        secret: str = "",
+        password: str = "",
+        *,
+        coinapi_api_key: str = "",
+        fallback_exchanges: list[str] | None = None,
+    ):
         exchange_class = getattr(ccxt, exchange_id)
-        params = {"enableRateLimit": True}
+        params = {"enableRateLimit": True, "options": {"defaultType": "swap"}}
         if api_key:
             params.update({"apiKey": api_key, "secret": secret})
             if password:
@@ -22,6 +32,9 @@ class CCXTAdapter(MarketAdapter):
         self.exchange = exchange_class(params)
         self.exchange.load_markets()
         self._volume_exchanges: dict[str, object] = {exchange_id: self.exchange}
+        self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
+        self._coinapi = CoinAPIMarketData(coinapi_api_key)
+        self._volume_status: dict[str, dict[str, str]] = {}
 
     @staticmethod
     def _candidates(symbol: str) -> list[str]:
@@ -36,7 +49,7 @@ class CCXTAdapter(MarketAdapter):
         cached = self._volume_exchanges.get(exchange_id)
         if cached is not None:
             return cached
-        ex = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+        ex = getattr(ccxt, exchange_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         ex.load_markets()
         self._volume_exchanges[exchange_id] = ex
         return ex
@@ -62,22 +75,47 @@ class CCXTAdapter(MarketAdapter):
 
     def fetch_volume_sources(self, symbol: str, timeframe: str, limit: int = 1000) -> dict[str, pd.Series]:
         out: dict[str, pd.Series] = {}
+        status: dict[str, dict[str, str]] = {}
         for exchange_id in ("binance", "bitget", "okx", "bybit"):
+            direct_error: Exception | None = None
             try:
                 ex = self._public_exchange(exchange_id)
                 df = self._fetch(ex, symbol, timeframe, limit)
                 if not df.empty:
-                    out[exchange_id] = df.volume
-            except Exception:
-                continue
+                    out[exchange_id] = df.volume.astype(float)
+                    status[exchange_id] = {"mode": "DIRECT", "status": "OK"}
+                    continue
+                direct_error = RuntimeError("empty direct OHLCV response")
+            except Exception as exc:
+                direct_error = exc
+
+            if exchange_id in self._fallback_exchanges and self._coinapi.enabled:
+                try:
+                    df = self._coinapi.fetch_latest(exchange_id, symbol, timeframe, limit)
+                    if not df.empty:
+                        out[exchange_id] = df.volume.astype(float)
+                        status[exchange_id] = {"mode": "PROVIDER", "status": "OK"}
+                        continue
+                    raise RuntimeError("empty provider OHLCV response")
+                except Exception as exc:
+                    status[exchange_id] = {"mode": "PROVIDER", "status": "FAIL", "error": str(exc)[:180]}
+                    continue
+
+            mode = "PROVIDER_NOT_CONFIGURED" if exchange_id in self._fallback_exchanges else "DIRECT"
+            status[exchange_id] = {
+                "mode": mode,
+                "status": "FAIL",
+                "error": str(direct_error)[:180] if direct_error else "unknown volume-source error",
+            }
+        self._volume_status = status
         return out
+
+    def volume_source_status(self) -> dict[str, dict[str, str]]:
+        return {k: dict(v) for k, v in self._volume_status.items()}
 
     def equity(self) -> float:
         balance = self.exchange.fetch_balance()
         usdt = balance.get("USDT") or balance.get("USDT:USDT") or {}
-        # Total equity is the correct sizing/reference basis for derivatives;
-        # free balance shrinks when margin is reserved and would otherwise make
-        # live sizing/statistics drift after opening a position.
         return float(usdt.get("total", 0.0) or usdt.get("free", 0.0) or 0.0)
 
     def _market(self, symbol: str) -> dict:
