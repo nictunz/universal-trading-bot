@@ -8,6 +8,7 @@ from universal_bot.backtest_service import _dt
 from universal_bot.config import Settings
 from universal_bot.engine import TradingEngine
 from universal_bot.indicators import dmi_adx, rolling_range_percent, rsi, sma
+from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
 
 
@@ -80,6 +81,23 @@ def test_precomputed_indicator_path_matches_direct_strategy():
     assert cached_result.signal.side == direct.signal.side
     assert cached_result.signal.reason == direct.signal.reason
     assert abs(cached_result.state.values["adx"] - direct.state.values["adx"]) < 1e-12
+
+
+def test_four_exchange_volume_requires_every_source_on_each_bar():
+    idx = pd.date_range("2026-01-01", periods=5, freq="5min", tz="UTC")
+    sources = {
+        "binance": pd.Series([1, 1, 2, 1, 1], index=idx, dtype=float),
+        "bitget": pd.Series([1, 1, 2, 1, 1], index=idx, dtype=float),
+        "okx": pd.Series([1, 1, 2, 1, 1], index=idx, dtype=float),
+        "bybit": pd.Series([1, 1, 2, 1, 1], index=idx, dtype=float),
+    }
+    ratio = normalize_exchange_volume(sources, 2, required_sources=4)
+    assert pd.isna(ratio.iloc[0])
+    assert np.isclose(ratio.iloc[2], 4 / 3)
+
+    sources["bybit"] = sources["bybit"].drop(idx[2])
+    strict = normalize_exchange_volume(sources, 2, required_sources=4)
+    assert pd.isna(strict.loc[idx[2]])
 
 
 def test_default_start_date_is_timezone_aware():
