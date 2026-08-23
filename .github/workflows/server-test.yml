@@ -1,6 +1,14 @@
 name: server-verification
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/server-test.yml'
+      - 'pyproject.toml'
   workflow_dispatch:
     inputs:
       run_backtest:
@@ -14,7 +22,6 @@ on:
         default: true
         type: boolean
 
-# Manual only: this runner is the user's trading server.
 permissions:
   contents: read
 
@@ -63,14 +70,14 @@ jobs:
           pytest -q
 
       - name: Backtest
-        if: ${{ inputs.run_backtest }}
+        if: ${{ github.event_name == 'push' || inputs.run_backtest }}
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
           python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01
 
       - name: Indicator benchmark
-        if: ${{ inputs.benchmark }}
+        if: ${{ github.event_name == 'push' || inputs.benchmark }}
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
