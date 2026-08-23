@@ -40,6 +40,12 @@ class TradingEngine:
     def _internal_position_dict(self) -> dict:
         return {"side": self.position.side if not self.position.flat else "FLAT", "size": abs(self.position.size), "entry_price": self.position.entry_price or 0.0}
 
+    def _emergency_flatten(self, symbol: str, amount: float, side: str) -> None:
+        try:
+            self.adapter.market_order(symbol, side, amount, reduce_only=True)
+        except Exception as exc:
+            self.safety.fail(f"EMERGENCY_FLATTEN_FAILED: {type(exc).__name__}: {exc}")
+
     def _initialize_live(self) -> None:
         if not self.live or self._live_initialized:
             return
@@ -93,7 +99,8 @@ class TradingEngine:
         if self.live:
             if not self.safety.can_open:
                 return
-            order = self.adapter.market_order(self.settings.symbol, "buy" if side == "LONG" else "sell", amount, tp_price=tp_price, sl_price=sl_price)
+            order_side = "buy" if side == "LONG" else "sell"
+            order = self.adapter.market_order(self.settings.symbol, order_side, amount, tp_price=tp_price, sl_price=sl_price)
             if not order:
                 self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
                 return
@@ -102,7 +109,8 @@ class TradingEngine:
             protection = self.adapter.protection_status(self.settings.symbol)
             self.safety.protection_ok = bool(protection.get("ok"))
             if self.settings.require_exchange_protection and not self.safety.protection_ok:
-                self.safety.fail("ENTRY_FILLED_BUT_PROTECTION_NOT_VERIFIED")
+                self._emergency_flatten(self.settings.symbol, actual_amount, "sell" if side == "LONG" else "buy")
+                self.safety.fail("ENTRY_FILLED_BUT_PROTECTION_NOT_VERIFIED_EMERGENCY_FLATTEN")
                 return
         signed_amount = actual_amount if side == "LONG" else -actual_amount
         if self.position.flat:
