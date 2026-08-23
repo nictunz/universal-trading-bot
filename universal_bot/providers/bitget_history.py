@@ -57,8 +57,6 @@ class BitgetHistoricalMarketData:
         step = self.timeframe_ms(timeframe)
         start_ms = self._ms(start)
         end_ms = self._ms(end)
-        # Align endTime to the candle boundary. The API may otherwise include
-        # one extra candle around an interval boundary.
         cursor = (end_ms // step) * step
         rows: dict[int, list[str]] = {}
         calls = 0
@@ -91,15 +89,21 @@ class BitgetHistoricalMarketData:
                     rows[ts] = item
             if not timestamps:
                 break
+
             oldest = min(timestamps)
             if oldest <= start_ms:
                 break
-            next_cursor = oldest - step
+
+            # Bitget's endTime behaves as an exclusive boundary on some history
+            # responses. Moving to oldest-step therefore skips exactly one candle
+            # at every page boundary (~one 10-minute gap per 200 rows on 5m data).
+            # Reuse oldest as the next boundary; if the endpoint is inclusive this
+            # creates a one-row overlap, which the timestamp dict safely de-dupes.
+            next_cursor = oldest
             if next_cursor >= cursor:
                 break
             cursor = next_cursor
             calls += 1
-            # Stay comfortably below Bitget's public endpoint rate limit.
             if calls % 10 == 0:
                 time.sleep(0.10)
 
