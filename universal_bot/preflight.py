@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from universal_bot.config import Settings
-from universal_bot.main import build_adapter
+from universal_bot.adapters import CCXTAdapter, YFinanceMarketAdapter
+
+
+def _adapter(settings: Settings):
+    if settings.asset_class.lower() in {"stock", "stocks", "etf", "equity"}:
+        return YFinanceMarketAdapter()
+    keys = {"binance": (settings.binance_api_key, settings.binance_api_secret, ""), "bitget": (settings.bitget_api_key, settings.bitget_api_secret, settings.bitget_api_passphrase), "okx": (settings.okx_api_key, settings.okx_api_secret, settings.okx_api_passphrase), "bybit": (settings.bybit_api_key, settings.bybit_api_secret, "")}
+    key, secret, password = keys.get(settings.exchange.lower(), ("", "", ""))
+    return CCXTAdapter(settings.exchange.lower(), key, secret, password)
 
 
 def check_live_readiness(settings: Settings | None = None) -> dict:
@@ -14,7 +22,7 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
         checks.append({"name": "exchange", "ok": False, "reason": "LIVE is restricted to Bitget"})
         return {"ready": False, "checks": checks, "timestamp": datetime.now(timezone.utc).isoformat()}
     try:
-        adapter = build_adapter(settings)
+        adapter = _adapter(settings)
         market = adapter.exchange.market(settings.symbol)
         checks.append({"name": "market", "ok": bool(market and market.get("active", True)), "contract": bool(market.get("contract")), "contract_size": market.get("contractSize")})
         checks.append({"name": "fetch_positions", "ok": bool(adapter.exchange.has.get("fetchPositions"))})
