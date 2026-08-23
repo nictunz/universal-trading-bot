@@ -8,6 +8,10 @@ import pandas as pd
 from universal_bot.backtest import run_backtest
 from universal_bot.config import Settings
 from universal_bot.historical import DataRequest, HistoricalDataManager
+from universal_bot.paper import normalize_exchange_volume
+
+
+FOUR_CRYPTO_EXCHANGES = ("binance", "bitget", "okx", "bybit")
 
 
 def _dt(value: str | None, *, end_of_day: bool = False) -> datetime | None:
@@ -31,7 +35,7 @@ def _timeframe_minutes(timeframe: str) -> int | None:
     return None
 
 
-def _validate_crypto_data(df: pd.DataFrame, timeframe: str) -> None:
+def _validate_crypto_data(df: pd.DataFrame, timeframe: str, *, label: str = "OHLCV") -> None:
     if len(df) < 2:
         return
     minutes = _timeframe_minutes(timeframe)
@@ -41,7 +45,41 @@ def _validate_crypto_data(df: pd.DataFrame, timeframe: str) -> None:
     gaps = diffs[diffs > minutes * 1.5]
     if not gaps.empty:
         largest = float(gaps.max())
-        raise ValueError(f"incomplete OHLCV data: {len(gaps)} gap(s), largest gap {largest:.1f} minutes")
+        raise ValueError(f"incomplete {label} data: {len(gaps)} gap(s), largest gap {largest:.1f} minutes")
+
+
+def _historical_four_exchange_ratio(
+    manager: HistoricalDataManager,
+    symbol: str,
+    timeframe: str,
+    start: datetime,
+    end: datetime | None,
+    lookback: int,
+) -> tuple[pd.Series, int, dict[str, int]]:
+    volumes: dict[str, pd.Series] = {}
+    inserted_total = 0
+    source_bars: dict[str, int] = {}
+    for exchange_id in FOUR_CRYPTO_EXCHANGES:
+        request = DataRequest(
+            symbol=symbol,
+            timeframe=timeframe,
+            start=start,
+            end=end,
+            asset_class="crypto",
+            exchange=exchange_id,
+        )
+        inserted, source_df = manager.sync(request)
+        inserted_total += inserted
+        if source_df.empty:
+            raise ValueError(f"missing required {exchange_id} futures data for four-exchange volume")
+        _validate_crypto_data(source_df, timeframe, label=exchange_id)
+        source_bars[exchange_id] = len(source_df)
+        volumes[exchange_id] = source_df["volume"].astype(float)
+
+    if set(volumes) != set(FOUR_CRYPTO_EXCHANGES):
+        raise ValueError("all four crypto exchanges are required for v15 normalized volume")
+    ratio = normalize_exchange_volume(volumes, lookback, required_sources=4)
+    return ratio, inserted_total, source_bars
 
 
 def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str = "bitget", timeframe: str = "5m", start: str | None = None, end: str | None = None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -69,10 +107,26 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         raise ValueError(f"no OHLCV data for {symbol} ({asset_class}/{exchange}/{timeframe}) in the requested range")
     if len(df) < 10:
         raise ValueError(f"insufficient OHLCV data: only {len(df)} bars returned")
-    if asset_class.lower() == "crypto":
-        _validate_crypto_data(df, timeframe)
 
-    result = run_backtest(df, settings)
+    normalized_volume_ratio = None
+    source_bars: dict[str, int] = {}
+    if asset_class.lower() == "crypto":
+        _validate_crypto_data(df, timeframe, label=exchange.lower())
+        if settings.use_four_crypto_exchanges:
+            normalized_volume_ratio, source_inserted, source_bars = _historical_four_exchange_ratio(
+                manager,
+                symbol,
+                timeframe,
+                request.start,
+                request.end,
+                settings.volume_lookback,
+            )
+            inserted += source_inserted
+            valid = normalized_volume_ratio.reindex(df.index).notna()
+            if int(valid.sum()) < max(settings.volume_lookback, 10):
+                raise ValueError("insufficient common four-exchange volume history")
+
+    result = run_backtest(df, settings, normalized_volume_ratio=normalized_volume_ratio)
     return {
         "strategy": "Volume Strategy FINAL Universal v15",
         "symbol": symbol,
@@ -85,6 +139,8 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         "data_end": df.index[-1].isoformat(),
         "bars": len(df),
         "inserted": inserted,
+        "four_exchange_volume": bool(normalized_volume_ratio is not None),
+        "volume_source_bars": source_bars,
         "trades": result.trades,
         "wins": result.wins,
         "win_rate": result.win_rate,
