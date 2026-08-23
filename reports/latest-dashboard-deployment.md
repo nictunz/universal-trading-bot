@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T15:25:36Z
-- Source commit: df06e5eeae01ca51c9d308a7392cdd7dc253f952
+- Generated UTC: 2026-08-23T15:28:08Z
+- Source commit: 6cdc938c230a5bc7faf972821070f1816cff31ef
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -27,6 +27,7 @@ Obtaining file:///home/kpj3669/universal-trading-bot-dashboard
   Preparing editable metadata (pyproject.toml): finished with status 'done'
 Requirement already satisfied: pandas>=2.0 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (2.3.3)
 Requirement already satisfied: numpy>=1.24 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (2.2.6)
+Requirement already satisfied: requests>=2.32 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (2.34.2)
 Requirement already satisfied: python-dotenv>=1.0 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (1.2.3)
 Requirement already satisfied: pydantic>=2.0 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (2.13.4)
 Requirement already satisfied: pydantic-settings>=2.0 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (2.15.0)
@@ -35,7 +36,6 @@ Requirement already satisfied: fastapi>=0.110 in /home/kpj3669/.cache/universal-
 Requirement already satisfied: uvicorn>=0.29 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (0.52.4)
 Requirement already satisfied: yfinance>=0.2.40 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from universal-trading-bot==0.1.0) (1.6.0)
 Requirement already satisfied: certifi==2026.6.17 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from ccxt>=4.0->universal-trading-bot==0.1.0) (2026.6.17)
-Requirement already satisfied: requests<3,>=2.32 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from ccxt>=4.0->universal-trading-bot==0.1.0) (2.34.2)
 Requirement already satisfied: cryptography<51,>=50 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from ccxt>=4.0->universal-trading-bot==0.1.0) (50.0.0)
 Requirement already satisfied: typing_extensions==4.16.0 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from ccxt>=4.0->universal-trading-bot==0.1.0) (4.16.0)
 Requirement already satisfied: aiohttp<3.15,>=3.14.3 in /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/lib/python3.10/site-packages (from ccxt>=4.0->universal-trading-bot==0.1.0) (3.14.3)
@@ -82,8 +82,8 @@ Requirement already satisfied: soupsieve>=1.6.1 in /home/kpj3669/.cache/universa
 Building wheels for collected packages: universal-trading-bot
   Building editable for universal-trading-bot (pyproject.toml): started
   Building editable for universal-trading-bot (pyproject.toml): finished with status 'done'
-  Created wheel for universal-trading-bot: filename=universal_trading_bot-0.1.0-0.editable-py3-none-any.whl size=3341 sha256=b26405ede936dec97fbc211be8c7e2624dd0d653713687df862e5a4c793bb5b9
-  Stored in directory: /tmp/pip-ephem-wheel-cache-l32m65_5/wheels/ad/01/ea/fdf70051f0e4728ec463290a7f83b2e73eedb4df406597681f
+  Created wheel for universal-trading-bot: filename=universal_trading_bot-0.1.0-0.editable-py3-none-any.whl size=3353 sha256=720e69606c678e828a91fb27fa2cbe15bd9b7d88a12d06d538bb1e2fbd0e47ad
+  Stored in directory: /tmp/pip-ephem-wheel-cache-0pjllhwf/wheels/ad/01/ea/fdf70051f0e4728ec463290a7f83b2e73eedb4df406597681f
 Successfully built universal-trading-bot
 Installing collected packages: universal-trading-bot
   Attempting uninstall: universal-trading-bot
