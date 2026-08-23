@@ -100,5 +100,24 @@ def test_four_exchange_volume_requires_every_source_on_each_bar():
     assert pd.isna(strict.loc[idx[2]])
 
 
+def test_same_closed_candle_is_processed_only_once():
+    settings = Settings(
+        bot_mode="PAPER",
+        use_start_date=False,
+        use_four_crypto_exchanges=False,
+        use_nbar_volatility_block=False,
+        volume_break_multiplier=999.0,
+    )
+    engine = TradingEngine(settings, DummyAdapter(), UniversalV15Strategy(settings))
+    df = make_ohlcv()
+    first = engine.step(df)
+    first_bar_number = engine.bar_number
+    curve_points = len(engine.equity_curve)
+    second = engine.step(df)
+    assert first is second
+    assert engine.bar_number == first_bar_number
+    assert len(engine.equity_curve) == curve_points
+
+
 def test_default_start_date_is_timezone_aware():
     assert Settings().start_date.tzinfo is not None
