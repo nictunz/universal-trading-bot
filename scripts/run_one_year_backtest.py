@@ -11,6 +11,7 @@ from universal_bot.archive_historical import OfficialArchiveHistoricalDataManage
 from universal_bot.backtest_service import run_symbol_backtest, _validate_crypto_data
 from universal_bot.config import Settings
 from universal_bot.historical import DataRequest
+from universal_bot.trade_history import TradeHistoryStore
 
 SYMBOL = os.environ.get("BACKTEST_SYMBOL", "ETH/USDT:USDT")
 TIMEFRAME = os.environ.get("BACKTEST_TIMEFRAME", "5m")
@@ -102,6 +103,13 @@ def main() -> None:
         end=END,
     )
 
+    run_id = f"BT-1Y-{slug}-{TIMEFRAME}-{START}-{END}"
+    TradeHistoryStore().record_backtest(
+        result,
+        run_id=run_id,
+        params={"symbol": SYMBOL, "timeframe": TIMEFRAME, "start": START, "end": END, "source": "one-year-runner"},
+    )
+
     keys = (
         "symbol",
         "bars",
@@ -122,6 +130,7 @@ def main() -> None:
     summary["requested_start"] = START
     summary["requested_end"] = END
     summary["database"] = str(db)
+    summary["run_id"] = run_id
 
     out = Path(os.environ.get("ONE_YEAR_RESULT", str(cache_dir / f"latest-{slug}-one-year-backtest.json")))
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -129,6 +138,7 @@ def main() -> None:
     latest.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
     print(f"RESULT_FILE={out}", flush=True)
+    print(f"TRADE_HISTORY_RUN={run_id}", flush=True)
     print("BACKTEST COMPLETE", flush=True)
 
 
