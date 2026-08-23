@@ -22,8 +22,9 @@ on:
         default: true
         type: boolean
 
+# The runner may only write the generated verification report back to this repo.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -38,50 +39,66 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Runtime information
+        id: runtime
         run: |
           set -euo pipefail
-          echo "===== HOST ====="
-          hostname
-          uname -a
-          echo "===== PYTHON ====="
-          python3 --version
-          echo "===== GIT ====="
-          git rev-parse --short HEAD
-          git status --short
+          mkdir -p .verification
+          {
+            echo "host=$(hostname)"
+            echo "kernel=$(uname -a)"
+            echo "python=$(python3 --version 2>&1)"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee .verification/runtime.txt
 
       - name: Prepare virtual environment
+        id: prepare
+        continue-on-error: true
         run: |
           set -euo pipefail
+          rm -rf .venv-ci
           python3 -m venv .venv-ci
           . .venv-ci/bin/activate
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev]" 2>&1 | tee .verification/install.log
 
       - name: Compile
+        id: compile
+        if: ${{ steps.prepare.outcome == 'success' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          python -m compileall -q universal_bot
+          python -m compileall -q universal_bot 2>&1 | tee .verification/compile.log
 
       - name: Tests
+        id: tests
+        if: ${{ steps.prepare.outcome == 'success' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          pytest -q
+          pytest -q 2>&1 | tee .verification/tests.log
 
       - name: Backtest
-        if: ${{ github.event_name == 'push' || inputs.run_backtest }}
+        id: backtest
+        if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.run_backtest) }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01
+          /usr/bin/time -f 'wall_seconds=%e\nmax_rss_kb=%M' -o .verification/backtest_time.txt \
+            python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
+            2>&1 | tee .verification/backtest.log
 
       - name: Indicator benchmark
-        if: ${{ github.event_name == 'push' || inputs.benchmark }}
+        id: benchmark
+        if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.benchmark) }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           . .venv-ci/bin/activate
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee .verification/benchmark.log
           import time
           import numpy as np
           import pandas as pd
@@ -102,3 +119,88 @@ jobs:
           elapsed = time.perf_counter() - t
           print(f'indicator_100k_bars_seconds={elapsed:.4f}')
           PY
+
+      - name: Publish verification report
+        if: always()
+        env:
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          COMPILE_OUTCOME: ${{ steps.compile.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          BACKTEST_OUTCOME: ${{ steps.backtest.outcome }}
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          REPORT=reports/latest-server-verification.md
+          {
+            echo "# Latest self-hosted server verification"
+            echo
+            echo "- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Runner: $(hostname)"
+            echo "- Event: $GITHUB_EVENT_NAME"
+            echo "- BOT_MODE: PAPER"
+            echo
+            echo "## Outcomes"
+            echo
+            echo "| Check | Outcome |"
+            echo "|---|---|"
+            echo "| Prepare | ${PREPARE_OUTCOME:-not-run} |"
+            echo "| Compile | ${COMPILE_OUTCOME:-not-run} |"
+            echo "| Pytest | ${TESTS_OUTCOME:-not-run} |"
+            echo "| ETH/USDT 5m backtest | ${BACKTEST_OUTCOME:-not-run} |"
+            echo "| 100k indicator benchmark | ${BENCHMARK_OUTCOME:-not-run} |"
+            echo
+            echo "## Runtime"
+            echo '```text'
+            cat .verification/runtime.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Pytest"
+            echo '```text'
+            tail -n 120 .verification/tests.log 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Backtest"
+            echo '```text'
+            cat .verification/backtest_time.txt 2>/dev/null || true
+            tail -n 180 .verification/backtest.log 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Indicator benchmark"
+            echo '```text'
+            cat .verification/benchmark.log 2>/dev/null || true
+            echo '```'
+            echo
+            echo "## Install/compile diagnostics"
+            echo '```text'
+            tail -n 80 .verification/install.log 2>/dev/null || true
+            tail -n 80 .verification/compile.log 2>/dev/null || true
+            echo '```'
+          } > "$REPORT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$REPORT"
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: update server verification report [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce verification result
+        if: always()
+        env:
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          COMPILE_OUTCOME: ${{ steps.compile.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          BACKTEST_OUTCOME: ${{ steps.backtest.outcome }}
+          BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
+        run: |
+          set -euo pipefail
+          for outcome in "$PREPARE_OUTCOME" "$COMPILE_OUTCOME" "$TESTS_OUTCOME" "$BACKTEST_OUTCOME" "$BENCHMARK_OUTCOME"; do
+            if [[ "$outcome" == "failure" ]]; then
+              echo "Verification failed; see reports/latest-server-verification.md"
+              exit 1
+            fi
+          done
+          echo "All executed verification checks passed."
