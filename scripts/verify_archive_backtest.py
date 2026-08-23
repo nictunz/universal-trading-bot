@@ -6,6 +6,9 @@ from pathlib import Path
 
 from universal_bot.backtest_service import run_symbol_backtest
 
+# This script intentionally uses a fixed, fully archived two-day window so the
+# self-hosted smoke test is deterministic and does not depend on today's files.
+
 
 def main() -> None:
     db = Path(os.environ.get("ARCHIVE_SMOKE_DB", "/tmp/universal-bot-archive-smoke.db"))
