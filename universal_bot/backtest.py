@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import timezone
 import math
+import numpy as np
 import pandas as pd
 from universal_bot.config import Settings
-from universal_bot.engine import TradingEngine
-from universal_bot.strategy.v15 import UniversalV15Strategy
 from universal_bot.indicators import dmi_adx, rolling_range_percent, rsi, sma
 
 
@@ -60,74 +60,181 @@ def run_backtest(
     settings: Settings,
     normalized_volume_ratio: pd.Series | None = None,
 ) -> BacktestResult:
-    """Deterministic bar-by-bar simulation with indicators vectorized once.
+    """Fast deterministic v15 bar simulation.
 
-    Historical crypto signals can consume the same four-exchange normalized
-    volume ratio as live v15. Reported PnL is net of configurable taker fees
-    and slippage; gross PnL is preserved separately for auditability.
+    Rolling indicators are vectorized once, then the trading state is advanced
+    with scalar/NumPy values only.  This preserves the live engine's ordering:
+    signal evaluation -> TP/SL close -> optional same-bar entry/pyramid.
     """
-    class BacktestAdapter:
-        asset_class = settings.asset_class
-        def equity(self) -> float:
-            return settings.initial_capital
-        def market_order(self, *args, **kwargs):
-            return {"mode": "BACKTEST", "args": args}
-        def fetch_volume_sources(self, *args, **kwargs):
-            return {}
-
-    total = len(df)
-    if total == 0:
+    if len(df) == 0:
         return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0, [], [])
 
     prepared = df.sort_index().loc[~df.index.duplicated(keep="last")].copy()
-    close = prepared["close"].astype(float)
-    high = prepared["high"].astype(float)
-    low = prepared["low"].astype(float)
-    volume = prepared["volume"].astype(float)
+    total = len(prepared)
+    close_s = prepared["close"].astype(float)
+    high_s = prepared["high"].astype(float)
+    low_s = prepared["low"].astype(float)
+    volume_s = prepared["volume"].astype(float)
 
     if normalized_volume_ratio is not None:
-        prepared["_v15_volume_ratio"] = normalized_volume_ratio.reindex(prepared.index)
+        volume_ratio_s = normalized_volume_ratio.reindex(prepared.index)
     else:
-        vol_avg = sma(volume, settings.volume_lookback)
-        prepared["_v15_volume_ratio"] = volume / vol_avg.replace(0, math.nan)
-    prepared["_v15_n_range"] = rolling_range_percent(high, low, settings.volatility_bars)
-    prepared["_v15_block_range"] = rolling_range_percent(high, low, settings.nbar_volatility_bars)
-    _, _, adx_series = dmi_adx(high, low, close, settings.adx_length)
-    prepared["_v15_adx"] = adx_series
-    prepared["_v15_rsi"] = rsi(close, settings.rsi_length)
+        vol_avg = sma(volume_s, settings.volume_lookback)
+        volume_ratio_s = volume_s / vol_avg.replace(0, math.nan)
+    n_range_s = rolling_range_percent(high_s, low_s, settings.volatility_bars)
+    block_range_s = rolling_range_percent(high_s, low_s, settings.nbar_volatility_bars)
+    _, _, adx_s = dmi_adx(high_s, low_s, close_s, settings.adx_length)
+    rsi_s = rsi(close_s, settings.rsi_length)
 
-    strategy = UniversalV15Strategy(settings)
-    engine = TradingEngine(settings, BacktestAdapter(), strategy)
+    opens = prepared["open"].to_numpy(dtype=float, copy=False)
+    closes = close_s.to_numpy(dtype=float, copy=False)
+    volume_ratio = volume_ratio_s.to_numpy(dtype=float, copy=False)
+    n_range = n_range_s.to_numpy(dtype=float, copy=False)
+    block_range = block_range_s.to_numpy(dtype=float, copy=False)
+    adx = adx_s.to_numpy(dtype=float, copy=False)
+    rsi_values = rsi_s.to_numpy(dtype=float, copy=False)
+    index = prepared.index
+
     warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, 200)
-    start_bar = min(warmup, total - 1)
-    history_bars = max(warmup + 50, 300)
+    start_idx = min(warmup, total - 1)
+    excluded_hours = {x.strip() for x in settings.excluded_hours.split(",") if x.strip()}
+    start_date = settings.start_date
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    else:
+        start_date = start_date.astimezone(timezone.utc)
 
-    for end in range(start_bar + 1, total + 1):
-        start = max(0, end - history_bars)
-        window = prepared.iloc[start:end]
-        row = prepared.iloc[end - 1]
-        cached = {
-            "volume_ratio": float(row["_v15_volume_ratio"]) if pd.notna(row["_v15_volume_ratio"]) else math.nan,
-            "n_range": float(row["_v15_n_range"]) if pd.notna(row["_v15_n_range"]) else math.nan,
-            "block_range": float(row["_v15_block_range"]) if pd.notna(row["_v15_block_range"]) else math.nan,
-            "adx": float(row["_v15_adx"]) if pd.notna(row["_v15_adx"]) else math.nan,
-            "rsi": float(row["_v15_rsi"]) if pd.notna(row["_v15_rsi"]) else math.nan,
-        }
-        engine.step(window, precomputed=cached)
-        if total >= 5000 and (end == start_bar + 1 or end % 5000 == 0 or end == total):
-            print(f"[BACKTEST] {end:,}/{total:,} ({end / total * 100.0:.1f}%) trades={engine.closed_trades}", flush=True)
+    initial_capital = float(settings.initial_capital)
+    order_notional = initial_capital * float(settings.order_percent_of_equity) / 100.0
 
-    adjusted_log, estimated_costs, net_pnl, net_wins, net_pf = _apply_execution_costs(engine.trade_log, settings)
-    gross_pnl = float(engine.realized_pnl)
+    position_side: str | None = None
+    position_size = 0.0
+    initial_entry = 0.0
+    entry_notional = 0.0
+    position_tp = math.nan
+    position_sl = math.nan
+    entries = 0
+    last_entry_bar: int | None = None
+    last_exit_bar: int | None = None
+    bar_number = 0
+    realized_pnl = 0.0
+    trade_log: list[dict] = []
+    equity_curve: list[dict] = []
+
+    for i in range(start_idx, total):
+        bar_number += 1
+        bars_since_entry = None if last_entry_bar is None else bar_number - last_entry_bar
+        bars_since_exit = None if last_exit_bar is None else bar_number - last_exit_bar
+        o = opens[i]
+        c = closes[i]
+        vr = volume_ratio[i]
+        nr = n_range[i]
+        br = block_range[i]
+        av = adx[i]
+        rv = rsi_values[i]
+
+        one_bar_vol = abs(c - o) / o * 100.0 if o else 0.0
+        raw_tp = nr * float(settings.tp_vol_multiplier) if np.isfinite(nr) else math.nan
+        raw_sl = nr * float(settings.sl_vol_multiplier) if np.isfinite(nr) else math.nan
+        final_tp = max(settings.min_tp_percent, min(settings.max_tp_percent, raw_tp)) if np.isfinite(raw_tp) else math.nan
+        final_sl = max(settings.min_sl_percent, min(settings.max_sl_percent, raw_sl)) if np.isfinite(raw_sl) else math.nan
+
+        ts = index[i]
+        current_time = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else ts
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        else:
+            current_time = current_time.astimezone(timezone.utc)
+        time_ok = ((not settings.use_start_date) or current_time >= start_date)
+        time_ok = time_ok and ((not settings.block_weekend) or current_time.weekday() < 5)
+        time_ok = time_ok and (current_time.strftime("%H") not in excluded_hours)
+        cooldown_ok = (bars_since_entry is None or bars_since_entry >= settings.cooldown_bars) and (bars_since_exit is None or bars_since_exit >= settings.reentry_bars)
+        nbar_ok = (not settings.use_nbar_volatility_block) or (np.isfinite(br) and br <= settings.max_nbar_volatility)
+        adx_ok = (not settings.use_adx_filter) or (np.isfinite(av) and settings.adx_min <= av <= settings.adx_max)
+        base_entry = (
+            np.isfinite(vr) and vr >= settings.volume_break_multiplier
+            and settings.min_one_bar_vol <= one_bar_vol <= settings.max_one_bar_vol
+            and nbar_ok and adx_ok and time_ok and cooldown_ok
+        )
+        oversold = np.isfinite(rv) and settings.rsi_oversold_min <= rv <= settings.rsi_oversold_max
+        overbought = np.isfinite(rv) and settings.rsi_overbought_min <= rv <= settings.rsi_overbought_max
+        long_ok = (not settings.use_rsi_filter) or oversold
+        short_ok = (not settings.use_rsi_filter) or overbought
+        signal: str | None = None
+        if base_entry and settings.allow_long and c < o and long_ok:
+            signal = "LONG"
+        elif base_entry and settings.allow_short and c > o and short_ok:
+            signal = "SHORT"
+
+        # Live engine checks exits after evaluating the signal for this candle.
+        if position_side is not None:
+            hit_tp = (position_side == "LONG" and c >= position_tp) or (position_side == "SHORT" and c <= position_tp)
+            hit_sl = (position_side == "LONG" and c <= position_sl) or (position_side == "SHORT" and c >= position_sl)
+            if hit_tp or hit_sl:
+                qty = abs(position_size)
+                avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
+                pnl = (c - avg_entry) * qty if position_side == "LONG" else (avg_entry - c) * qty
+                realized_pnl += pnl
+                trade_log.append({
+                    "trade": len(trade_log) + 1,
+                    "side": position_side,
+                    "entry_price": initial_entry,
+                    "avg_entry_price": avg_entry,
+                    "exit_price": c,
+                    "qty": qty,
+                    "pnl": pnl,
+                    "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0,
+                    "reason": "TP" if hit_tp else "SL",
+                    "bar": bar_number,
+                })
+                position_side = None
+                position_size = 0.0
+                initial_entry = 0.0
+                entry_notional = 0.0
+                position_tp = math.nan
+                position_sl = math.nan
+                entries = 0
+                last_exit_bar = bar_number
+
+        can_pyramid = entries < settings.max_pyramiding
+        same_direction = position_side is None or position_side == signal
+        if signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
+            amount = order_notional / c if c > 0 else 0.0
+            if amount > 0:
+                signed = amount if signal == "LONG" else -amount
+                if position_side is None:
+                    position_side = signal
+                    position_size = signed
+                    initial_entry = c
+                    entry_notional = amount * c
+                    position_tp = c * (1 + final_tp / 100.0) if signal == "LONG" else c * (1 - final_tp / 100.0)
+                    position_sl = c * (1 - final_sl / 100.0) if signal == "LONG" else c * (1 + final_sl / 100.0)
+                    entries = 1
+                else:
+                    entries += 1
+                    position_size += signed
+                    entry_notional += amount * c
+                last_entry_bar = bar_number
+
+        open_pnl = 0.0
+        if position_side is not None:
+            qty = abs(position_size)
+            avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
+            open_pnl = (c - avg_entry) * qty if position_side == "LONG" else (avg_entry - c) * qty
+        equity_curve.append({"bar": bar_number, "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts), "equity": initial_capital + realized_pnl + open_pnl})
+
+    adjusted_log, estimated_costs, net_pnl, net_wins, net_pf = _apply_execution_costs(trade_log, settings)
+    gross_pnl = float(realized_pnl)
 
     cost_by_bar: dict[int, float] = {}
     for t in adjusted_log:
-        cost_by_bar[int(t.get("bar") or 0)] = cost_by_bar.get(int(t.get("bar") or 0), 0.0) + float(t.get("estimated_cost") or 0.0)
+        b = int(t.get("bar") or 0)
+        cost_by_bar[b] = cost_by_bar.get(b, 0.0) + float(t.get("estimated_cost") or 0.0)
     running_cost = 0.0
     adjusted_curve = []
-    peak = float(settings.initial_capital)
+    peak = initial_capital
     max_dd = 0.0
-    for point in engine.equity_curve:
+    for point in equity_curve:
         running_cost += cost_by_bar.get(int(point.get("bar") or 0), 0.0)
         equity = float(point["equity"]) - running_cost
         adjusted_point = dict(point)
@@ -146,7 +253,7 @@ def run_backtest(
         pnl=net_pnl,
         gross_pnl=gross_pnl,
         estimated_costs=estimated_costs,
-        return_percent=net_pnl / settings.initial_capital * 100 if settings.initial_capital else 0.0,
+        return_percent=net_pnl / initial_capital * 100 if initial_capital else 0.0,
         max_drawdown_percent=max_dd,
         trades_log=adjusted_log,
         equity_curve=adjusted_curve,
