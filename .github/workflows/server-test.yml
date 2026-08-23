@@ -31,6 +31,7 @@ permissions:
 
 jobs:
   verify:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, trading-bot]
     timeout-minutes: 45
     env:
@@ -129,7 +130,7 @@ jobs:
 
       - name: Backtest
         id: backtest
-        if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.run_backtest) }}
+        if: ${{ steps.prepare.outcome == 'success' && inputs.run_backtest }}
         continue-on-error: true
         run: |
           set -uo pipefail
@@ -148,7 +149,7 @@ jobs:
 
       - name: Performance benchmarks
         id: benchmark
-        if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.benchmark) }}
+        if: ${{ steps.prepare.outcome == 'success' && inputs.benchmark }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -159,7 +160,6 @@ jobs:
           from universal_bot.backtest import run_backtest
           from universal_bot.config import Settings
           from universal_bot.indicators import dmi_adx, rsi, rolling_range_percent, sma
-
           n = 100_000
           idx = pd.date_range('2024-01-01', periods=n, freq='5min', tz='UTC')
           close = pd.Series(2000 + np.linspace(0, 500, n) + np.sin(np.arange(n) / 17), index=idx)
