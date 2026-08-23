@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T15:21:40Z
-- Source commit: 28b2b3fb09429ddcde0d236479b6037ea40c44c8
+- Generated UTC: 2026-08-23T15:23:25Z
+- Source commit: 15396e6f30ae61fa0be3cd79067f0fd59eb5a880
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -18,10 +18,6 @@
 ```text
 Obtaining file:///home/kpj3669/universal-trading-bot-dashboard
   Installing build dependencies: started
-  Installing build dependencies: finished with status 'done'
-  Checking if build backend supports build_editable: started
-  Checking if build backend supports build_editable: finished with status 'done'
-  Getting requirements to build editable: started
 ```
 
 ## HTTP checks
