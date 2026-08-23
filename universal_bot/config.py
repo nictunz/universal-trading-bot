@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,11 +43,19 @@ class Settings(BaseSettings):
     cooldown_bars: int = 6
     reentry_bars: int = 6
     use_start_date: bool = True
-    start_date: datetime = Field(default_factory=lambda: datetime(2024, 1, 1))
+    start_date: datetime = Field(default_factory=lambda: datetime(2024, 1, 1, tzinfo=timezone.utc))
     block_weekend: bool = False
     excluded_hours: str = "00"
     order_percent_of_equity: float = 5.0
     initial_capital: float = 1_000_000.0
+    leverage: int = 50
+    margin_mode: str = "cross"
+    require_exchange_protection: bool = True
+    reconciliation_interval_seconds: int = 10
+    stale_data_seconds: int = 90
+    max_consecutive_api_errors: int = 3
+    live_max_position_notional_percent: float = 10.0
+    live_require_one_way_mode: bool = True
     binance_api_key: str = ""
     binance_api_secret: str = ""
     bitget_api_key: str = ""
