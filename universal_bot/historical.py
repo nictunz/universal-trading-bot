@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
+from universal_bot.providers.bitget_history import BitgetHistoricalMarketData
 from universal_bot.providers.coinapi import CoinAPIMarketData
 
 
@@ -31,6 +32,7 @@ class HistoricalDataManager:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._coinapi = CoinAPIMarketData(coinapi_api_key)
+        self._bitget_history = BitgetHistoricalMarketData()
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
         self.last_fetch_status: dict[str, dict[str, str]] = {}
         self._init_db()
@@ -81,13 +83,22 @@ class HistoricalDataManager:
         return len(rows)
 
     def _fetch_crypto_direct(self, request: DataRequest) -> pd.DataFrame:
-        import ccxt
-        exchange_cls = getattr(ccxt, request.exchange)
-        exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         start = self._ms(request.start)
         end = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
         if start is None:
             raise ValueError("crypto historical requests require a start date")
+
+        if request.exchange.lower() == "bitget":
+            return self._bitget_history.fetch_history(
+                request.symbol,
+                request.timeframe,
+                datetime.fromtimestamp(start / 1000, timezone.utc),
+                datetime.fromtimestamp(end / 1000, timezone.utc),
+            )
+
+        import ccxt
+        exchange_cls = getattr(ccxt, request.exchange)
+        exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         rows: list[list[float]] = []
         since = start
         limit = 1000
@@ -112,7 +123,7 @@ class HistoricalDataManager:
     def _fetch_crypto(self, request: DataRequest) -> pd.DataFrame:
         try:
             df = self._fetch_crypto_direct(request)
-            self.last_fetch_status[request.exchange] = {"mode": "DIRECT", "status": "OK"}
+            self.last_fetch_status[request.exchange] = {"mode": "DIRECT_NATIVE" if request.exchange.lower() == "bitget" else "DIRECT", "status": "OK"}
             return df
         except Exception as direct_exc:
             if request.exchange.lower() in self._fallback_exchanges and self._coinapi.enabled:
@@ -220,7 +231,7 @@ class HistoricalDataManager:
 
         df = self.read(request)
         if request.asset_class == "crypto":
-            for _ in range(2):
+            for _ in range(3):
                 repaired = self._repair_crypto_gaps(request, df)
                 inserted += repaired
                 if repaired == 0:
