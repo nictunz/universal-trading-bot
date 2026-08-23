@@ -60,14 +60,7 @@ def _historical_four_exchange_ratio(
     inserted_total = 0
     source_bars: dict[str, int] = {}
     for exchange_id in FOUR_CRYPTO_EXCHANGES:
-        request = DataRequest(
-            symbol=symbol,
-            timeframe=timeframe,
-            start=start,
-            end=end,
-            asset_class="crypto",
-            exchange=exchange_id,
-        )
+        request = DataRequest(symbol=symbol, timeframe=timeframe, start=start, end=end, asset_class="crypto", exchange=exchange_id)
         inserted, source_df = manager.sync(request)
         inserted_total += inserted
         if source_df.empty:
@@ -113,14 +106,7 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
     if asset_class.lower() == "crypto":
         _validate_crypto_data(df, timeframe, label=exchange.lower())
         if settings.use_four_crypto_exchanges:
-            normalized_volume_ratio, source_inserted, source_bars = _historical_four_exchange_ratio(
-                manager,
-                symbol,
-                timeframe,
-                request.start,
-                request.end,
-                settings.volume_lookback,
-            )
+            normalized_volume_ratio, source_inserted, source_bars = _historical_four_exchange_ratio(manager, symbol, timeframe, request.start, request.end, settings.volume_lookback)
             inserted += source_inserted
             valid = normalized_volume_ratio.reindex(df.index).notna()
             if int(valid.sum()) < max(settings.volume_lookback, 10):
@@ -146,6 +132,10 @@ def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str 
         "win_rate": result.win_rate,
         "profit_factor": result.profit_factor,
         "pnl": result.pnl,
+        "gross_pnl": result.gross_pnl,
+        "estimated_costs": result.estimated_costs,
+        "fee_percent_per_side": settings.backtest_fee_percent,
+        "slippage_percent_per_side": settings.backtest_slippage_percent,
         "return_percent": result.return_percent,
         "max_drawdown_percent": result.max_drawdown_percent,
         "trades_log": result.trades_log,
