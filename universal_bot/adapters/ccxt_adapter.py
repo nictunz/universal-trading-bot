@@ -104,8 +104,7 @@ class CCXTAdapter(MarketAdapter):
                 side = "LONG" if signed > 0 else "SHORT"
             else:
                 side = side.upper()
-            base_size = self._from_exchange_contracts(symbol, contracts)
-            nonzero.append({"side": side, "size": base_size, "contracts": abs(contracts), "entry_price": float(p.get("entryPrice") or 0.0), "mark_price": float(p.get("markPrice") or 0.0), "notional": abs(float(p.get("notional") or 0.0)), "leverage": float(p.get("leverage") or 0.0), "margin_mode": p.get("marginMode"), "raw": p})
+            nonzero.append({"side": side, "size": self._from_exchange_contracts(symbol, contracts), "contracts": abs(contracts), "entry_price": float(p.get("entryPrice") or 0.0), "mark_price": float(p.get("markPrice") or 0.0), "notional": abs(float(p.get("notional") or 0.0)), "leverage": float(p.get("leverage") or 0.0), "margin_mode": p.get("marginMode"), "raw": p})
         if len(nonzero) > 1:
             raise RuntimeError(f"multiple non-zero positions returned for {symbol}; one-way mode required")
         return nonzero[0] if nonzero else {"side": "FLAT", "size": 0.0, "entry_price": 0.0, "notional": 0.0}
@@ -117,7 +116,9 @@ class CCXTAdapter(MarketAdapter):
             return {"ok": False, "supported": False, "reason": "Bitget leverage/margin API unsupported by installed CCXT"}
         self.exchange.set_margin_mode(margin_mode, symbol)
         self.exchange.set_leverage(int(leverage), symbol)
-        if require_one_way and self.exchange.has.get("setPositionMode"):
+        if require_one_way:
+            if not self.exchange.has.get("setPositionMode"):
+                return {"ok": False, "supported": True, "reason": "cannot verify/enforce one-way position mode"}
             try:
                 self.exchange.set_position_mode(False, symbol)
             except Exception as exc:
