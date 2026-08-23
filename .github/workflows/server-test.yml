@@ -85,11 +85,15 @@ jobs:
         if: ${{ steps.prepare.outcome == 'success' && (github.event_name == 'push' || inputs.run_backtest) }}
         continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           . .venv-ci/bin/activate
-          /usr/bin/time -f 'wall_seconds=%e\nmax_rss_kb=%M' -o .verification/backtest_time.txt \
-            python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
+          start_ts=$(date +%s)
+          python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
             2>&1 | tee .verification/backtest.log
+          rc=${PIPESTATUS[0]}
+          end_ts=$(date +%s)
+          echo "wall_seconds=$((end_ts-start_ts))" > .verification/backtest_time.txt
+          exit "$rc"
 
       - name: Indicator benchmark
         id: benchmark
