@@ -1,0 +1,84 @@
+name: official-archive-smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/providers/official_archives.py'
+      - 'universal_bot/archive_historical.py'
+      - 'universal_bot/backtest_service.py'
+      - 'scripts/verify_archive_backtest.py'
+      - 'tests/test_official_archives.py'
+      - '.github/workflows/archive-smoke.yml'
+
+concurrency:
+  group: official-archive-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  archive-smoke:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 15
+    env:
+      VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$VENV/bin/python" ]]; then python3 -m venv "$VENV"; fi
+          "$VENV/bin/python" -m pip install -q -e '.[dev]'
+
+      - name: Unit tests
+        id: unit
+        run: "$VENV/bin/pytest -q tests/test_official_archives.py | tee /tmp/archive-unit.txt"
+
+      - name: Real network two-day four-exchange backtest
+        id: smoke
+        run: "$VENV/bin/python scripts/verify_archive_backtest.py | tee /tmp/archive-smoke.txt"
+
+      - name: Publish report
+        if: always()
+        env:
+          UNIT: ${{ steps.unit.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          report=$(mktemp)
+          {
+            echo '# Latest official archive smoke'
+            echo
+            echo "- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Runner: $(hostname)"
+            echo "- Unit tests: $UNIT"
+            echo "- Real network 4-exchange smoke: $SMOKE"
+            echo
+            echo '## Unit tests'; echo '```text'; cat /tmp/archive-unit.txt 2>/dev/null || true; echo '```'
+            echo '## Four-exchange smoke'; echo '```json'; cat /tmp/archive-smoke.txt 2>/dev/null || true; echo '```'
+            echo '## Memory'; echo '```text'; free -h || true; swapon --show || true; echo '```'
+          } > "$report"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B archive-report origin/main
+          mkdir -p reports
+          cp "$report" reports/latest-official-archive-smoke.md
+          git add reports/latest-official-archive-smoke.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: update official archive smoke report [skip ci]'
+            git push origin HEAD:main
+          fi
+
+      - name: Enforce
+        if: always()
+        env:
+          UNIT: ${{ steps.unit.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          [[ "$UNIT" == success ]]
+          [[ "$SMOKE" == success ]]
