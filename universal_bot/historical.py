@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
+from universal_bot.providers.coinapi import CoinAPIMarketData
+
 
 @dataclass(frozen=True)
 class DataRequest:
@@ -18,10 +20,19 @@ class DataRequest:
 
 
 class HistoricalDataManager:
-    def __init__(self, database_url: str = "sqlite:///data/universal_bot.db") -> None:
+    def __init__(
+        self,
+        database_url: str = "sqlite:///data/universal_bot.db",
+        *,
+        coinapi_api_key: str = "",
+        fallback_exchanges: list[str] | None = None,
+    ) -> None:
         path = database_url.removeprefix("sqlite:///")
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._coinapi = CoinAPIMarketData(coinapi_api_key)
+        self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
+        self.last_fetch_status: dict[str, dict[str, str]] = {}
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -69,10 +80,10 @@ class HistoricalDataManager:
             con.executemany("INSERT OR REPLACE INTO ohlcv (asset_class, exchange, symbol, timeframe, timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
         return len(rows)
 
-    def _fetch_crypto(self, request: DataRequest) -> pd.DataFrame:
+    def _fetch_crypto_direct(self, request: DataRequest) -> pd.DataFrame:
         import ccxt
         exchange_cls = getattr(ccxt, request.exchange)
-        exchange = exchange_cls({"enableRateLimit": True})
+        exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         start = self._ms(request.start)
         end = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
         if start is None:
@@ -98,6 +109,25 @@ class HistoricalDataManager:
         df = df.drop_duplicates("timestamp").set_index("timestamp").sort_index()
         return df[(df.index >= pd.Timestamp(start, unit="ms", tz="UTC")) & (df.index <= pd.Timestamp(end, unit="ms", tz="UTC"))]
 
+    def _fetch_crypto(self, request: DataRequest) -> pd.DataFrame:
+        try:
+            df = self._fetch_crypto_direct(request)
+            self.last_fetch_status[request.exchange] = {"mode": "DIRECT", "status": "OK"}
+            return df
+        except Exception as direct_exc:
+            if request.exchange.lower() in self._fallback_exchanges and self._coinapi.enabled:
+                if request.start is None:
+                    raise ValueError("provider historical requests require a start date") from direct_exc
+                try:
+                    df = self._coinapi.fetch_history(request.exchange, request.symbol, request.timeframe, request.start, request.end)
+                    self.last_fetch_status[request.exchange] = {"mode": "PROVIDER", "status": "OK"}
+                    return df
+                except Exception as provider_exc:
+                    self.last_fetch_status[request.exchange] = {"mode": "PROVIDER", "status": "FAIL", "error": str(provider_exc)[:180]}
+                    raise RuntimeError(f"{request.exchange} direct data failed ({direct_exc}); provider fallback failed ({provider_exc})") from provider_exc
+            self.last_fetch_status[request.exchange] = {"mode": "DIRECT", "status": "FAIL", "error": str(direct_exc)[:180]}
+            raise
+
     def _fetch_yfinance(self, request: DataRequest) -> pd.DataFrame:
         import yfinance as yf
         ticker = request.symbol.replace("/", "-").split(":")[0]
@@ -116,6 +146,7 @@ class HistoricalDataManager:
         df.columns = [str(c).lower() for c in df.columns]
         df = df[["open", "high", "low", "close", "volume"]].copy()
         df.index = pd.to_datetime(df.index, utc=True)
+        self.last_fetch_status[request.exchange] = {"mode": "YFINANCE", "status": "OK"}
         return df
 
     def fetch_and_store(self, request: DataRequest) -> int:
@@ -189,9 +220,6 @@ class HistoricalDataManager:
 
         df = self.read(request)
         if request.asset_class == "crypto":
-            # Old/interrupted downloads can leave holes inside otherwise valid
-            # min/max bounds. Repair those ranges instead of silently failing or
-            # re-downloading the entire year on every verification run.
             for _ in range(2):
                 repaired = self._repair_crypto_gaps(request, df)
                 inserted += repaired
