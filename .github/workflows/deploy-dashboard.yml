@@ -13,6 +13,9 @@ concurrency:
   group: deploy-paper-dashboard
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: [self-hosted, trading-bot]
@@ -74,13 +77,13 @@ jobs:
           sudo systemctl enable universal-trading-bot-dashboard.service
           sudo systemctl restart universal-trading-bot-dashboard.service
           sleep 8
-          sudo systemctl --no-pager --full status universal-trading-bot-dashboard.service
+          sudo systemctl --no-pager --full status universal-trading-bot-dashboard.service | tee /tmp/dashboard-service-status.txt
 
       - name: Verify dashboard locally
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, time, urllib.request
+          python3 - <<'PY' | tee /tmp/dashboard-http-status.txt
+          import time, urllib.request
           urls = [
               'http://127.0.0.1:8000/health',
               'http://127.0.0.1:8000/api/state',
@@ -93,7 +96,7 @@ jobs:
                           body = r.read().decode('utf-8')
                           print(u, r.status, body[:500])
                   break
-              except Exception as exc:
+              except Exception:
                   if attempt == 19:
                       raise
                   time.sleep(2)
@@ -102,4 +105,47 @@ jobs:
       - name: Show listening socket
         run: |
           set -euo pipefail
-          ss -ltnp | grep ':8000' || true
+          ss -ltnp | grep ':8000' | tee /tmp/dashboard-socket.txt
+
+      - name: Publish deployment report
+        if: always()
+        run: |
+          set -euo pipefail
+          REPORT=$(mktemp)
+          {
+            echo '# Latest dashboard deployment'
+            echo
+            echo "- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Source commit: $GITHUB_SHA"
+            echo '- Mode: PAPER'
+            echo '- Host: trading-bot-new'
+            echo '- Bind: 0.0.0.0:8000'
+            echo '- Expected URL: http://34.132.172.40:8000/'
+            echo
+            echo '## Service'
+            echo '```text'
+            cat /tmp/dashboard-service-status.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo '## HTTP checks'
+            echo '```text'
+            cat /tmp/dashboard-http-status.txt 2>/dev/null || true
+            echo '```'
+            echo
+            echo '## Socket'
+            echo '```text'
+            cat /tmp/dashboard-socket.txt 2>/dev/null || true
+            echo '```'
+          } > "$REPORT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B dashboard-deployment-report origin/main
+          mkdir -p reports
+          cp "$REPORT" reports/latest-dashboard-deployment.md
+          git add reports/latest-dashboard-deployment.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: update dashboard deployment report [skip ci]'
+            git push origin HEAD:main
+          fi
