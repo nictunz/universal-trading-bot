@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 
 from universal_bot.config import Settings
 from universal_bot.models import Position
 from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
+from universal_bot.live_safety import LiveSafety
 
 
 class TradingEngine:
@@ -26,26 +28,102 @@ class TradingEngine:
         self.trade_log: list[dict] = []
         self.equity_curve: list[dict] = []
         self.entry_notional = 0.0
+        self.live = settings.bot_mode.upper() == "LIVE"
+        self.safety = LiveSafety(enabled=self.live)
+        self._live_initialized = False
 
     def _amount(self, price: float) -> float:
-        equity = self.settings.initial_capital if self.settings.bot_mode.upper() != "LIVE" else self.adapter.equity()
+        equity = self.settings.initial_capital if not self.live else self.adapter.equity()
         notional = equity * self.settings.order_percent_of_equity / 100.0
         return notional / price if price > 0 else 0.0
+
+    def _internal_position_dict(self) -> dict:
+        return {"side": self.position.side if not self.position.flat else "FLAT", "size": abs(self.position.size), "entry_price": self.position.entry_price or 0.0}
+
+    def _initialize_live(self) -> None:
+        if not self.live or self._live_initialized:
+            return
+        try:
+            result = self.adapter.configure_live(
+                self.settings.symbol,
+                int(self.settings.leverage),
+                str(self.settings.margin_mode).lower(),
+                bool(self.settings.live_require_one_way_mode),
+            )
+            if not result.get("ok"):
+                self.safety.fail(f"LIVE_CONFIGURATION_FAILED: {result.get('reason', result)}")
+                return
+            exchange_pos = self.adapter.position(self.settings.symbol)
+            if exchange_pos.get("side") != "FLAT":
+                self.position = Position(
+                    side=exchange_pos["side"],
+                    size=exchange_pos["size"] if exchange_pos["side"] == "LONG" else -exchange_pos["size"],
+                    entry_price=exchange_pos.get("entry_price") or None,
+                    entries=1,
+                )
+                self.entry_notional = abs(self.position.size) * float(self.position.entry_price or 0.0)
+            self.safety.reconcile(self._internal_position_dict(), exchange_pos)
+            protection = self.adapter.protection_status(self.settings.symbol)
+            self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
+            if not self.position.flat and not self.safety.protection_ok and self.settings.require_exchange_protection:
+                self.safety.fail("EXISTING_POSITION_HAS_NO_VERIFIED_PROTECTION")
+                return
+            self._live_initialized = True
+        except Exception as exc:
+            self.safety.fail(f"LIVE_INITIALIZATION_FAILED: {type(exc).__name__}: {exc}")
+
+    def _reconcile_live(self) -> None:
+        if not self.live:
+            return
+        try:
+            exchange_pos = self.adapter.position(self.settings.symbol)
+            ok = self.safety.reconcile(self._internal_position_dict(), exchange_pos)
+            if not ok:
+                return
+            protection = self.adapter.protection_status(self.settings.symbol)
+            self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
+            if not self.position.flat and self.settings.require_exchange_protection and not self.safety.protection_ok:
+                self.safety.fail("POSITION_LOST_EXCHANGE_PROTECTION")
+        except Exception as exc:
+            self.safety.record_error(f"LIVE_RECONCILIATION_FAILED: {type(exc).__name__}: {exc}", int(self.settings.max_consecutive_api_errors))
 
     def _open(self, side: str, price: float, tp_pct: float, sl_pct: float) -> None:
         amount = self._amount(price)
         if amount <= 0:
             return
-        if self.settings.bot_mode.upper() == "LIVE":
-            self.adapter.market_order(self.settings.symbol, "buy" if side == "LONG" else "sell", amount)
-        signed_amount = amount if side == "LONG" else -amount
+        tp_price = price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100)
+        sl_price = price * (1 - sl_pct / 100) if side == "LONG" else price * (1 + sl_pct / 100)
+        actual_price = price
+        actual_amount = amount
+        if self.live:
+            if not self.safety.can_open:
+                return
+            order = self.adapter.market_order(
+                self.settings.symbol,
+                "buy" if side == "LONG" else "sell",
+                amount,
+                tp_price=tp_price,
+                sl_price=sl_price,
+                trigger_protection=True,
+            )
+            if not order:
+                self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
+                return
+            actual_price = float(order.get("average") or order.get("price") or price)
+            actual_amount = float(order.get("filled") or order.get("amount") or amount)
+            protection = self.adapter.protection_status(self.settings.symbol)
+            self.safety.protection_ok = bool(protection.get("ok"))
+            if self.settings.require_exchange_protection and not self.safety.protection_ok:
+                self.safety.fail("ENTRY_FILLED_BUT_PROTECTION_NOT_VERIFIED")
+                return
+        signed_amount = actual_amount if side == "LONG" else -actual_amount
         if self.position.flat:
-            self.position = Position(side=side, size=signed_amount, entry_price=price, tp=price * (1 + tp_pct / 100) if side == "LONG" else price * (1 - tp_pct / 100), sl=price * (1 - sl_pct / 100) if side == "LONG" else price * (1 + sl_pct / 100), entries=1)
-            self.entry_notional = amount * price
+            self.position = Position(side=side, size=signed_amount, entry_price=actual_price, tp=tp_price, sl=sl_price, entries=1)
+            self.entry_notional = actual_amount * actual_price
         else:
             self.position.entries += 1
             self.position.size += signed_amount
-            self.entry_notional += amount * price
+            self.entry_notional += actual_amount * actual_price
         self.last_entry_bar = self.bar_number
 
     def _open_pnl(self, price: float) -> float:
@@ -62,9 +140,13 @@ class TradingEngine:
         side = self.position.side
         initial_entry = self.position.entry_price
         avg_entry = self.entry_notional / qty if qty and self.entry_notional else initial_entry
+        if self.live:
+            order = self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
+            if not order:
+                self.safety.fail("EXIT_ORDER_EMPTY_RESPONSE")
+                return
+            self.adapter.cancel_protection(self.settings.symbol)
         pnl = (price - avg_entry) * qty if side == "LONG" else (avg_entry - price) * qty
-        if self.settings.bot_mode.upper() == "LIVE":
-            self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
         self.realized_pnl += pnl
         self.closed_trades += 1
         if pnl >= 0:
@@ -81,6 +163,11 @@ class TradingEngine:
         self.bar_number += 1
         bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
         bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
+        if self.live:
+            self._initialize_live()
+            self._reconcile_live()
+            if self.safety.halted:
+                return self._halted_state(df)
 
         normalized_volume = None
         if precomputed is None and self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto":
@@ -94,6 +181,17 @@ class TradingEngine:
 
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
+        if self.live and len(df.index):
+            ts = df.index[-1]
+            if hasattr(ts, "to_pydatetime"):
+                ts = ts.to_pydatetime()
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            self.safety.record_data(ts)
+            if self.safety.stale(datetime.now(timezone.utc), int(self.settings.stale_data_seconds)):
+                self.safety.fail("STALE_MARKET_DATA")
+                return self._halted_state(df)
+
         if not self.position.flat:
             hit_tp = (self.position.side == "LONG" and price >= self.position.tp) or (self.position.side == "SHORT" and price <= self.position.tp)
             hit_sl = (self.position.side == "LONG" and price <= self.position.sl) or (self.position.side == "SHORT" and price >= self.position.sl)
@@ -107,7 +205,15 @@ class TradingEngine:
             self._open(signal, price, float(result.state.values["final_tp_percent"]), float(result.state.values["final_sl_percent"]))
         open_pnl = self._open_pnl(price)
         result.state.position = self.position
-        result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": self.settings.initial_capital + self.realized_pnl + open_pnl}
+        result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": (self.adapter.equity() if self.live else self.settings.initial_capital) + self.realized_pnl + open_pnl, "live_halted": self.safety.halted, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
         self.last_state = result.state
-        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": self.settings.initial_capital + self.realized_pnl + open_pnl})
+        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": (self.adapter.equity() if self.live else self.settings.initial_capital) + self.realized_pnl + open_pnl})
         return result.state
+
+    def _halted_state(self, df):
+        timestamp = df.index[-1].to_pydatetime() if len(df.index) and hasattr(df.index[-1], "to_pydatetime") else datetime.now(timezone.utc)
+        state = self.strategy._not_ready(self.settings.symbol, self.settings.timeframe, f"LIVE_HALTED:{self.safety.reason}", df).state
+        state.position = self.position
+        state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "open_pnl": self._open_pnl(float(df.close.iloc[-1])) if len(df) else 0.0, "equity": self.settings.initial_capital, "live_halted": True, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok, "timestamp": timestamp.isoformat()}
+        self.last_state = state
+        return state
