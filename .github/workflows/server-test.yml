@@ -22,6 +22,10 @@ on:
         default: true
         type: boolean
 
+concurrency:
+  group: server-verification
+  cancel-in-progress: true
+
 # The runner may only write the generated verification report back to this repo.
 permissions:
   contents: write
@@ -34,6 +38,7 @@ jobs:
       BOT_MODE: PAPER
       PYTHONUNBUFFERED: "1"
       CI: "1"
+      CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,11 +61,12 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          rm -rf .venv-ci
-          python3 -m venv .venv-ci
-          . .venv-ci/bin/activate
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" 2>&1 | tee .verification/install.log
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then
+            mkdir -p "$(dirname "$CI_VENV")"
+            python3 -m venv "$CI_VENV"
+            "$CI_VENV/bin/python" -m pip install --upgrade pip
+          fi
+          "$CI_VENV/bin/pip" install -e ".[dev]" 2>&1 | tee .verification/install.log
 
       - name: Compile
         id: compile
@@ -68,8 +74,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          . .venv-ci/bin/activate
-          python -m compileall -q universal_bot 2>&1 | tee .verification/compile.log
+          "$CI_VENV/bin/python" -m compileall -q universal_bot 2>&1 | tee .verification/compile.log
 
       - name: Tests
         id: tests
@@ -77,8 +82,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          . .venv-ci/bin/activate
-          pytest -q 2>&1 | tee .verification/tests.log
+          "$CI_VENV/bin/pytest" -q 2>&1 | tee .verification/tests.log
 
       - name: Backtest
         id: backtest
@@ -86,9 +90,8 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          . .venv-ci/bin/activate
           start_ts=$(date +%s)
-          python scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
+          "$CI_VENV/bin/python" scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
             2>&1 | tee .verification/backtest.log
           rc=${PIPESTATUS[0]}
           end_ts=$(date +%s)
@@ -101,8 +104,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          . .venv-ci/bin/activate
-          python - <<'PY' 2>&1 | tee .verification/benchmark.log
+          "$CI_VENV/bin/python" - <<'PY' 2>&1 | tee .verification/benchmark.log
           import time
           import numpy as np
           import pandas as pd
@@ -134,8 +136,7 @@ jobs:
           BENCHMARK_OUTCOME: ${{ steps.benchmark.outcome }}
         run: |
           set -euo pipefail
-          mkdir -p reports
-          REPORT=reports/latest-server-verification.md
+          TMP_REPORT=$(mktemp)
           {
             echo "# Latest self-hosted server verification"
             echo
@@ -181,11 +182,15 @@ jobs:
             tail -n 80 .verification/install.log 2>/dev/null || true
             tail -n 80 .verification/compile.log 2>/dev/null || true
             echo '```'
-          } > "$REPORT"
+          } > "$TMP_REPORT"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$REPORT"
+          git fetch origin main
+          git checkout -B verification-report origin/main
+          mkdir -p reports
+          cp "$TMP_REPORT" reports/latest-server-verification.md
+          git add reports/latest-server-verification.md
           if ! git diff --cached --quiet; then
             git commit -m "ci: update server verification report [skip ci]"
             git push origin HEAD:main
