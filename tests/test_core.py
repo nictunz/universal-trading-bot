@@ -1,11 +1,13 @@
 from datetime import timezone
 
+import numpy as np
 import pandas as pd
 
 from universal_bot.backtest import run_backtest
 from universal_bot.backtest_service import _dt
 from universal_bot.config import Settings
 from universal_bot.engine import TradingEngine
+from universal_bot.indicators import dmi_adx, rolling_range_percent, rsi, sma
 from universal_bot.strategy.v15 import UniversalV15Strategy
 
 
@@ -20,6 +22,17 @@ class DummyAdapter:
 
     def fetch_volume_sources(self, *args, **kwargs):
         return {}
+
+
+def make_ohlcv(n=400):
+    idx = pd.date_range("2024-01-01", periods=n, freq="5min", tz="UTC")
+    base = 100 + np.linspace(0, 4, n)
+    close = base + np.sin(np.arange(n) / 7)
+    open_ = close - 0.2
+    high = np.maximum(open_, close) + 0.3
+    low = np.minimum(open_, close) - 0.3
+    volume = np.full(n, 1_000_000.0)
+    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume}, index=idx)
 
 
 def test_end_date_is_inclusive():
@@ -51,3 +64,22 @@ def test_pyramiding_pnl_uses_weighted_average_entry():
     assert engine.closed_trades == 1
     assert abs(engine.trade_log[0]["avg_entry_price"] - expected_avg) < 1e-9
     assert abs(engine.realized_pnl - expected_pnl) < 1e-9
+
+
+def test_precomputed_indicator_path_matches_direct_strategy():
+    settings = Settings(use_start_date=False, use_nbar_volatility_block=False, use_adx_filter=True)
+    df = make_ohlcv()
+    close, open_, high, low, volume = df.close, df.open, df.high, df.low, df.volume
+    cached = {
+        "volume_ratio": float((volume / sma(volume, settings.volume_lookback)).iloc[-1]),
+        "n_range": float(rolling_range_percent(high, low, settings.volatility_bars).iloc[-1]),
+        "block_range": float(rolling_range_percent(high, low, settings.nbar_volatility_bars).iloc[-1]),
+        "adx": float(dmi_adx(high, low, close, settings.adx_length)[2].iloc[-1]),
+        "rsi": float(rsi(close, settings.rsi_length).iloc[-1]),
+    }
+    strategy = UniversalV15Strategy(settings)
+    direct = strategy.evaluate(df, "ETH/USDT:USDT", "5m")
+    cached_result = strategy.evaluate(df, "ETH/USDT:USDT", "5m", precomputed=cached)
+    assert cached_result.signal.side == direct.signal.side
+    assert cached_result.signal.reason == direct.signal.reason
+    assert abs(cached_result.state.values["adx"] - direct.state.values["adx"]) < 1e-12
