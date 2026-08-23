@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       run_backtest:
-        description: Run the offline ETH/USDT 5m backtest
+        description: Run the rolling one-year ETH/USDT 5m backtest
         required: false
         default: true
         type: boolean
@@ -39,6 +39,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       CI: "1"
       CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+      DATABASE_URL: sqlite:////home/kpj3669/.cache/universal-trading-bot/historical.db
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,13 +48,14 @@ jobs:
         id: runtime
         run: |
           set -euo pipefail
-          mkdir -p .verification
+          mkdir -p .verification "$(dirname "${DATABASE_URL#sqlite:///}")"
           {
             echo "host=$(hostname)"
             echo "kernel=$(uname -a)"
             echo "python=$(python3 --version 2>&1)"
             echo "commit=$(git rev-parse HEAD)"
             echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "database_url=$DATABASE_URL"
           } | tee .verification/runtime.txt
 
       - name: Prepare virtual environment
@@ -90,8 +92,13 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
+          start_date=$(date -u -d '1 year ago' +%F)
+          end_date=$(date -u +%F)
+          echo "backtest_range=${start_date}..${end_date}" | tee .verification/backtest_range.txt
           start_ts=$(date +%s)
-          "$CI_VENV/bin/python" scripts/server_verify_backtest.py --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m --start 2024-01-01 \
+          "$CI_VENV/bin/python" scripts/server_verify_backtest.py \
+            --symbol ETH/USDT:USDT --exchange bitget --timeframe 5m \
+            --start "$start_date" --end "$end_date" \
             2>&1 | tee .verification/backtest.log
           rc=${PIPESTATUS[0]}
           end_ts=$(date +%s)
@@ -153,7 +160,7 @@ jobs:
             echo "| Prepare | ${PREPARE_OUTCOME:-not-run} |"
             echo "| Compile | ${COMPILE_OUTCOME:-not-run} |"
             echo "| Pytest | ${TESTS_OUTCOME:-not-run} |"
-            echo "| ETH/USDT 5m backtest | ${BACKTEST_OUTCOME:-not-run} |"
+            echo "| ETH/USDT 5m one-year backtest | ${BACKTEST_OUTCOME:-not-run} |"
             echo "| 100k indicator benchmark | ${BENCHMARK_OUTCOME:-not-run} |"
             echo
             echo "## Runtime"
@@ -168,6 +175,7 @@ jobs:
             echo
             echo "## Backtest"
             echo '```text'
+            cat .verification/backtest_range.txt 2>/dev/null || true
             cat .verification/backtest_time.txt 2>/dev/null || true
             tail -n 180 .verification/backtest.log 2>/dev/null || true
             echo '```'
