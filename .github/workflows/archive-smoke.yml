@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: official-archive-smoke
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           "$VENV/bin/pytest" -q tests/test_official_archives.py | tee /tmp/archive-unit.txt
 
-      - name: Real network two-day four-exchange backtest
+      - name: Real network one-day four-exchange backtest
         id: smoke
         continue-on-error: true
         run: |
