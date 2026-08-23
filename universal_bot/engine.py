@@ -22,6 +22,7 @@ class TradingEngine:
         self.position = Position()
         self.last_entry_bar: int | None = None
         self.last_exit_bar: int | None = None
+        self.last_processed_timestamp = None
         self.bar_number = 0
         self.last_state = None
         self.realized_pnl = 0.0
@@ -186,7 +187,34 @@ class TradingEngine:
         ratio = normalize_exchange_volume(sources, self.settings.volume_lookback, required_sources=4)
         return ratio.reindex(df.index)
 
+    def _live_heartbeat(self, df):
+        self._initialize_live()
+        self._reconcile_live()
+        if len(df.index):
+            ts = df.index[-1]
+            if hasattr(ts, "to_pydatetime"):
+                ts = ts.to_pydatetime()
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            self.safety.record_data(ts)
+            if self.safety.stale(datetime.now(timezone.utc), int(self.settings.stale_data_seconds)):
+                self.safety.fail("STALE_MARKET_DATA")
+        if self.safety.halted:
+            return self._halted_state(df)
+        return self.last_state
+
     def step(self, df, precomputed: dict[str, float] | None = None):
+        if len(df.index) == 0:
+            return self.strategy._not_ready(self.settings.symbol, self.settings.timeframe, "NOT_ENOUGH_DATA", df).state
+
+        bar_timestamp = df.index[-1]
+        if self.last_processed_timestamp is not None and bar_timestamp == self.last_processed_timestamp:
+            # Polling may happen many times during the same 5-minute bar.  Keep
+            # live reconciliation running, but never count the same candle as a
+            # new bar or allow a duplicate/pyramiding entry from it.
+            return self._live_heartbeat(df) if self.live else self.last_state
+
+        self.last_processed_timestamp = bar_timestamp
         self.bar_number += 1
         bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
         bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
@@ -199,10 +227,8 @@ class TradingEngine:
         normalized_volume = self._normalized_live_volume(df) if precomputed is None else None
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
-        if self.live and len(df.index):
-            ts = df.index[-1]
-            if hasattr(ts, "to_pydatetime"):
-                ts = ts.to_pydatetime()
+        if self.live:
+            ts = bar_timestamp.to_pydatetime() if hasattr(bar_timestamp, "to_pydatetime") else bar_timestamp
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             self.safety.record_data(ts)
@@ -223,13 +249,12 @@ class TradingEngine:
         open_pnl = self._open_pnl(price)
         result.state.position = self.position
         if self.live:
-            exchange_equity = self.adapter.equity()
-            display_equity = exchange_equity
+            display_equity = self.adapter.equity()
         else:
             display_equity = self.settings.initial_capital + self.realized_pnl + open_pnl
         result.state.stats = {"closed_trades": float(self.closed_trades), "win_rate": self.winning_trades / self.closed_trades * 100 if self.closed_trades else 0.0, "profit_factor": self.gross_profit / self.gross_loss if self.gross_loss else math.nan, "realized_pnl": self.realized_pnl, "return_percent": self.realized_pnl / self.settings.initial_capital * 100 if self.settings.initial_capital else 0.0, "open_pnl": open_pnl, "equity": display_equity, "live_halted": self.safety.halted, "live_safety_reason": self.safety.reason, "protection_ok": self.safety.protection_ok}
         self.last_state = result.state
-        self.equity_curve.append({"bar": self.bar_number, "timestamp": df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1]), "equity": display_equity})
+        self.equity_curve.append({"bar": self.bar_number, "timestamp": bar_timestamp.isoformat() if hasattr(bar_timestamp, "isoformat") else str(bar_timestamp), "equity": display_equity})
         return result.state
 
     def _halted_state(self, df):
