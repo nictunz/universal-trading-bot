@@ -23,6 +23,8 @@ class UniversalV15Strategy:
 
     def __init__(self, settings: Settings):
         self.s = settings
+        self._excluded_hours = {x.strip() for x in self.s.excluded_hours.split(",") if x.strip()}
+        self._start_date_utc = self._utc(self.s.start_date)
 
     @staticmethod
     def _utc(dt: datetime) -> datetime:
@@ -51,14 +53,13 @@ class UniversalV15Strategy:
         if not required_columns.issubset(df.columns):
             return self._not_ready(symbol, timeframe, "MISSING_OHLCV", df)
 
-        d = df if precomputed is not None else df.copy().sort_index()
-        close = d["close"].astype(float)
-        open_ = d["open"].astype(float)
-        high = d["high"].astype(float)
-        low = d["low"].astype(float)
-        volume = d["volume"].astype(float)
-
         if precomputed is None:
+            d = df.copy().sort_index()
+            close = d["close"].astype(float)
+            open_ = d["open"].astype(float)
+            high = d["high"].astype(float)
+            low = d["low"].astype(float)
+            volume = d["volume"].astype(float)
             vol_avg = sma(volume, self.s.volume_lookback)
             chart_ratio = volume / vol_avg.replace(0, math.nan)
             ratio = normalized_volume_ratio if normalized_volume_ratio is not None else chart_ratio
@@ -71,16 +72,24 @@ class UniversalV15Strategy:
             adx_value = float(adx_series.iloc[-1]) if pd.notna(adx_series.iloc[-1]) else math.nan
             rsi_series = rsi(close, self.s.rsi_length)
             rsi_value = float(rsi_series.iloc[-1]) if pd.notna(rsi_series.iloc[-1]) else math.nan
+            last_open = float(open_.iloc[-1])
+            last_close = float(close.iloc[-1])
+            ts = d.index[-1]
         else:
+            # Backtests precompute every rolling indicator once.  On this path we
+            # only need the current candle and timestamp; recreating/casting five
+            # pandas Series on every bar was the dominant 1-year runtime cost.
             volume_ratio = float(precomputed.get("volume_ratio", math.nan))
             n_range = float(precomputed.get("n_range", math.nan))
             block_range = float(precomputed.get("block_range", math.nan))
             adx_value = float(precomputed.get("adx", math.nan))
             rsi_value = float(precomputed.get("rsi", math.nan))
+            last = df.iloc[-1]
+            last_open = float(last["open"])
+            last_close = float(last["close"])
+            ts = df.index[-1]
 
         volume_break = math.isfinite(volume_ratio) and volume_ratio >= self.s.volume_break_multiplier
-        last_open = float(open_.iloc[-1])
-        last_close = float(close.iloc[-1])
         one_bar_volatility = abs(last_close - last_open) / last_open * 100 if last_open else 0.0
         one_bar_ok = self.s.min_one_bar_vol <= one_bar_volatility <= self.s.max_one_bar_vol
         raw_tp = n_range * self.s.tp_vol_multiplier if math.isfinite(n_range) else math.nan
@@ -96,14 +105,11 @@ class UniversalV15Strategy:
         rsi_long_ok = (not self.s.use_rsi_filter) or oversold
         rsi_short_ok = (not self.s.use_rsi_filter) or overbought
 
-        ts = d.index[-1]
         current_time = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else (ts if isinstance(ts, datetime) else datetime.now(timezone.utc))
         current_time = self._utc(current_time)
-        start_date = self._utc(self.s.start_date)
-        start_ok = (not self.s.use_start_date) or current_time >= start_date
+        start_ok = (not self.s.use_start_date) or current_time >= self._start_date_utc
         weekend_ok = (not self.s.block_weekend) or current_time.weekday() < 5
-        excluded_hours = {x.strip() for x in self.s.excluded_hours.split(",") if x.strip()}
-        hour_ok = current_time.strftime("%H") not in excluded_hours
+        hour_ok = current_time.strftime("%H") not in self._excluded_hours
         time_ok = start_ok and weekend_ok and hour_ok
         entry_cooldown_ok = bars_since_entry is None or bars_since_entry >= self.s.cooldown_bars
         reentry_cooldown_ok = bars_since_exit is None or bars_since_exit >= self.s.reentry_bars
