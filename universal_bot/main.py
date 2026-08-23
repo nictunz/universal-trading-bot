@@ -25,13 +25,17 @@ def build_adapter(settings: Settings):
     }
     exchange = settings.exchange.lower()
     key, secret, password = keys.get(exchange, ("", "", ""))
-    community_allowed = settings.bot_mode.upper() != "LIVE" or bool(settings.allow_community_market_data_live)
+    provider = settings.crypto_volume_provider.strip().lower()
+    community_allowed = provider == "community" and (
+        settings.bot_mode.upper() != "LIVE" or bool(settings.allow_community_market_data_live)
+    )
+    coinapi_key = settings.coinapi_api_key if provider == "coinapi" else ""
     return HybridCCXTAdapter(
         exchange,
         key,
         secret,
         password,
-        coinapi_api_key=settings.coinapi_api_key,
+        coinapi_api_key=coinapi_key,
         fallback_exchanges=settings.crypto_fallback_exchange_list,
         community_fallback=community_allowed,
     )
