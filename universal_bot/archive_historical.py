@@ -20,7 +20,8 @@ class OfficialArchiveHistoricalDataManager(HistoricalDataManager):
     def _fetch_crypto(self, request: DataRequest):
         try:
             df = self._fetch_crypto_direct(request)
-            self.last_fetch_status[request.exchange] = {"mode": "DIRECT", "status": "OK"}
+            mode = "DIRECT_NATIVE" if request.exchange.lower() == "bitget" else "DIRECT"
+            self.last_fetch_status[request.exchange] = {"mode": mode, "status": "OK"}
             return df
         except Exception as direct_exc:
             exchange = request.exchange.lower()
@@ -59,7 +60,7 @@ class OfficialArchiveHistoricalDataManager(HistoricalDataManager):
                         f"CoinAPI failed ({provider_exc})"
                     ) from provider_exc
 
-            mode = "OFFICIAL_ARCHIVE" if exchange in {"binance", "bybit"} else "DIRECT"
+            mode = "OFFICIAL_ARCHIVE" if exchange in {"binance", "bybit"} else ("DIRECT_NATIVE" if exchange == "bitget" else "DIRECT")
             self.last_fetch_status[request.exchange] = {
                 "mode": mode,
                 "status": "FAIL",
