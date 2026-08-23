@@ -7,7 +7,7 @@ from pathlib import Path
 from universal_bot.backtest_service import run_symbol_backtest
 
 # A fixed fully archived day keeps the self-hosted smoke deterministic while
-# remaining light enough for the 1 GB server.
+# remaining light enough for the 1 GB server. Smoke revision: 2.
 
 
 def main() -> None:
