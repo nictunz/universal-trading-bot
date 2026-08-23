@@ -21,8 +21,17 @@ class BacktestResult:
     equity_curve: list[dict]
 
 
-def run_backtest(df: pd.DataFrame, settings: Settings) -> BacktestResult:
-    """Deterministic bar-by-bar simulation with all indicator series vectorized once."""
+def run_backtest(
+    df: pd.DataFrame,
+    settings: Settings,
+    normalized_volume_ratio: pd.Series | None = None,
+) -> BacktestResult:
+    """Deterministic bar-by-bar simulation with indicator series vectorized once.
+
+    ``normalized_volume_ratio`` is supplied by the historical service when the
+    four-exchange crypto-volume mode is enabled.  This keeps historical signals
+    consistent with live v15 instead of silently falling back to chart volume.
+    """
     class BacktestAdapter:
         asset_class = settings.asset_class
         def equity(self) -> float:
@@ -36,14 +45,17 @@ def run_backtest(df: pd.DataFrame, settings: Settings) -> BacktestResult:
     if total == 0:
         return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, [], [])
 
-    prepared = df.sort_index().copy()
+    prepared = df.sort_index().loc[~df.index.duplicated(keep="last")].copy()
     close = prepared["close"].astype(float)
-    open_ = prepared["open"].astype(float)
     high = prepared["high"].astype(float)
     low = prepared["low"].astype(float)
     volume = prepared["volume"].astype(float)
-    vol_avg = sma(volume, settings.volume_lookback)
-    prepared["_v15_volume_ratio"] = volume / vol_avg.replace(0, math.nan)
+
+    if normalized_volume_ratio is not None:
+        prepared["_v15_volume_ratio"] = normalized_volume_ratio.reindex(prepared.index)
+    else:
+        vol_avg = sma(volume, settings.volume_lookback)
+        prepared["_v15_volume_ratio"] = volume / vol_avg.replace(0, math.nan)
     prepared["_v15_n_range"] = rolling_range_percent(high, low, settings.volatility_bars)
     prepared["_v15_block_range"] = rolling_range_percent(high, low, settings.nbar_volatility_bars)
     _, _, adx_series = dmi_adx(high, low, close, settings.adx_length)
@@ -61,11 +73,11 @@ def run_backtest(df: pd.DataFrame, settings: Settings) -> BacktestResult:
         window = prepared.iloc[start:end]
         row = prepared.iloc[end - 1]
         cached = {
-            "volume_ratio": float(row["_v15_volume_ratio"]),
-            "n_range": float(row["_v15_n_range"]),
-            "block_range": float(row["_v15_block_range"]),
-            "adx": float(row["_v15_adx"]),
-            "rsi": float(row["_v15_rsi"]),
+            "volume_ratio": float(row["_v15_volume_ratio"]) if pd.notna(row["_v15_volume_ratio"]) else math.nan,
+            "n_range": float(row["_v15_n_range"]) if pd.notna(row["_v15_n_range"]) else math.nan,
+            "block_range": float(row["_v15_block_range"]) if pd.notna(row["_v15_block_range"]) else math.nan,
+            "adx": float(row["_v15_adx"]) if pd.notna(row["_v15_adx"]) else math.nan,
+            "rsi": float(row["_v15_rsi"]) if pd.notna(row["_v15_rsi"]) else math.nan,
         }
         engine.step(window, precomputed=cached)
         if total >= 5000 and (end == start_bar + 1 or end % 5000 == 0 or end == total):
