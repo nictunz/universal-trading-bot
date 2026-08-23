@@ -6,7 +6,7 @@ import time
 import uvicorn
 import pandas as pd
 
-from universal_bot.adapters import CCXTAdapter, YFinanceMarketAdapter
+from universal_bot.adapters import HybridCCXTAdapter, YFinanceMarketAdapter
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
 from universal_bot.engine import TradingEngine
@@ -25,13 +25,15 @@ def build_adapter(settings: Settings):
     }
     exchange = settings.exchange.lower()
     key, secret, password = keys.get(exchange, ("", "", ""))
-    return CCXTAdapter(
+    community_allowed = settings.bot_mode.upper() != "LIVE" or bool(settings.allow_community_market_data_live)
+    return HybridCCXTAdapter(
         exchange,
         key,
         secret,
         password,
-        coinapi_api_key=settings.coinapi_api_key if settings.crypto_volume_provider.lower() == "coinapi" else "",
+        coinapi_api_key=settings.coinapi_api_key,
         fallback_exchanges=settings.crypto_fallback_exchange_list,
+        community_fallback=community_allowed,
     )
 
 
