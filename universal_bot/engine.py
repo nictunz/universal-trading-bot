@@ -10,6 +10,7 @@ from universal_bot.models import Position
 from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
 from universal_bot.live_safety import LiveSafety
+from universal_bot.trade_history import TradeHistoryStore
 
 
 class TradingEngine:
@@ -33,9 +34,14 @@ class TradingEngine:
         self.trade_log: list[dict] = []
         self.equity_curve: list[dict] = []
         self.entry_notional = 0.0
+        self.position_entry_time: str | None = None
+        self.current_bar_time: str | None = None
         self.live = settings.bot_mode.upper() == "LIVE"
         self.safety = LiveSafety(enabled=self.live)
         self._live_initialized = False
+        self.trade_history = TradeHistoryStore()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.trade_history_run_id = f"{settings.bot_mode.upper()}-{settings.symbol}-{stamp}"
 
     def _amount(self, price: float) -> float:
         equity = self.settings.initial_capital if not self.live else self.adapter.equity()
@@ -66,6 +72,7 @@ class TradingEngine:
             if exchange_pos.get("side") != "FLAT":
                 self.position = Position(side=exchange_pos["side"], size=exchange_pos["size"] if exchange_pos["side"] == "LONG" else -exchange_pos["size"], entry_price=exchange_pos.get("entry_price") or None, entries=1)
                 self.entry_notional = abs(self.position.size) * float(self.position.entry_price or 0.0)
+                self.position_entry_time = datetime.now(timezone.utc).isoformat()
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
             protection = self.adapter.protection_status(self.settings.symbol)
@@ -126,6 +133,7 @@ class TradingEngine:
         if self.position.flat:
             self.position = Position(side=side, size=signed_amount, entry_price=actual_price, tp=tp_price, sl=sl_price, entries=1)
             self.entry_notional = actual_amount * actual_price
+            self.position_entry_time = self.current_bar_time or datetime.now(timezone.utc).isoformat()
         else:
             self.position.entries += 1
             self.position.size += signed_amount
@@ -166,9 +174,33 @@ class TradingEngine:
             self.gross_profit += pnl
         else:
             self.gross_loss += abs(pnl)
-        self.trade_log.append({"trade": self.closed_trades, "side": side, "entry_price": initial_entry, "avg_entry_price": avg_entry, "exit_price": exit_price, "qty": qty, "pnl": pnl, "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0, "reason": reason, "bar": self.bar_number})
+        trade = {
+            "trade": self.closed_trades, "side": side,
+            "entry_time": self.position_entry_time,
+            "exit_time": self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+            "entry_price": initial_entry, "avg_entry_price": avg_entry, "exit_price": exit_price,
+            "qty": qty, "gross_pnl": pnl, "estimated_cost": 0.0, "pnl": pnl,
+            "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0,
+            "reason": reason, "bar": self.bar_number,
+        }
+        self.trade_log.append(trade)
+        try:
+            self.trade_history.record_trade(
+                run_id=self.trade_history_run_id,
+                trade_no=self.closed_trades,
+                mode="LIVE" if self.live else "PAPER",
+                symbol=self.settings.symbol,
+                asset_class=self.settings.asset_class,
+                exchange=self.settings.exchange,
+                timeframe=self.settings.timeframe,
+                trade=trade,
+            )
+        except Exception:
+            # Trading must not fail merely because the dashboard journal cannot be written.
+            pass
         self.position = Position()
         self.entry_notional = 0.0
+        self.position_entry_time = None
         self.last_exit_bar = self.bar_number
         if self.live:
             exchange_pos = self.adapter.position(self.settings.symbol)
@@ -183,8 +215,6 @@ class TradingEngine:
         except Exception:
             sources = {}
         if set(sources) != self.REQUIRED_VOLUME_SOURCES:
-            # Keep the strict four-exchange gate closed without leaking NaN into
-            # dashboard/API JSON responses.
             return pd.Series(0.0, index=df.index, dtype=float)
         ratio = normalize_exchange_volume(sources, self.settings.volume_lookback, required_sources=4)
         return ratio.reindex(df.index).fillna(0.0)
@@ -211,12 +241,10 @@ class TradingEngine:
 
         bar_timestamp = df.index[-1]
         if self.last_processed_timestamp is not None and bar_timestamp == self.last_processed_timestamp:
-            # Polling may happen many times during the same 5-minute bar. Keep
-            # live reconciliation running, but never count the same candle as a
-            # new bar or allow a duplicate/pyramiding entry from it.
             return self._live_heartbeat(df) if self.live else self.last_state
 
         self.last_processed_timestamp = bar_timestamp
+        self.current_bar_time = bar_timestamp.isoformat() if hasattr(bar_timestamp, "isoformat") else str(bar_timestamp)
         self.bar_number += 1
         bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
         bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
@@ -267,7 +295,7 @@ class TradingEngine:
             "protection_ok": self.safety.protection_ok,
         }
         self.last_state = result.state
-        self.equity_curve.append({"bar": self.bar_number, "timestamp": bar_timestamp.isoformat() if hasattr(bar_timestamp, "isoformat") else str(bar_timestamp), "equity": display_equity})
+        self.equity_curve.append({"bar": self.bar_number, "timestamp": self.current_bar_time, "equity": display_equity})
         return result.state
 
     def _halted_state(self, df):
