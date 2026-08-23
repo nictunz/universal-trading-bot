@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-23T15:20:41Z
-- Source commit: 7b42e7f965e3cbf2260287685f99aa29b60c25e7
+- Generated UTC: 2026-08-23T15:21:13Z
+- Source commit: 5d31ea585f875d745e9b51aaffdb6fb281eacfbd
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -9,9 +9,9 @@
 
 ## Outcomes
 
-- Runtime deploy: skipped
-- Service: skipped
-- HTTP: skipped
+- Runtime deploy: success
+- Service: success
+- HTTP: success
 - Socket: success
 
 ## Service
@@ -82,8 +82,8 @@ Requirement already satisfied: soupsieve>=1.6.1 in /home/kpj3669/.cache/universa
 Building wheels for collected packages: universal-trading-bot
   Building editable for universal-trading-bot (pyproject.toml): started
   Building editable for universal-trading-bot (pyproject.toml): finished with status 'done'
-  Created wheel for universal-trading-bot: filename=universal_trading_bot-0.1.0-0.editable-py3-none-any.whl size=3341 sha256=13fa7f50c0fa915ce3568b970ab495067e73a7a78afee0c396890c5499adff47
-  Stored in directory: /tmp/pip-ephem-wheel-cache-obyqsbib/wheels/ad/01/ea/fdf70051f0e4728ec463290a7f83b2e73eedb4df406597681f
+  Created wheel for universal-trading-bot: filename=universal_trading_bot-0.1.0-0.editable-py3-none-any.whl size=3341 sha256=7253b31877268d14212a63c8da49fd64c10eb5021c5caa2c8b1d714520f89c73
+  Stored in directory: /tmp/pip-ephem-wheel-cache-z0zdpr3z/wheels/ad/01/ea/fdf70051f0e4728ec463290a7f83b2e73eedb4df406597681f
 Successfully built universal-trading-bot
 Installing collected packages: universal-trading-bot
   Attempting uninstall: universal-trading-bot
@@ -95,7 +95,7 @@ Successfully installed universal-trading-bot-0.1.0
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Public: http://34.132.172.40:8000/ (requires cloud firewall to allow TCP 8000)
-PID:    2706
+PID:    3517
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
@@ -112,7 +112,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#ee
 
 ## Socket
 ```text
-LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=2706,fd=12))
+LISTEN 0      2048         0.0.0.0:8000       0.0.0.0:*    users:(("python",pid=3517,fd=12))
 ```
 
 ## App log
