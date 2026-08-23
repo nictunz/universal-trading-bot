@@ -55,11 +55,13 @@ class Settings(BaseSettings):
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
 
-    # Crypto market-data routing. Direct venue APIs remain preferred. When a
-    # public venue endpoint is unavailable from the server region, the bot may
-    # use an authorized read-only market-data provider for that venue instead.
-    crypto_volume_provider: str = "coinapi"
+    # Crypto market-data routing. Direct venue APIs remain preferred. If Binance
+    # or Bybit public endpoints are blocked from the server region, PAPER mode
+    # can use Coin Metrics Community (no key) for the recent rolling volume
+    # window. CoinAPI remains optional as a secondary licensed fallback.
+    crypto_volume_provider: str = "community"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
+    allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
 
     leverage: int = 50
