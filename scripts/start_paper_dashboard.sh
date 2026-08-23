@@ -53,7 +53,6 @@ export DASHBOARD_PORT=8000
 
 RUNNER_TRACKING_ID='' nohup "$VENV/bin/python" -m universal_bot.main >"$LOGFILE" 2>&1 </dev/null &
 echo $! > "$PIDFILE"
-sleep 5
 
 if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   echo "Dashboard process exited unexpectedly. Recent log:" >&2
@@ -61,16 +60,21 @@ if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 1
 fi
 
+# e2-micro can take longer to become responsive while imports/data workers are
+# warming and swap is active. Wait up to ~90 seconds instead of reporting a
+# false startup failure after 20 seconds.
 python3 - <<'PY'
 import time, urllib.request
-for attempt in range(20):
+last = None
+for attempt in range(90):
     try:
         with urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3) as r:
             print(r.read().decode('utf-8'))
         break
-    except Exception:
-        if attempt == 19:
-            raise
+    except Exception as exc:
+        last = exc
+        if attempt == 89:
+            raise RuntimeError(f'dashboard did not become healthy within 90s: {last}') from exc
         time.sleep(1)
 PY
 
