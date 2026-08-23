@@ -60,12 +60,7 @@ def run_backtest(
     settings: Settings,
     normalized_volume_ratio: pd.Series | None = None,
 ) -> BacktestResult:
-    """Fast deterministic v15 bar simulation.
-
-    Rolling indicators are vectorized once, then the trading state is advanced
-    with scalar/NumPy values only.  This preserves the live engine's ordering:
-    signal evaluation -> TP/SL close -> optional same-bar entry/pyramid.
-    """
+    """Fast deterministic v15 bar simulation."""
     if len(df) == 0:
         return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0, [], [])
 
@@ -113,6 +108,7 @@ def run_backtest(
     entry_notional = 0.0
     position_tp = math.nan
     position_sl = math.nan
+    position_entry_time: str | None = None
     entries = 0
     last_entry_bar: int | None = None
     last_exit_bar: int | None = None
@@ -140,6 +136,7 @@ def run_backtest(
         final_sl = max(settings.min_sl_percent, min(settings.max_sl_percent, raw_sl)) if np.isfinite(raw_sl) else math.nan
 
         ts = index[i]
+        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
         current_time = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else ts
         if current_time.tzinfo is None:
             current_time = current_time.replace(tzinfo=timezone.utc)
@@ -166,7 +163,6 @@ def run_backtest(
         elif base_entry and settings.allow_short and c > o and short_ok:
             signal = "SHORT"
 
-        # Live engine checks exits after evaluating the signal for this candle.
         if position_side is not None:
             hit_tp = (position_side == "LONG" and c >= position_tp) or (position_side == "SHORT" and c <= position_tp)
             hit_sl = (position_side == "LONG" and c <= position_sl) or (position_side == "SHORT" and c >= position_sl)
@@ -178,6 +174,8 @@ def run_backtest(
                 trade_log.append({
                     "trade": len(trade_log) + 1,
                     "side": position_side,
+                    "entry_time": position_entry_time,
+                    "exit_time": ts_iso,
                     "entry_price": initial_entry,
                     "avg_entry_price": avg_entry,
                     "exit_price": c,
@@ -193,6 +191,7 @@ def run_backtest(
                 entry_notional = 0.0
                 position_tp = math.nan
                 position_sl = math.nan
+                position_entry_time = None
                 entries = 0
                 last_exit_bar = bar_number
 
@@ -209,6 +208,7 @@ def run_backtest(
                     entry_notional = amount * c
                     position_tp = c * (1 + final_tp / 100.0) if signal == "LONG" else c * (1 - final_tp / 100.0)
                     position_sl = c * (1 - final_sl / 100.0) if signal == "LONG" else c * (1 + final_sl / 100.0)
+                    position_entry_time = ts_iso
                     entries = 1
                 else:
                     entries += 1
@@ -221,7 +221,7 @@ def run_backtest(
             qty = abs(position_size)
             avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
             open_pnl = (c - avg_entry) * qty if position_side == "LONG" else (avg_entry - c) * qty
-        equity_curve.append({"bar": bar_number, "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts), "equity": initial_capital + realized_pnl + open_pnl})
+        equity_curve.append({"bar": bar_number, "timestamp": ts_iso, "equity": initial_capital + realized_pnl + open_pnl})
 
     adjusted_log, estimated_costs, net_pnl, net_wins, net_pf = _apply_execution_costs(trade_log, settings)
     gross_pnl = float(realized_pnl)
