@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from universal_bot.backtest import run_backtest
@@ -12,14 +12,11 @@ def _dt(value: str | None, *, end_of_day: bool = False) -> datetime | None:
     if not value:
         return None
     value = value.strip()
-    date_only = len(value) == 10
-    if date_only:
+    if len(value) == 10:
         value += "T23:59:59.999999+00:00" if end_of_day else "T00:00:00+00:00"
     value = value.replace("Z", "+00:00")
     dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def run_symbol_backtest(
@@ -44,7 +41,7 @@ def run_symbol_backtest(
     if start_dt and end_dt and start_dt > end_dt:
         raise ValueError("start must be before or equal to end")
     if start_dt:
-        values["start_date"] = start_dt.replace(tzinfo=None)
+        values["start_date"] = start_dt
         values["use_start_date"] = True
     settings = settings.model_copy(update=values)
 
@@ -59,15 +56,11 @@ def run_symbol_backtest(
     )
     inserted, df = manager.sync(request)
     if df.empty:
-        raise ValueError(
-            f"no OHLCV data for {symbol} ({asset_class}/{exchange}/{timeframe}) in the requested range"
-        )
+        raise ValueError(f"no OHLCV data for {symbol} ({asset_class}/{exchange}/{timeframe}) in the requested range")
     if len(df) < 10:
         raise ValueError(f"insufficient OHLCV data: only {len(df)} bars returned")
 
     result = run_backtest(df, settings)
-    first_ts = df.index[0].isoformat() if len(df) else None
-    last_ts = df.index[-1].isoformat() if len(df) else None
     return {
         "strategy": "Volume Strategy FINAL Universal v15",
         "symbol": symbol,
@@ -76,8 +69,8 @@ def run_symbol_backtest(
         "timeframe": timeframe,
         "requested_start": request.start.isoformat() if request.start else None,
         "requested_end": request.end.isoformat() if request.end else None,
-        "data_start": first_ts,
-        "data_end": last_ts,
+        "data_start": df.index[0].isoformat(),
+        "data_end": df.index[-1].isoformat(),
         "bars": len(df),
         "inserted": inserted,
         "trades": result.trades,
