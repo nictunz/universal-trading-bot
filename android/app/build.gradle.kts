@@ -40,11 +40,11 @@ chaquopy {
             install("requests>=2.32")
             install("python-dotenv>=1.0")
             install("ccxt>=4.0")
-            install("paramiko>=3.5")
         }
     }
 }
 
 dependencies {
     implementation("com.google.android.material:material:1.12.0")
+    implementation("com.github.mwiede:jsch:2.28.6")
 }
