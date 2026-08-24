@@ -7,7 +7,7 @@ import time
 import pandas as pd
 import uvicorn
 
-from universal_bot.adapters import HybridCCXTAdapter, YFinanceMarketAdapter
+from universal_bot.adapters import BitgetEliteAdapter, HybridCCXTAdapter, YFinanceMarketAdapter
 from universal_bot.cache_refresh_dashboard import install_cache_refresh_dashboard
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
@@ -26,19 +26,36 @@ from universal_bot.strategy_dashboard import (
 def build_adapter(settings: Settings):
     if settings.asset_class.lower() in {"stock", "stocks", "etf", "equity"}:
         return YFinanceMarketAdapter()
+
+    exchange = settings.exchange.lower()
+    live = settings.bot_mode.upper() == "LIVE"
+    profile = settings.bitget_execution_profile.strip().lower()
+    provider = settings.crypto_volume_provider.strip().lower()
+    community_allowed = provider == "community" and (
+        not live or bool(settings.allow_community_market_data_live)
+    )
+    coinapi_key = settings.coinapi_api_key if provider == "coinapi" else ""
+
+    if exchange == "bitget" and live and profile == "elite":
+        key, secret, passphrase = settings.bitget_elite_credentials
+        return BitgetEliteAdapter(
+            key,
+            secret,
+            passphrase,
+            timeout=settings.bitget_elite_request_timeout,
+            coinapi_api_key=coinapi_key,
+            fallback_exchanges=settings.crypto_fallback_exchange_list,
+            community_fallback=community_allowed,
+        )
+
+    bitget_key, bitget_secret, bitget_passphrase = settings.bitget_standard_credentials
     keys = {
         "binance": (settings.binance_api_key, settings.binance_api_secret, ""),
-        "bitget": (settings.bitget_api_key, settings.bitget_api_secret, settings.bitget_api_passphrase),
+        "bitget": (bitget_key if live else "", bitget_secret if live else "", bitget_passphrase if live else ""),
         "okx": (settings.okx_api_key, settings.okx_api_secret, settings.okx_api_passphrase),
         "bybit": (settings.bybit_api_key, settings.bybit_api_secret, ""),
     }
-    exchange = settings.exchange.lower()
     key, secret, password = keys.get(exchange, ("", "", ""))
-    provider = settings.crypto_volume_provider.strip().lower()
-    community_allowed = provider == "community" and (
-        settings.bot_mode.upper() != "LIVE" or bool(settings.allow_community_market_data_live)
-    )
-    coinapi_key = settings.coinapi_api_key if provider == "coinapi" else ""
     return HybridCCXTAdapter(
         exchange,
         key,
@@ -96,7 +113,11 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
             adapter = build_adapter(local)
             strategy = UniversalV15Strategy(local)
             runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
-            print(f"RUNTIME_READY symbol={symbol}", flush=True)
+            profile = local.bitget_execution_profile if local.exchange.lower() == "bitget" else "standard"
+            print(
+                f"RUNTIME_READY symbol={symbol} mode={local.bot_mode.upper()} execution_profile={profile}",
+                flush=True,
+            )
         except Exception as exc:
             print(
                 f"RUNTIME_INIT_FAILED symbol={symbol} error={type(exc).__name__}: {exc}",
