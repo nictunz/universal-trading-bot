@@ -21,10 +21,10 @@ PROFILE = {
     "LEVERAGE": "50",
     "MARGIN_MODE": "crossed",
     "LIVE_REQUIRE_ONE_WAY_MODE": "true",
-    "MAX_PYRAMIDING": "3",
+    "MAX_PYRAMIDING": "2",
     "LIVE_ENTRY_MULTIPLIER": "15",
-    "LIVE_MAX_ENTRIES_PER_POSITION": "3",
-    "LIVE_MAX_TOTAL_MULTIPLIER": "45",
+    "LIVE_MAX_ENTRIES_PER_POSITION": "2",
+    "LIVE_MAX_TOTAL_MULTIPLIER": "30",
     "REQUIRE_EXCHANGE_PROTECTION": "true",
 }
 SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
@@ -74,12 +74,14 @@ def main() -> None:
         community_fallback=False,
     )
 
-    print("ELITE_50X_15X3_PROFILE")
+    print("ELITE_50X_15X2_PROFILE")
+    print("NOTE: legacy filename still contains 15x3; behavior is now 15x2.")
     print(f"env_backup={backup.name}")
     print("BOT_MODE=PAPER")
     print("LEVERAGE=50")
     print("LIVE_ENTRY_MULTIPLIER=15")
-    print("MAX_ENTRIES=3 (first + two add-ons)")
+    print("MAX_ENTRIES=2 (first + one add-on)")
+    print("LIVE_MAX_TOTAL_MULTIPLIER=30")
     print("No orders are placed by this script. It only changes leverage/account config.")
 
     results = []
