@@ -58,16 +58,11 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
                 "value": "configured" if key and secret and passphrase else "missing",
             })
             checks.append({
-                "name": "elite_margin_mode",
+                "name": "elite_margin_setting",
                 "ok": settings.margin_mode.lower() in {"cross", "crossed"},
                 "value": settings.margin_mode,
             })
-            checks.append({
-                "name": "elite_position_mode",
-                "ok": not settings.live_require_one_way_mode,
-                "value": "hedge-required",
-                "reason": None if not settings.live_require_one_way_mode else "Elite Trading does not support one-way mode",
-            })
+
             config = adapter.configure_live(
                 settings.symbol,
                 int(settings.leverage),
@@ -75,10 +70,11 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
                 bool(settings.live_require_one_way_mode),
             )
             checks.append({
-                "name": "elite_portfolio",
+                "name": "elite_classic_account",
                 "ok": bool(config.get("ok")),
                 "details": config,
             })
+
             if live and config.get("ok"):
                 balance = adapter.equity()
                 checks.append({"name": "balance", "ok": balance > 0, "available_usdt": balance})
@@ -99,20 +95,21 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
             required_names = {
                 "execution_profile",
                 "elite_credentials",
-                "elite_margin_mode",
-                "elite_position_mode",
-                "elite_portfolio",
+                "elite_margin_setting",
+                "elite_classic_account",
             }
             if live:
                 required_names.update({"balance", "position_query"})
                 if any(c.get("name") == "existing_protection" for c in checks):
                     required_names.add("existing_protection")
+
             ready = live and all(
                 c.get("ok") for c in checks if c.get("name") in required_names
             ) and required_names.issubset({c.get("name") for c in checks})
             return {
                 "ready": ready,
                 "profile": "elite",
+                "api_family": "classic-v2",
                 "checks": checks,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
@@ -155,4 +152,5 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
 
 if __name__ == "__main__":
     import json
+
     print(json.dumps(check_live_readiness(), ensure_ascii=False, indent=2, default=str))
