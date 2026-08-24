@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
+
+# When this file is executed directly (python scripts/...), Python puts the
+# scripts directory on sys.path, not the repository root. Add the repo root so
+# the local universal_bot package is always importable without installing it.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from universal_bot.adapters.bitget_elite import BitgetEliteAdapter
 from universal_bot.config import Settings
