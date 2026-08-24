@@ -28,7 +28,7 @@ PY
 
 if [[ "$READY" != "true" ]]; then
   echo
-echo "LIVE 전환 차단: preflight ready=true가 아닙니다." >&2
+  echo "LIVE 전환 차단: preflight ready=true가 아닙니다." >&2
   exit 3
 fi
 
@@ -61,11 +61,14 @@ sleep 7
 echo
 echo "===== SERVICE ====="
 systemctl is-active "$SERVICE"
+
 echo
 echo "===== HEALTH ====="
 curl -sS -m 10 http://127.0.0.1:8000/health; echo
+
 echo
 echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
+
 echo
 echo "LIVE 활성화 완료. 실제 주문은 전략 신호가 발생할 때 Elite Trading Portfolio API로 전송됩니다."
