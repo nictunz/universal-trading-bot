@@ -1,0 +1,216 @@
+package com.nictunz.universalbacktester;
+
+import com.jcraft.jsch.ChannelExec;
+import com.jcraft.jsch.ChannelSftp;
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.KeyPair;
+import com.jcraft.jsch.Session;
+import com.jcraft.jsch.SftpException;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.Properties;
+import java.util.TimeZone;
+
+public final class SshBridge {
+    private SshBridge() {}
+
+    public static String ensureKey(String appFilesDir) throws Exception {
+        File root = new File(appFilesDir, "ssh");
+        if (!root.exists() && !root.mkdirs()) {
+            throw new IllegalStateException("SSH 키 폴더를 만들 수 없습니다: " + root);
+        }
+
+        File privateFile = new File(root, "android_upload_rsa");
+        File publicFile = new File(root, "android_upload_rsa.pub");
+        if (!privateFile.exists() || !publicFile.exists()) {
+            if (privateFile.exists()) privateFile.delete();
+            if (publicFile.exists()) publicFile.delete();
+
+            JSch jsch = new JSch();
+            KeyPair pair = KeyPair.genKeyPair(jsch, KeyPair.RSA, 3072);
+            try (FileOutputStream out = new FileOutputStream(privateFile)) {
+                pair.writePrivateKey(out);
+            }
+            try (FileOutputStream out = new FileOutputStream(publicFile)) {
+                pair.writePublicKey(out, "universal-backtester-android");
+            }
+            pair.dispose();
+        }
+
+        JSONObject obj = new JSONObject();
+        obj.put("private_key", privateFile.getAbsolutePath());
+        obj.put("public_key", readText(publicFile).trim());
+        return obj.toString();
+    }
+
+    public static String testConnection(String host, String username, String keyPath) throws Exception {
+        Session session = connect(host, username, keyPath);
+        try {
+            return "SSH_OK " + username + "@" + host;
+        } finally {
+            session.disconnect();
+        }
+    }
+
+    public static String uploadFiles(
+            String dbPath,
+            String resultPath,
+            String host,
+            String username,
+            String remoteDir,
+            String keyPath
+    ) throws Exception {
+        File db = new File(dbPath);
+        File result = new File(resultPath);
+        if (!db.isFile()) throw new IllegalArgumentException("DB 파일이 없습니다: " + dbPath);
+        if (!result.isFile()) throw new IllegalArgumentException("결과 파일이 없습니다: " + resultPath);
+
+        JSONObject resultMeta = new JSONObject(readText(result));
+        if (!resultMeta.optBoolean("server_upload_eligible", false)) {
+            throw new IllegalStateException("서버 업로드 차단: 1년 범위로 검증된 결과만 업로드할 수 있습니다.");
+        }
+
+        JSONArray logs = new JSONArray();
+        logs.put("SSH 연결: " + username + "@" + host);
+        Session session = connect(host, username, keyPath);
+        try {
+            ensureRemoteDir(session, remoteDir);
+            ChannelSftp sftp = (ChannelSftp) session.openChannel("sftp");
+            sftp.connect(15000);
+            try {
+                uploadAtomic(sftp, db, remoteDir, logs);
+                uploadAtomic(sftp, result, remoteDir, logs);
+
+                JSONObject manifest = new JSONObject();
+                manifest.put("database", db.getName());
+                manifest.put("result", result.getName());
+                manifest.put("requested_start", resultMeta.optString("requested_start", ""));
+                manifest.put("requested_end", resultMeta.optString("requested_end", ""));
+                manifest.put("range_days", resultMeta.optInt("range_days", 0));
+                manifest.put("database_sha256", sha256(db));
+                manifest.put("uploaded_at", utcNow());
+
+                String manifestName = stripExtension(db.getName()) + ".upload-manifest.json";
+                String remoteManifest = joinRemote(remoteDir, manifestName);
+                byte[] bytes = (manifest.toString(2) + "\n").getBytes(StandardCharsets.UTF_8);
+                sftp.put(new ByteArrayInputStream(bytes), remoteManifest);
+                logs.put("완료: " + remoteManifest);
+                logs.put("서버 캐시 업로드 완료. 대시보드의 빠른 재백테스트에서 바로 사용할 수 있습니다.");
+            } finally {
+                sftp.disconnect();
+            }
+        } finally {
+            session.disconnect();
+        }
+
+        JSONObject response = new JSONObject();
+        response.put("ok", true);
+        response.put("logs", logs);
+        return response.toString();
+    }
+
+    private static Session connect(String host, String username, String keyPath) throws Exception {
+        JSch jsch = new JSch();
+        jsch.addIdentity(keyPath);
+        Session session = jsch.getSession(username, host, 22);
+        Properties config = new Properties();
+        config.put("StrictHostKeyChecking", "no");
+        config.put("PreferredAuthentications", "publickey");
+        session.setConfig(config);
+        session.connect(15000);
+        return session;
+    }
+
+    private static void ensureRemoteDir(Session session, String remoteDir) throws Exception {
+        ChannelExec exec = (ChannelExec) session.openChannel("exec");
+        exec.setCommand("mkdir -p -- " + shellQuote(remoteDir));
+        exec.setInputStream(null);
+        exec.connect(10000);
+        try {
+            long deadline = System.currentTimeMillis() + 10000;
+            while (!exec.isClosed() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(50);
+            }
+            if (!exec.isClosed()) throw new IllegalStateException("원격 폴더 생성 명령이 시간 초과되었습니다.");
+            if (exec.getExitStatus() != 0) {
+                throw new IllegalStateException("원격 폴더 생성 실패: exit=" + exec.getExitStatus());
+            }
+        } finally {
+            exec.disconnect();
+        }
+    }
+
+    private static void uploadAtomic(ChannelSftp sftp, File local, String remoteDir, JSONArray logs) throws Exception {
+        String remote = joinRemote(remoteDir, local.getName());
+        String temp = remote + ".uploading";
+        logs.put("업로드: " + local.getName());
+        try {
+            sftp.rm(temp);
+        } catch (SftpException ignored) {
+        }
+        sftp.put(local.getAbsolutePath(), temp);
+        try {
+            sftp.rm(remote);
+        } catch (SftpException e) {
+            if (e.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e;
+        }
+        sftp.rename(temp, remote);
+        logs.put("완료: " + remote);
+    }
+
+    private static String joinRemote(String dir, String name) {
+        String trimmed = dir.endsWith("/") ? dir.substring(0, dir.length() - 1) : dir;
+        return trimmed + "/" + name;
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    private static String readText(File file) throws Exception {
+        try (InputStream in = new FileInputStream(file); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = in.read(buffer)) >= 0) {
+                out.write(buffer, 0, n);
+            }
+            return out.toString("UTF-8");
+        }
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[1024 * 1024];
+            int n;
+            while ((n = in.read(buffer)) >= 0) digest.update(buffer, 0, n);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (byte b : digest.digest()) sb.append(String.format(Locale.US, "%02x", b));
+        return sb.toString();
+    }
+
+    private static String utcNow() {
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f.format(new Date());
+    }
+
+    private static String stripExtension(String name) {
+        int i = name.lastIndexOf('.');
+        return i > 0 ? name.substring(0, i) : name;
+    }
+}
