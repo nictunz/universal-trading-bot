@@ -38,8 +38,6 @@ chaquopy {
             install("numpy>=1.24")
             install("pandas>=2.0")
             install("requests>=2.32")
-            install("python-dotenv>=1.0")
-            install("ccxt>=4.0")
         }
     }
 }
