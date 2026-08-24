@@ -16,20 +16,19 @@ from universal_bot.adapters.hybrid_ccxt_adapter import HybridCCXTAdapter
 
 
 class BitgetEliteAdapter(HybridCCXTAdapter):
-    """Bitget Elite Trading Portfolio adapter using the current UTA v3 APIs.
+    """Bitget Elite/Copy API adapter for Classic Accounts.
 
-    Public OHLCV / four-exchange volume still comes from HybridCCXTAdapter.
-    Authenticated trading never goes through CCXT: it is signed directly with
-    the dedicated Elite Trading API credentials and scoped to the elite/copy
-    portfolio endpoints where available.
+    The user's Elite Copy API key is authenticated against Bitget Classic v2
+    futures/copy endpoints. Public OHLCV still comes from HybridCCXTAdapter,
+    while every authenticated account/order request is signed directly here.
 
-    Elite portfolios currently use hedge mode and crossed margin. The adapter
-    deliberately refuses one-way/isolated configuration instead of attempting
-    unsupported account-mode changes.
+    This intentionally does not route Elite credentials through CCXT, so they
+    cannot accidentally hit a normal private Bitget account endpoint.
     """
 
     BASE_URL = "https://api.bitget.com"
-    CATEGORY = "USDT-FUTURES"
+    PRODUCT_TYPE = "USDT-FUTURES"
+    MARGIN_COIN = "USDT"
 
     def __init__(
         self,
@@ -42,8 +41,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         fallback_exchanges: list[str] | None = None,
         community_fallback: bool = False,
     ) -> None:
-        # Keep CCXT public-only. Elite credentials must never accidentally be
-        # used by a classic/standard CCXT private endpoint.
+        # Public market data only in the parent adapter.
         super().__init__(
             "bitget",
             "",
@@ -57,7 +55,8 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         self.elite_api_secret = secret.strip()
         self.elite_api_passphrase = passphrase.strip()
         self.timeout = float(timeout)
-        self._instrument_cache: dict[str, dict[str, Any]] = {}
+        self._contract_cache: dict[str, dict[str, Any]] = {}
+        self._account_mode_cache: dict[str, str] = {}
 
     @staticmethod
     def _symbol_id(symbol: str) -> str:
@@ -71,6 +70,10 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     def _credentials_ready(self) -> bool:
         return bool(self.elite_api_key and self.elite_api_secret and self.elite_api_passphrase)
 
+    @staticmethod
+    def _client_oid(prefix: str = "utb") -> str:
+        return f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:8]}"[:32]
+
     def _signed_headers(self, method: str, path: str, query: str, body_text: str) -> dict[str, str]:
         if not self._credentials_ready():
             raise RuntimeError("Bitget Elite API credentials are not configured")
@@ -82,10 +85,9 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             prehash.encode("utf-8"),
             hashlib.sha256,
         ).digest()
-        signature = base64.b64encode(digest).decode("ascii")
         return {
             "ACCESS-KEY": self.elite_api_key,
-            "ACCESS-SIGN": signature,
+            "ACCESS-SIGN": base64.b64encode(digest).decode("ascii"),
             "ACCESS-TIMESTAMP": timestamp,
             "ACCESS-PASSPHRASE": self.elite_api_passphrase,
             "Content-Type": "application/json",
@@ -102,7 +104,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     ) -> Any:
         method = method.upper()
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
-        query = urlencode(sorted((str(k), str(v)) for k, v in clean_params.items()))
+        query = urlencode([(str(k), str(v)) for k, v in clean_params.items()])
         body_text = "" if not body else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         headers = self._signed_headers(method, path, query, body_text)
         url = self.BASE_URL + path + (f"?{query}" if query else "")
@@ -113,252 +115,373 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             data=body_text or None,
             timeout=self.timeout,
         )
-        response.raise_for_status()
         try:
             payload = response.json()
         except ValueError as exc:
-            raise RuntimeError(f"Bitget Elite returned non-JSON response: HTTP {response.status_code}") from exc
+            raise RuntimeError(
+                f"Bitget Elite returned non-JSON response: HTTP {response.status_code}"
+            ) from exc
         if str(payload.get("code")) != "00000":
-            raise RuntimeError(f"Bitget Elite API error {payload.get('code')}: {payload.get('msg')}")
+            raise RuntimeError(
+                f"Bitget Elite API error HTTP {response.status_code} "
+                f"{payload.get('code')}: {payload.get('msg')}"
+            )
         return payload.get("data")
 
     def _public_get(self, path: str, params: dict[str, Any]) -> Any:
         response = requests.get(self.BASE_URL + path, params=params, timeout=self.timeout)
-        response.raise_for_status()
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Bitget public API returned HTTP {response.status_code}") from exc
         if str(payload.get("code")) != "00000":
             raise RuntimeError(f"Bitget public API error {payload.get('code')}: {payload.get('msg')}")
         return payload.get("data")
 
-    def account_info(self) -> dict[str, Any]:
-        data = self._request("GET", "/api/v3/account/info")
-        return dict(data or {})
-
-    def elite_trading_pairs(self) -> list[dict[str, Any]]:
-        data = self._request("GET", "/api/v3/copy/futures/trading-pairs")
-        return [dict(x) for x in (data or [])]
-
-    def _instrument(self, symbol: str) -> dict[str, Any]:
+    def _contract(self, symbol: str) -> dict[str, Any]:
         sid = self._symbol_id(symbol)
-        cached = self._instrument_cache.get(sid)
+        cached = self._contract_cache.get(sid)
         if cached is not None:
             return cached
         rows = self._public_get(
-            "/api/v3/market/instruments",
-            {"category": self.CATEGORY, "symbol": sid},
-        )
+            "/api/v2/mix/market/contracts",
+            {"productType": self.PRODUCT_TYPE, "symbol": sid},
+        ) or []
         if not rows:
-            raise RuntimeError(f"Bitget instrument not found: {sid}")
-        instrument = dict(rows[0])
-        if str(instrument.get("status", "")).lower() not in {"online", "normal"}:
-            raise RuntimeError(f"Bitget instrument is not online: {sid}")
-        self._instrument_cache[sid] = instrument
-        return instrument
+            raise RuntimeError(f"Bitget contract not found: {sid}")
+        contract = dict(rows[0])
+        status = str(contract.get("symbolStatus") or "").lower()
+        if status not in {"normal", "listed"}:
+            raise RuntimeError(f"Bitget contract is not API-tradable: {sid} status={status}")
+        self._contract_cache[sid] = contract
+        return contract
 
     @staticmethod
-    def _step_floor(value: float, step_text: str, precision_text: str) -> str:
-        step = Decimal(str(step_text or "0"))
-        precision = max(0, int(precision_text or 0))
+    def _floor_to_step(value: float, step_text: str, decimals: int) -> str:
         number = Decimal(str(value))
+        step = Decimal(str(step_text or "0"))
         if step > 0:
             number = (number / step).to_integral_value(rounding=ROUND_DOWN) * step
-        quantum = Decimal(1).scaleb(-precision)
+        quantum = Decimal(1).scaleb(-max(0, decimals))
         number = number.quantize(quantum, rounding=ROUND_DOWN)
         return format(number, "f")
 
     def _qty(self, symbol: str, amount: float) -> str:
-        instrument = self._instrument(symbol)
-        text = self._step_floor(
-            amount,
-            str(instrument.get("quantityMultiplier") or instrument.get("minOrderQty") or "0"),
-            str(instrument.get("quantityPrecision") or "0"),
-        )
+        contract = self._contract(symbol)
+        decimals = int(contract.get("volumePlace") or 0)
+        step = str(contract.get("sizeMultiplier") or "0")
+        text = self._floor_to_step(amount, step, decimals)
         qty = Decimal(text)
-        minimum = Decimal(str(instrument.get("minOrderQty") or "0"))
+        minimum = Decimal(str(contract.get("minTradeNum") or "0"))
         if qty <= 0 or (minimum > 0 and qty < minimum):
             raise RuntimeError(f"order quantity {text} is below Bitget minimum {minimum}")
+        max_market = Decimal(str(contract.get("maxMarketOrderQty") or "0"))
+        if max_market > 0 and qty > max_market:
+            raise RuntimeError(f"order quantity {text} exceeds Bitget market maximum {max_market}")
         return text
 
     def _price(self, symbol: str, price: float) -> str:
-        instrument = self._instrument(symbol)
-        return self._step_floor(
-            price,
-            str(instrument.get("priceMultiplier") or "0"),
-            str(instrument.get("pricePrecision") or "0"),
-        )
+        contract = self._contract(symbol)
+        decimals = int(contract.get("pricePlace") or 0)
+        step = Decimal(1).scaleb(-decimals) * Decimal(str(contract.get("priceEndStep") or "1"))
+        return self._floor_to_step(price, str(step), decimals)
 
-    def equity(self) -> float:
-        # For the Elite lead account this endpoint exposes the amount currently
-        # available to trade/transfer. Using available rather than total account
-        # equity is intentionally conservative for position sizing.
+    def account_info(self, symbol: str) -> dict[str, Any]:
+        sid = self._symbol_id(symbol)
         data = self._request(
             "GET",
-            "/api/v3/copy/futures/max-transferable",
-            params={"coin": "USDT"},
+            "/api/v2/mix/account/account",
+            params={
+                "symbol": sid,
+                "productType": self.PRODUCT_TYPE,
+                "marginCoin": self.MARGIN_COIN,
+            },
         )
-        return float((data or {}).get("available") or 0.0)
+        info = dict(data or {})
+        mode = str(info.get("posMode") or "").lower()
+        if mode:
+            self._account_mode_cache[sid] = mode
+        return info
 
-    def position(self, symbol: str):
-        sid = self._symbol_id(symbol)
-        rows = self._request("GET", "/api/v3/copy/futures/position-summary") or []
-        matches = [
-            x for x in rows
-            if str(x.get("symbol", "")).upper() == sid and float(x.get("holdSize") or 0.0) > 0
-        ]
-        if len(matches) > 1:
-            raise RuntimeError(
-                f"multiple Elite hedge positions exist for {sid}; the bot requires at most one active side per symbol"
-            )
-        if not matches:
-            return {"side": "FLAT", "size": 0.0, "entry_price": 0.0, "notional": 0.0}
-        row = dict(matches[0])
-        side = "LONG" if str(row.get("holdSide", "")).lower() == "long" else "SHORT"
-        size = abs(float(row.get("holdSize") or 0.0))
-        return {
-            "side": side,
-            "size": size,
-            "entry_price": float(row.get("avgPrice") or 0.0),
-            "mark_price": float(row.get("markPrice") or 0.0),
-            "notional": abs(float(row.get("positionValue") or 0.0)),
-            "leverage": float(row.get("leverage") or 0.0),
-            "margin_mode": row.get("marginMode"),
-            "raw": row,
-        }
+    def elite_trading_pairs(self) -> list[dict[str, Any]]:
+        rows = self._request(
+            "GET",
+            "/api/v2/copy/mix-trader/config-query-symbols",
+            params={"productType": self.PRODUCT_TYPE},
+        ) or []
+        return [dict(x) for x in rows]
 
-    def configure_live(self, symbol: str, leverage: int, margin_mode: str, require_one_way: bool = False) -> dict:
+    def configure_live(
+        self,
+        symbol: str,
+        leverage: int,
+        margin_mode: str,
+        require_one_way: bool = False,
+    ) -> dict:
         if not self._credentials_ready():
             return {"ok": False, "supported": True, "reason": "Bitget Elite credentials are missing"}
         if str(margin_mode).lower() not in {"cross", "crossed"}:
             return {
                 "ok": False,
                 "supported": True,
-                "reason": "Bitget Elite Trading supports crossed margin only; set MARGIN_MODE=crossed",
-            }
-        if require_one_way:
-            return {
-                "ok": False,
-                "supported": True,
-                "reason": "Bitget Elite Trading does not support one-way mode; set LIVE_REQUIRE_ONE_WAY_MODE=false",
+                "reason": "Elite bot is configured for crossed margin; set MARGIN_MODE=crossed",
             }
         try:
-            info = self.account_info()
-            permissions = {str(x) for x in (info.get("permissions") or [])}
-            required = {"uta_trade", "copy_futures_position", "copy_futures_order"}
-            missing = sorted(required - permissions)
-            if missing:
+            sid = self._symbol_id(symbol)
+            account = self.account_info(symbol)
+            account_margin = str(account.get("marginMode") or "").lower()
+            pos_mode = str(account.get("posMode") or "").lower()
+            if account_margin and account_margin not in {"cross", "crossed"}:
                 return {
                     "ok": False,
                     "supported": True,
-                    "reason": "Elite API missing permissions: " + ",".join(missing),
-                    "permissions": sorted(permissions),
+                    "reason": f"Bitget account margin mode is {account_margin}, expected crossed",
+                    "account": {"margin_mode": account_margin, "position_mode": pos_mode},
                 }
-            sid = self._symbol_id(symbol)
-            pair = next(
-                (x for x in self.elite_trading_pairs() if str(x.get("symbol", "")).upper() == sid),
-                None,
-            )
+            if require_one_way and pos_mode != "one_way_mode":
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "reason": f"LIVE_REQUIRE_ONE_WAY_MODE=true but Bitget account is {pos_mode or 'unknown'}",
+                }
+
+            pairs = self.elite_trading_pairs()
+            pair = next((x for x in pairs if str(x.get("symbol", "")).upper() == sid), None)
             if pair is None:
                 return {
                     "ok": False,
                     "supported": True,
-                    "reason": f"{sid} is not enabled in this Elite Trading Portfolio",
+                    "reason": f"{sid} is not listed in Elite trader configuration",
                 }
-            self._instrument(symbol)
+            if str(pair.get("openTrader") or "").lower() != "yes":
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "reason": f"{sid} Elite trading is disabled (openTrader={pair.get('openTrader')})",
+                    "pair": pair,
+                }
+
+            contract = self._contract(symbol)
+            actual_leverage = float(
+                account.get("crossedMarginLeverage")
+                or account.get("crossedLever")
+                or account.get("leverage")
+                or 0.0
+            )
             return {
                 "ok": True,
                 "supported": True,
-                "profile": "elite",
-                "margin_mode": "crossed",
-                "position_mode": "hedge",
-                "configured_leverage": int(leverage),
-                "elite_pair_leverage": float(pair.get("leverage") or 0.0),
-                "permissions": sorted(permissions),
+                "profile": "elite-classic-v2",
+                "account_type": "classic",
+                "margin_mode": account_margin or "crossed",
+                "position_mode": pos_mode or "unknown",
+                "requested_leverage": int(leverage),
+                "account_leverage": actual_leverage,
+                "symbol": sid,
+                "elite_open": True,
+                "elite_min_open_count": pair.get("minOpenCount"),
+                "contract_min_qty": contract.get("minTradeNum"),
+                "contract_max_leverage": contract.get("maxLever"),
             }
         except Exception as exc:
-            return {"ok": False, "supported": True, "reason": f"Elite readiness failed: {type(exc).__name__}: {exc}"}
+            return {
+                "ok": False,
+                "supported": True,
+                "reason": f"Elite Classic readiness failed: {type(exc).__name__}: {exc}",
+            }
 
-    @staticmethod
-    def _client_oid(prefix: str = "utb") -> str:
-        return f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:8]}"[:32]
+    def equity(self) -> float:
+        rows = self._request(
+            "GET",
+            "/api/v2/mix/account/accounts",
+            params={"productType": self.PRODUCT_TYPE},
+        ) or []
+        usdt = next(
+            (x for x in rows if str(x.get("marginCoin", "")).upper() == self.MARGIN_COIN),
+            None,
+        )
+        if usdt is None:
+            return 0.0
+        # Match the proven previous Elite bot: size from currently available USDT.
+        return float(usdt.get("available") or 0.0)
 
-    def _order_detail(self, order_id: str) -> dict[str, Any]:
-        data = self._request("GET", "/api/v3/trade/order-info", params={"orderId": order_id})
-        return dict(data or {})
-
-    def _place_protection(self, symbol: str, pos_side: str, tp_price: float | None, sl_price: float | None) -> dict[str, Any] | None:
-        if tp_price is None and sl_price is None:
-            return None
-        body: dict[str, Any] = {
-            "category": self.CATEGORY,
-            "symbol": self._symbol_id(symbol),
-            "type": "tpsl",
-            "tpslMode": "full",
-            "posSide": pos_side,
-            "clientOid": self._client_oid("utb-tpsl"),
+    def position(self, symbol: str) -> dict[str, Any]:
+        sid = self._symbol_id(symbol)
+        rows = self._request(
+            "GET",
+            "/api/v2/mix/position/single-position",
+            params={
+                "symbol": sid,
+                "productType": self.PRODUCT_TYPE,
+                "marginCoin": self.MARGIN_COIN,
+            },
+        ) or []
+        active = [dict(x) for x in rows if abs(float(x.get("total") or 0.0)) > 0]
+        if len(active) > 1:
+            raise RuntimeError(
+                f"multiple active hedge positions exist for {sid}; this bot requires at most one active side per symbol"
+            )
+        if not active:
+            return {"side": "FLAT", "size": 0.0, "entry_price": 0.0, "notional": 0.0}
+        row = active[0]
+        hold = str(row.get("holdSide") or "").lower()
+        side = "LONG" if hold in {"long", "buy"} else "SHORT"
+        size = abs(float(row.get("total") or 0.0))
+        entry = float(row.get("openPriceAvg") or row.get("averageOpenPrice") or 0.0)
+        mode = str(row.get("posMode") or "").lower()
+        if mode:
+            self._account_mode_cache[sid] = mode
+        return {
+            "side": side,
+            "size": size,
+            "entry_price": entry,
+            "mark_price": float(row.get("markPrice") or 0.0),
+            "notional": size * entry,
+            "leverage": float(row.get("leverage") or 0.0),
+            "margin_mode": row.get("marginMode"),
+            "position_mode": mode,
+            "unrealized_pnl": float(row.get("unrealizedPL") or 0.0),
+            "raw": row,
         }
-        if tp_price is not None:
-            body.update({
-                "takeProfit": self._price(symbol, float(tp_price)),
-                "tpTriggerBy": "mark",
-                "tpOrderType": "market",
-            })
-        if sl_price is not None:
-            body.update({
-                "stopLoss": self._price(symbol, float(sl_price)),
-                "slTriggerBy": "mark",
-                "slOrderType": "market",
-            })
-        data = self._request("POST", "/api/v3/trade/place-strategy-order", body=body)
+
+    def _position_mode(self, symbol: str) -> str:
+        sid = self._symbol_id(symbol)
+        cached = self._account_mode_cache.get(sid)
+        if cached:
+            return cached
+        info = self.account_info(symbol)
+        return str(info.get("posMode") or "one_way_mode").lower()
+
+    def _order_detail(self, symbol: str, order_id: str) -> dict[str, Any]:
+        data = self._request(
+            "GET",
+            "/api/v2/mix/order/detail",
+            params={
+                "symbol": self._symbol_id(symbol),
+                "productType": self.PRODUCT_TYPE,
+                "orderId": order_id,
+            },
+        )
         return dict(data or {})
 
-    def market_order(self, symbol: str, side: str, amount: float, reduce_only: bool = False, **kwargs):
+    def _place_protection(
+        self,
+        symbol: str,
+        position_side: str,
+        qty: str,
+        tp_price: float | None,
+        sl_price: float | None,
+    ) -> list[dict[str, Any]]:
+        if tp_price is None and sl_price is None:
+            return []
+        sid = self._symbol_id(symbol)
+        mode = self._position_mode(symbol)
+        results: list[dict[str, Any]] = []
+
+        # In hedge mode Bitget's Classic API uses side as the position side for
+        # close orders (close long => side=buy, close short => side=sell).
+        # In one-way mode it uses the actual closing order direction.
+        if mode == "hedge_mode":
+            close_side = "buy" if position_side == "long" else "sell"
+        else:
+            close_side = "sell" if position_side == "long" else "buy"
+
+        for kind, trigger in (("tp", tp_price), ("sl", sl_price)):
+            if trigger is None:
+                continue
+            body: dict[str, Any] = {
+                "planType": "normal_plan",
+                "symbol": sid,
+                "productType": self.PRODUCT_TYPE,
+                "marginMode": "crossed",
+                "marginCoin": self.MARGIN_COIN,
+                "size": qty,
+                "triggerPrice": self._price(symbol, float(trigger)),
+                "triggerType": "fill_price",
+                "side": close_side,
+                "orderType": "market",
+                "clientOid": self._client_oid(f"utb-{kind}"),
+            }
+            if mode == "hedge_mode":
+                body["tradeSide"] = "close"
+            else:
+                body["reduceOnly"] = "yes"
+            data = self._request("POST", "/api/v2/mix/order/place-plan-order", body=body)
+            results.append(dict(data or {}))
+        return results
+
+    def market_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        reduce_only: bool = False,
+        **kwargs,
+    ) -> dict[str, Any]:
         side = side.lower()
         if side not in {"buy", "sell"}:
             raise ValueError(f"invalid order side: {side}")
+
         sid = self._symbol_id(symbol)
         qty = self._qty(symbol, amount)
-        pos_side = ("long" if side == "sell" else "short") if reduce_only else ("long" if side == "buy" else "short")
+        mode = self._position_mode(symbol)
+        position_side = "long" if side == "buy" else "short"
+
         body: dict[str, Any] = {
-            "category": self.CATEGORY,
             "symbol": sid,
-            "qty": qty,
-            "side": side,
-            "posSide": pos_side,
-            "orderType": "market",
+            "productType": self.PRODUCT_TYPE,
+            "marginCoin": self.MARGIN_COIN,
             "marginMode": "crossed",
+            "orderType": "market",
+            "size": qty,
             "clientOid": self._client_oid("utb-elite"),
         }
-        data = self._request("POST", "/api/v3/trade/place-order", body=body) or {}
+
+        if mode == "hedge_mode":
+            if reduce_only:
+                # TradingEngine calls sell to close LONG and buy to close SHORT.
+                # Classic hedge-mode instead wants the position side + tradeSide=close.
+                body["side"] = "buy" if side == "sell" else "sell"
+                body["tradeSide"] = "close"
+                position_side = "long" if side == "sell" else "short"
+            else:
+                body["side"] = side
+                body["tradeSide"] = "open"
+        else:
+            body["side"] = side
+            body["reduceOnly"] = "yes" if reduce_only else "no"
+
+        data = self._request("POST", "/api/v2/mix/order/place-order", body=body) or {}
         order_id = str(data.get("orderId") or "")
         detail: dict[str, Any] = {}
         if order_id:
             for _ in range(6):
                 try:
-                    detail = self._order_detail(order_id)
-                    if str(detail.get("orderStatus", "")).lower() == "filled":
+                    detail = self._order_detail(symbol, order_id)
+                    if str(detail.get("state") or "").lower() == "filled":
                         break
                 except Exception:
                     pass
                 time.sleep(0.2)
 
-        protection_data = None
+        protection_data: list[dict[str, Any]] = []
         protection_error = None
         if not reduce_only and (kwargs.get("tp_price") is not None or kwargs.get("sl_price") is not None):
             try:
                 protection_data = self._place_protection(
                     symbol,
-                    pos_side,
+                    position_side,
+                    qty,
                     float(kwargs["tp_price"]) if kwargs.get("tp_price") is not None else None,
                     float(kwargs["sl_price"]) if kwargs.get("sl_price") is not None else None,
                 )
             except Exception as exc:
-                # Do not hide an already-filled entry by raising after the fact.
-                # TradingEngine immediately verifies exchange protection and will
-                # emergency-flatten if TP/SL cannot be confirmed.
+                # The entry may already be filled. TradingEngine verifies TP/SL
+                # immediately and emergency-flattens when protection is absent.
                 protection_error = f"{type(exc).__name__}: {exc}"
 
-        filled = float(detail.get("cumExecQty") or qty)
-        average = float(detail.get("avgPrice") or 0.0) or None
+        filled = float(detail.get("baseVolume") or detail.get("size") or qty)
+        average = float(detail.get("priceAvg") or 0.0) or None
         return {
             "id": order_id or data.get("clientOid"),
             "clientOid": data.get("clientOid"),
@@ -366,37 +489,43 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "filled": filled,
             "average": average,
             "price": average,
-            "status": detail.get("orderStatus") or "accepted",
-            "raw": {
-                "order": detail or data,
-                "protection": protection_data,
-                "protection_error": protection_error,
-            },
+            "status": detail.get("state") or "accepted",
+            "protection": protection_data,
+            "protection_error": protection_error,
+            "raw": detail or data,
         }
 
-    def _protection_orders(self, symbol: str) -> list[dict[str, Any]]:
+    def _pending_plan_orders(self, symbol: str) -> list[dict[str, Any]]:
         sid = self._symbol_id(symbol)
-        data = self._request(
-            "GET",
-            "/api/v3/trade/unfilled-strategy-orders",
-            params={"category": self.CATEGORY, "type": "tpsl"},
-        ) or {}
-        rows = data.get("list") if isinstance(data, dict) else data
-        return [
-            dict(x) for x in (rows or [])
-            if str(x.get("symbol", "")).upper() == sid
-            and str(x.get("status", "pending")).lower() in {"pending", "submitting", "live", "new"}
-        ]
+        rows: list[dict[str, Any]] = []
+        # Bitget has used both normal_plan and profit_loss for active TP/SL plans.
+        for plan_type in ("normal_plan", "profit_loss"):
+            try:
+                data = self._request(
+                    "GET",
+                    "/api/v2/mix/order/orders-plan-pending",
+                    params={
+                        "symbol": sid,
+                        "productType": self.PRODUCT_TYPE,
+                        "planType": plan_type,
+                    },
+                ) or {}
+                items = data.get("entrustedList") if isinstance(data, dict) else data
+                rows.extend(dict(x) for x in (items or []))
+            except Exception:
+                continue
+        return rows
 
-    def protection_status(self, symbol: str) -> dict:
+    def protection_status(self, symbol: str) -> dict[str, Any]:
         last_error: Exception | None = None
         for _ in range(5):
             try:
-                orders = self._protection_orders(symbol)
-                has_tp = any(bool(str(x.get("takeProfit") or "").strip()) for x in orders)
-                has_sl = any(bool(str(x.get("stopLoss") or "").strip()) for x in orders)
-                if has_tp and has_sl:
-                    return {"ok": True, "supported": True, "count": len(orders), "orders": orders}
+                orders = self._pending_plan_orders(symbol)
+                # Our implementation places TP and SL as two normal trigger orders.
+                prices = [str(x.get("triggerPrice") or "").strip() for x in orders]
+                active = [x for x, p in zip(orders, prices) if p and p != "0"]
+                if len(active) >= 2:
+                    return {"ok": True, "supported": True, "count": len(active), "orders": active}
             except Exception as exc:
                 last_error = exc
             time.sleep(0.2)
@@ -405,15 +534,23 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         return {"ok": False, "supported": True, "count": 0, "reason": "both Elite TP and SL were not verified"}
 
     def cancel_protection(self, symbol: str) -> None:
-        try:
-            orders = self._protection_orders(symbol)
-        except Exception:
-            return
-        for order in orders:
+        sid = self._symbol_id(symbol)
+        for order in self._pending_plan_orders(symbol):
             order_id = order.get("orderId")
             client_oid = order.get("clientOid")
-            body = {"orderId": str(order_id)} if order_id else {"clientOid": str(client_oid)}
+            if not order_id and not client_oid:
+                continue
+            body: dict[str, Any] = {
+                "symbol": sid,
+                "productType": self.PRODUCT_TYPE,
+                "marginCoin": self.MARGIN_COIN,
+                "planType": str(order.get("planType") or "normal_plan"),
+            }
+            if order_id:
+                body["orderId"] = str(order_id)
+            else:
+                body["clientOid"] = str(client_oid)
             try:
-                self._request("POST", "/api/v3/trade/cancel-strategy-order", body=body)
+                self._request("POST", "/api/v2/mix/order/cancel-plan-order", body=body)
             except Exception:
                 pass
