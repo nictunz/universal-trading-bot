@@ -7,41 +7,28 @@ SERVICE="universal-trading-bot-dashboard.service"
 NGINX_SITE="universal-trading-bot-dashboard"
 PUBLIC_IP="${DASHBOARD_PUBLIC_IP:-34.132.172.40}"
 USER_NAME="${SUDO_USER:-$USER}"
-USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Dashboard venv missing: $VENV" >&2
   exit 1
 fi
-
 cd "$ROOT"
 
-# Preserve all existing .env values and only enforce the private dashboard bind/public URL.
 touch .env
 python3 - "$ROOT/.env" "$PUBLIC_IP" <<'PY'
 from pathlib import Path
 import sys
-path = Path(sys.argv[1])
-ip = sys.argv[2]
-updates = {
-    "DASHBOARD_HOST": "127.0.0.1",
-    "DASHBOARD_PORT": "8000",
-    "DASHBOARD_PUBLIC_URL": f"http://{ip}",
-    "DASHBOARD_AUTH_ENABLED": "true",
-}
-lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-out=[]
-seen=set()
+path=Path(sys.argv[1]); ip=sys.argv[2]
+updates={"DASHBOARD_HOST":"127.0.0.1","DASHBOARD_PORT":"8000","DASHBOARD_PUBLIC_URL":f"http://{ip}","DASHBOARD_AUTH_ENABLED":"true"}
+lines=path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+out=[]; seen=set()
 for line in lines:
     key=line.split("=",1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
     if key in updates:
-        out.append(f"{key}={updates[key]}")
-        seen.add(key)
-    else:
-        out.append(line)
+        out.append(f"{key}={updates[key]}"); seen.add(key)
+    else: out.append(line)
 for key,value in updates.items():
-    if key not in seen:
-        out.append(f"{key}={value}")
+    if key not in seen: out.append(f"{key}={value}")
 path.write_text("\n".join(out).rstrip()+"\n", encoding="utf-8")
 PY
 
@@ -62,7 +49,15 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=$VENV/bin/python -m universal_bot.main
 Restart=always
 RestartSec=5
-Nice=0
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+CPUAccounting=true
+MemoryAccounting=true
+CPUWeight=10000
+IOWeight=10000
+MemoryLow=220M
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target
@@ -73,9 +68,7 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-
     client_max_body_size 2m;
-
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -93,34 +86,26 @@ EOF
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo ln -sfn "/etc/nginx/sites-available/$NGINX_SITE" "/etc/nginx/sites-enabled/$NGINX_SITE"
 sudo nginx -t
-
-# Stop only old dashboard processes. Never touch one-year backtest processes.
 pkill -f "$VENV/bin/python -m universal_bot.main" 2>/dev/null || true
 sleep 2
-
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$SERVICE"
 sudo systemctl restart nginx
 
 for _ in $(seq 1 30); do
-  if curl --connect-timeout 1 --max-time 3 -fsS http://127.0.0.1:8000/health >/tmp/utb-health.json 2>/dev/null; then
-    break
-  fi
+  if curl --connect-timeout 1 --max-time 3 -fsS http://127.0.0.1:8000/health >/tmp/utb-health.json 2>/dev/null; then break; fi
   sleep 2
 done
-
 if ! curl --connect-timeout 1 --max-time 5 -fsS http://127.0.0.1:8000/health; then
-  echo
-  echo "Dashboard failed health check." >&2
+  echo; echo "Dashboard failed health check." >&2
   sudo systemctl --no-pager --full status "$SERVICE" || true
   exit 2
 fi
 
 echo
-echo "Dashboard service installed."
+echo "Dashboard service installed with reserved CPU/IO/memory priority."
 echo "Public:   http://$PUBLIC_IP"
 echo "Internal: http://127.0.0.1:8000"
 echo "Strategy: http://$PUBLIC_IP/strategy"
 echo "Service:  $SERVICE"
-echo
 sudo ss -ltnp | grep -E ':80 |:8000 ' || true
