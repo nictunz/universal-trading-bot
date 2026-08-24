@@ -60,8 +60,13 @@ updates = {
     'EXCHANGE': 'bitget',
     'ASSET_CLASS': 'crypto',
     'BITGET_EXECUTION_PROFILE': 'elite',
+    'LEVERAGE': '50',
     'MARGIN_MODE': 'crossed',
-    'LIVE_REQUIRE_ONE_WAY_MODE': 'false',
+    'LIVE_REQUIRE_ONE_WAY_MODE': 'true',
+    'MAX_PYRAMIDING': '3',
+    'LIVE_ENTRY_MULTIPLIER': '15',
+    'LIVE_MAX_ENTRIES_PER_POSITION': '3',
+    'LIVE_MAX_TOTAL_MULTIPLIER': '45',
     'REQUIRE_EXCHANGE_PROTECTION': 'true',
     'DASHBOARD_HOST': '127.0.0.1',
     'DASHBOARD_PORT': '8000',
@@ -78,15 +83,13 @@ updates = {
     'BITGET_ELITE_API_KEY': os.environ['BITGET_ELITE_KEY'],
     'BITGET_ELITE_API_SECRET': os.environ['BITGET_ELITE_SECRET'],
     'BITGET_ELITE_API_PASSPHRASE': os.environ['BITGET_ELITE_PASSPHRASE'],
-    # Clear old ambiguous names so Elite credentials can never be confused with
-    # the former single Bitget credential set.
     'BITGET_API_KEY': '',
     'BITGET_API_SECRET': '',
     'BITGET_API_PASSPHRASE': '',
 }
 
 def encode(value: str) -> str:
-    if value.lower() in {'true', 'false'} or value.isdigit():
+    if value.lower() in {'true', 'false'} or value.replace('.', '', 1).isdigit():
         return value
     return json.dumps(value, ensure_ascii=False)
 
@@ -122,8 +125,13 @@ s = Settings()
 print('BOT_MODE                    =', s.bot_mode)
 print('EXCHANGE                    =', s.exchange)
 print('BITGET_EXECUTION_PROFILE    =', s.bitget_execution_profile)
+print('LEVERAGE                    =', s.leverage)
 print('MARGIN_MODE                 =', s.margin_mode)
 print('LIVE_REQUIRE_ONE_WAY_MODE   =', s.live_require_one_way_mode)
+print('MAX_PYRAMIDING              =', s.max_pyramiding)
+print('LIVE_ENTRY_MULTIPLIER       =', s.live_entry_multiplier)
+print('LIVE_MAX_ENTRIES            =', s.live_max_entries_per_position)
+print('LIVE_MAX_TOTAL_MULTIPLIER   =', s.live_max_total_multiplier)
 print('DASHBOARD_AUTH              =', 'SET' if s.dashboard_username and s.dashboard_password and s.dashboard_session_secret else 'MISSING')
 print('BITGET_STANDARD_API         =', 'SET' if all(s.bitget_standard_credentials) else 'NOT SET (optional)')
 print('BITGET_ELITE_API            =', 'SET' if all(s.bitget_elite_credentials) else 'MISSING')
@@ -131,4 +139,4 @@ PY
 
 echo
 echo "저장 완료. 아직 PAPER 모드입니다."
-echo "다음 단계: BOT_MODE=LIVE $PY -m universal_bot.preflight"
+echo "다음 단계: Elite 레버리지 동기화 후 LIVE preflight"
