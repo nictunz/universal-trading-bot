@@ -61,6 +61,25 @@ def completed_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return out
 
 
+def _scanner_fetch_limit(settings: Settings) -> int:
+    """Fetch only the history the live strategy actually needs.
+
+    The old dashboard always requested at least 1000 candles every polling
+    cycle. On the small GCP host that needlessly competed with long backtests
+    for CPU, memory and network time. Keep a modest warm-up margin while
+    avoiding work that cannot affect the current signal.
+    """
+    required = max(
+        settings.volatility_bars,
+        settings.nbar_volatility_bars,
+        settings.adx_length * 2,
+        settings.rsi_length + 2,
+        settings.volume_lookback + 2,
+        50,
+    )
+    return max(100, min(500, required + 32))
+
+
 def main():
     settings = Settings()
     runtimes = []
@@ -73,7 +92,7 @@ def main():
     app = create_dashboard(scanner)
     install_strategy_dashboard(app, scanner)
     threading.Thread(target=lambda: uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port, log_level="warning"), daemon=True).start()
-    limit = max(1000, settings.volatility_bars + 20, settings.nbar_volatility_bars + 20)
+    limit = _scanner_fetch_limit(settings)
     while True:
         frames = {}
         for runtime in runtimes:
