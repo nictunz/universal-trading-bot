@@ -15,7 +15,7 @@ from universal_bot.dashboard_nav import install_dashboard_navigation
 from universal_bot.engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
-from universal_bot.strategy_dashboard import install_strategy_dashboard
+from universal_bot.strategy_dashboard import install_strategy_dashboard, _apply as _apply_strategy_settings, _load as _load_strategy_settings
 
 
 def build_adapter(settings: Settings):
@@ -78,28 +78,65 @@ def _scanner_fetch_limit(settings: Settings) -> int:
 
 def main():
     settings = Settings()
-    runtimes = []
-    for symbol in settings.symbol_list:
-        local = settings.model_copy(update={"symbol": symbol})
-        adapter = build_adapter(local)
-        strategy = UniversalV15Strategy(local)
-        runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
-    scanner = UniversalScanner(runtimes)
+
+    # Keep the HTTP dashboard available even when exchange/runtime startup is slow.
+    # The scanner starts empty; runtimes are attached immediately afterwards.
+    scanner = UniversalScanner([])
     app = create_dashboard(scanner)
     install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
     install_cache_refresh_dashboard(app)
     install_dashboard_navigation(app)
-    threading.Thread(target=lambda: uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port, log_level="warning"), daemon=True).start()
+    threading.Thread(
+        target=lambda: uvicorn.run(
+            app,
+            host=settings.dashboard_host,
+            port=settings.dashboard_port,
+            log_level="warning",
+        ),
+        daemon=True,
+        name="dashboard-http",
+    ).start()
+    print(
+        f"DASHBOARD_HTTP_START host={settings.dashboard_host} port={settings.dashboard_port}",
+        flush=True,
+    )
+
+    runtimes = scanner.runtimes
+    for symbol in settings.symbol_list:
+        try:
+            local = settings.model_copy(update={"symbol": symbol})
+            adapter = build_adapter(local)
+            strategy = UniversalV15Strategy(local)
+            runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
+            print(f"RUNTIME_READY symbol={symbol}", flush=True)
+        except Exception as exc:
+            # A single runtime must never take down the public dashboard.
+            print(
+                f"RUNTIME_INIT_FAILED symbol={symbol} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+    # install_strategy_dashboard ran while the scanner was intentionally empty;
+    # apply any saved dashboard overrides now that runtimes exist.
+    if runtimes:
+        _apply_strategy_settings(scanner, _load_strategy_settings())
+
     limit = _scanner_fetch_limit(settings)
     while True:
         frames = {}
-        for runtime in runtimes:
+        for runtime in list(runtimes):
             try:
                 frame = runtime.engine.adapter.fetch_ohlcv(runtime.symbol, settings.timeframe, limit=limit)
                 frame = completed_candles(frame, settings.timeframe)
                 needed = runtime.engine.settings
-                if len(frame) < max(needed.volatility_bars, needed.nbar_volatility_bars, needed.adx_length * 2, needed.rsi_length + 2, 50):
+                if len(frame) < max(
+                    needed.volatility_bars,
+                    needed.nbar_volatility_bars,
+                    needed.adx_length * 2,
+                    needed.rsi_length + 2,
+                    50,
+                ):
                     raise RuntimeError(f"insufficient completed candles: {len(frame)}")
                 frames[runtime.symbol] = frame
             except Exception as exc:
