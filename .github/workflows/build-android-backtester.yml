@@ -47,7 +47,9 @@ jobs:
         run: |
           rm -rf android/app/src/main/python/universal_bot
           cp -R universal_bot android/app/src/main/python/universal_bot
+          cp android/compat/config.py android/app/src/main/python/universal_bot/config.py
           find android/app/src/main/python/universal_bot -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+          echo 'Android compatibility config applied'
 
       - name: Build APK
         shell: bash
