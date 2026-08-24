@@ -13,7 +13,7 @@ from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
 from universal_bot.dashboard_auth import install_dashboard_auth
 from universal_bot.dashboard_nav import install_dashboard_navigation
-from universal_bot.engine import TradingEngine
+from universal_bot.runtime_engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
 from universal_bot.strategy_dashboard import (
