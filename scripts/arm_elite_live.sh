@@ -11,35 +11,68 @@ if [[ ! -x "$PY" ]]; then
   exit 2
 fi
 
-TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+echo "===== ELITE LIVE PROFILE CHECK ====="
+"$PY" - <<'PY'
+from universal_bot.config import Settings
+s = Settings()
+expected = {
+    'BITGET_EXECUTION_PROFILE': (s.bitget_execution_profile, 'elite'),
+    'LEVERAGE': (s.leverage, 50),
+    'MARGIN_MODE': (s.margin_mode, 'crossed'),
+    'LIVE_REQUIRE_ONE_WAY_MODE': (s.live_require_one_way_mode, True),
+    'MAX_PYRAMIDING': (s.max_pyramiding, 3),
+    'LIVE_ENTRY_MULTIPLIER': (s.live_entry_multiplier, 15.0),
+    'LIVE_MAX_ENTRIES_PER_POSITION': (s.live_max_entries_per_position, 3),
+    'LIVE_MAX_TOTAL_MULTIPLIER': (s.live_max_total_multiplier, 45.0),
+}
+bad=[]
+for name,(actual,wanted) in expected.items():
+    ok = actual == wanted
+    print(f'{name}={actual} expected={wanted} ok={ok}')
+    if not ok: bad.append(name)
+if bad:
+    raise SystemExit('LIVE profile mismatch: ' + ', '.join(bad))
+PY
 
-echo "===== ELITE LIVE PREFLIGHT ====="
-BOT_MODE=LIVE "$PY" -m universal_bot.preflight >"$TMP"
-cat "$TMP"
+TMP_BTC="$(mktemp)"
+TMP_ETH="$(mktemp)"
+trap 'rm -f "$TMP_BTC" "$TMP_ETH"' EXIT
 
-READY="$($PY - "$TMP" <<'PY'
+echo
+echo "===== BTC ELITE LIVE PREFLIGHT ====="
+BOT_MODE=LIVE SYMBOL='BTC/USDT:USDT' "$PY" -m universal_bot.preflight >"$TMP_BTC"
+cat "$TMP_BTC"
+
+echo
+echo "===== ETH ELITE LIVE PREFLIGHT ====="
+BOT_MODE=LIVE SYMBOL='ETH/USDT:USDT' "$PY" -m universal_bot.preflight >"$TMP_ETH"
+cat "$TMP_ETH"
+
+READY="$($PY - "$TMP_BTC" "$TMP_ETH" <<'PY'
 import json, sys
-with open(sys.argv[1], encoding='utf-8') as f:
-    data=json.load(f)
-print('true' if data.get('ready') is True else 'false')
+ok=True
+for path in sys.argv[1:]:
+    with open(path, encoding='utf-8') as f:
+        data=json.load(f)
+    ok = ok and data.get('ready') is True and data.get('api_family') == 'classic-v2'
+print('true' if ok else 'false')
 PY
 )"
 
 if [[ "$READY" != "true" ]]; then
   echo
-  echo "LIVE 전환 차단: preflight ready=true가 아닙니다." >&2
+  echo "LIVE 전환 차단: BTC/ETH 둘 다 ready=true가 아닙니다." >&2
   exit 3
 fi
 
-read -r -p "Preflight 통과. 실제 Elite 주문을 활성화하려면 LIVE 를 입력하세요: " CONFIRM
+read -r -p "BTC/ETH Preflight 통과. 실제 Elite 주문을 활성화하려면 LIVE 를 입력하세요: " CONFIRM
 if [[ "$CONFIRM" != "LIVE" ]]; then
   echo "취소했습니다. .env는 PAPER 그대로입니다."
   exit 0
 fi
 
 cp .env ".env.bak-before-live-$(date +%Y%m%d-%H%M%S)"
-python3 - <<'PY'
+"$PY" - <<'PY'
 from pathlib import Path
 p=Path('.env')
 lines=p.read_text(encoding='utf-8').splitlines()
@@ -71,4 +104,4 @@ echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
 
 echo
-echo "LIVE 활성화 완료. 실제 주문은 전략 신호가 발생할 때 Elite Trading Portfolio API로 전송됩니다."
+echo "LIVE 활성화 완료. BTC/ETH는 50x 계정 레버리지, 15x 진입 배수, 최대 3회 진입으로 동작합니다."
