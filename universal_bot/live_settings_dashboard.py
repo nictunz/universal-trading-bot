@@ -4,12 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from universal_bot.config import Settings
 from universal_bot.strategy_dashboard import STORE as STRATEGY_STORE
+from universal_bot.trade_history import TradeHistoryStore
 
 ENV_PATH = Path('.env')
 
@@ -95,7 +96,41 @@ def _sync_strategy_pyramiding(total_entries: int) -> None:
     STRATEGY_STORE.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+def _start_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value + 'T00:00:00+00:00' if len(value) == 10 else value
+
+
+def _end_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value + 'T23:59:59.999999+00:00' if len(value) == 10 else value
+
+
 def install_live_settings_dashboard(app, scanner) -> None:
+    history = TradeHistoryStore()
+
+    @app.get('/api/trade-events')
+    def trade_events(
+        symbol: str,
+        mode: str = 'ALL',
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = Query(5000, ge=1, le=10000),
+    ):
+        return {
+            'symbol': symbol,
+            'mode': mode.upper(),
+            'events': history.list_events(
+                symbol=symbol,
+                mode=mode,
+                start=_start_iso(start),
+                end=_end_iso(end),
+                limit=limit,
+            ),
+        }
+
     @app.get('/api/live/settings')
     def get_live_settings():
         return _snapshot(scanner)
