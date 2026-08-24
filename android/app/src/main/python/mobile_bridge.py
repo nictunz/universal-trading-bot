@@ -8,9 +8,14 @@ from universal_bot.local_cache_core import (
     DEFAULT_SERVER,
     DEFAULT_USER,
     build_cache_and_backtest,
-    test_ssh_connection,
-    upload_to_server,
+    server_upload_eligible,
 )
+
+
+def _ssh_bridge():
+    from java import jclass
+
+    return jclass("com.nictunz.universalbacktester.SshBridge")
 
 
 def defaults() -> str:
@@ -46,25 +51,11 @@ def run_backtest(symbol: str, timeframe: str, start_text: str, end_text: str, ou
 
 
 def ensure_ssh_key(app_files_dir: str) -> str:
-    import paramiko
-
-    root = Path(app_files_dir) / "ssh"
-    root.mkdir(parents=True, exist_ok=True)
-    private_path = root / "android_upload_rsa"
-    if private_path.exists():
-        key = paramiko.RSAKey.from_private_key_file(str(private_path))
-    else:
-        key = paramiko.RSAKey.generate(3072)
-        key.write_private_key_file(str(private_path))
-    public_key = f"{key.get_name()} {key.get_base64()} universal-backtester-android"
-    return json.dumps(
-        {"private_key": str(private_path), "public_key": public_key},
-        ensure_ascii=False,
-    )
+    return str(_ssh_bridge().ensureKey(app_files_dir))
 
 
 def test_ssh(host: str, username: str, key_path: str) -> str:
-    return test_ssh_connection(host.strip(), username.strip(), key_path=key_path.strip())
+    return str(_ssh_bridge().testConnection(host.strip(), username.strip(), key_path.strip()))
 
 
 def upload_result(
@@ -75,15 +66,25 @@ def upload_result(
     remote_dir: str,
     key_path: str,
 ) -> str:
-    logs: list[str] = []
-    upload_to_server(
-        Path(db_path),
-        Path(result_path),
-        host.strip(),
-        username.strip(),
-        remote_dir.strip(),
-        "",
-        key_path.strip(),
-        logs.append,
+    result_file = Path(result_path)
+    if not result_file.is_file():
+        raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
+
+    meta = json.loads(result_file.read_text(encoding="utf-8"))
+    start_text = str(meta.get("requested_start", ""))
+    end_text = str(meta.get("requested_end", ""))
+    if not start_text or not end_text or not server_upload_eligible(start_text, end_text):
+        raise RuntimeError("서버 업로드 차단: 1년 범위(360~370일)로 완료된 캐시만 업로드할 수 있습니다.")
+    if not bool(meta.get("server_upload_eligible", False)):
+        raise RuntimeError("서버 업로드 차단: 결과 파일이 서버 업로드용으로 검증되지 않았습니다.")
+
+    return str(
+        _ssh_bridge().uploadFiles(
+            db_path,
+            result_path,
+            host.strip(),
+            username.strip(),
+            remote_dir.strip(),
+            key_path.strip(),
+        )
     )
-    return json.dumps({"ok": True, "logs": logs}, ensure_ascii=False)
