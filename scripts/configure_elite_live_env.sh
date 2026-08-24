@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PY="${DASHBOARD_VENV:-$HOME/.cache/universal-trading-bot-dashboard-venv}/bin/python"
+if [[ ! -x "$PY" ]]; then
+  PY=python3
+fi
 
 touch .env
 cp .env ".env.bak-$(date +%Y%m%d-%H%M%S)"
@@ -40,12 +44,12 @@ if [[ -z "$BITGET_ELITE_KEY" || -z "$BITGET_ELITE_SECRET" || -z "$BITGET_ELITE_P
   exit 2
 fi
 
-SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(64))')"
+SESSION_SECRET="$($PY -c 'import secrets; print(secrets.token_urlsafe(64))')"
 export DASH_USER DASH_PASS SESSION_SECRET
 export BITGET_STANDARD_KEY BITGET_STANDARD_SECRET BITGET_STANDARD_PASSPHRASE
 export BITGET_ELITE_KEY BITGET_ELITE_SECRET BITGET_ELITE_PASSPHRASE
 
-python3 - <<'PY'
+$PY - <<'PY'
 from pathlib import Path
 import json
 import os
@@ -107,7 +111,7 @@ chmod 600 .env
 
 echo
 echo "===== REDACTED CONFIG CHECK ====="
-python3 - <<'PY'
+$PY - <<'PY'
 from universal_bot.config import Settings
 s = Settings()
 print('BOT_MODE                    =', s.bot_mode)
@@ -122,4 +126,4 @@ PY
 
 echo
 echo "저장 완료. 아직 PAPER 모드입니다."
-echo "다음 단계: BOT_MODE=LIVE python -m universal_bot.preflight"
+echo "다음 단계: BOT_MODE=LIVE $PY -m universal_bot.preflight"
