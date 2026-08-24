@@ -53,11 +53,6 @@ class Settings(BaseSettings):
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
 
-    # Realtime crypto volume routing. "none" means direct venue public APIs only
-    # and therefore fail-closed on the US server when Binance/Bybit are blocked.
-    # "coinapi" enables the optional licensed read-only fallback. "community"
-    # is retained only for diagnostics; the tested Community account cannot read
-    # Binance/Bybit futures and is not the default.
     crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False
@@ -86,8 +81,17 @@ class Settings(BaseSettings):
     broker_api_key: str = ""
     broker_api_secret: str = ""
     database_url: str = "sqlite:///data/universal_bot.db"
-    dashboard_host: str = "0.0.0.0"
+
+    # Dashboard network/auth. Keep FastAPI private on loopback behind nginx.
+    dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8000
+    dashboard_public_url: str = "http://34.132.172.40"
+    dashboard_auth_enabled: bool = False
+    dashboard_username: str = ""
+    dashboard_password: str = ""
+    dashboard_session_secret: str = ""
+    dashboard_session_hours: int = 12
+    dashboard_cookie_secure: bool = False
 
     @property
     def symbol_list(self) -> list[str]:
