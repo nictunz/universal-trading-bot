@@ -16,6 +16,7 @@ def install_dashboard_navigation(app: FastAPI) -> None:
             "dashboard_url": PUBLIC_DASHBOARD_URL,
             "strategy_url": PUBLIC_STRATEGY_URL,
             "strategy_path": "/strategy",
+            "cache_refresh_path": "/strategy/cache",
         }
 
     @app.middleware("http")
@@ -40,6 +41,7 @@ def install_dashboard_navigation(app: FastAPI) -> None:
   </div>
   <div class='row'>
     <button type='button' onclick=\"location.href='/strategy'\">⚙ 전략 수치 변경</button>
+    <button type='button' onclick=\"location.href='/strategy/cache'\">⚡ 최신 캐시 갱신</button>
     <button type='button' class='ghost' onclick=\"location.href='/'\">대시보드 홈</button>
   </div>
 </div>"""
