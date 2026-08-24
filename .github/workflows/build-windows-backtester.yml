@@ -1,0 +1,51 @@
+name: Build Windows Backtester EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/local_cache_gui.py'
+      - 'universal_bot/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-windows-backtester.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[desktop]"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name UniversalTradingBacktester `
+            --collect-all ccxt `
+            --collect-all paramiko `
+            universal_bot/local_cache_gui.py
+
+      - name: Smoke test artifact exists
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'dist/UniversalTradingBacktester.exe')) { throw 'EXE missing' }
+          Get-Item dist/UniversalTradingBacktester.exe | Format-List Name,Length,LastWriteTime
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniversalTradingBacktester-Windows
+          path: dist/UniversalTradingBacktester.exe
+          if-no-files-found: error
+          retention-days: 30
