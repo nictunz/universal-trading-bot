@@ -13,6 +13,7 @@ from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
 from universal_bot.dashboard_auth import install_dashboard_auth
 from universal_bot.dashboard_nav import install_dashboard_navigation
+from universal_bot.live_settings_dashboard import install_live_settings_dashboard
 from universal_bot.runtime_engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
@@ -167,6 +168,7 @@ def main():
     app = create_dashboard(scanner)
     install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
+    install_live_settings_dashboard(app, scanner)
     install_cache_refresh_dashboard(app)
     install_dashboard_navigation(app)
 
