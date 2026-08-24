@@ -5,9 +5,9 @@ import hmac
 import html
 import time
 from collections import defaultdict, deque
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from universal_bot.config import Settings
@@ -74,8 +74,6 @@ def _login_page(message: str = "") -> str:
 
 
 def install_dashboard_auth(app: FastAPI) -> None:
-    settings = Settings()
-
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         current = Settings()
@@ -91,8 +89,6 @@ def install_dashboard_auth(app: FastAPI) -> None:
                 return RedirectResponse(f"/login?next={next_url}", status_code=303)
 
         response = await call_next(request)
-
-        # Keep the public dashboard public, but always expose one obvious admin button.
         if request.url.path == "/" and response.headers.get("content-type", "").startswith("text/html"):
             try:
                 body = b"".join([chunk async for chunk in response.body_iterator]).decode("utf-8")
@@ -115,7 +111,12 @@ def install_dashboard_auth(app: FastAPI) -> None:
         return HTMLResponse(_login_page(message))
 
     @app.post("/login")
-    def login(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form("/strategy")):
+    async def login(request: Request):
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        form = parse_qs(raw, keep_blank_values=True)
+        username = form.get("username", [""])[0]
+        password = form.get("password", [""])[0]
+        next_url = form.get("next", ["/strategy"])[0]
         current = Settings()
         if not _configured(current):
             return HTMLResponse(_login_page("관리자 인증값이 아직 .env에 설정되지 않았습니다."), status_code=503)
@@ -132,7 +133,7 @@ def install_dashboard_auth(app: FastAPI) -> None:
             time.sleep(min(1.5, 0.2 * len(failures)))
             return HTMLResponse(_login_page("아이디 또는 비밀번호가 올바르지 않습니다."), status_code=401)
         failures.clear()
-        target = next if next.startswith("/") and not next.startswith("//") else "/strategy"
+        target = next_url if next_url.startswith("/") and not next_url.startswith("//") else "/strategy"
         response = RedirectResponse(target, status_code=303)
         response.set_cookie(
             COOKIE_NAME,
