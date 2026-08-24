@@ -60,6 +60,17 @@ class TradingEngine(_BaseTradingEngine):
             )
             self._live_entry_equity_basis = None
 
+    def step(self, df, precomputed=None):
+        # Saved dashboard strategy settings may contain an older pyramiding
+        # value. LIVE Elite always follows the dedicated live entry cap.
+        if self._elite_live():
+            live_entries = int(self.settings.live_max_entries_per_position)
+            if self.settings.max_pyramiding != live_entries:
+                self.settings.max_pyramiding = live_entries
+                if hasattr(self.strategy, "s"):
+                    self.strategy.s.max_pyramiding = live_entries
+        return super().step(df, precomputed)
+
     def _amount(self, price: float) -> float:
         if not self._elite_live():
             return super()._amount(price)
