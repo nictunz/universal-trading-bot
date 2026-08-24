@@ -56,18 +56,35 @@ class Settings(BaseSettings):
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
     leverage: int = 50
-    margin_mode: str = "cross"
+    margin_mode: str = "crossed"
     require_exchange_protection: bool = True
     reconciliation_interval_seconds: int = 10
     stale_data_seconds: int = 600
     max_consecutive_api_errors: int = 3
     live_max_position_notional_percent: float = 10.0
     live_require_one_way_mode: bool = True
-    binance_api_key: str = ""
-    binance_api_secret: str = ""
+
+    # Bitget credential routing.
+    # - standard: normal Bitget API; reserved for funding/spot/standard account work.
+    # - elite: dedicated Elite Trading Portfolio API; used for LIVE execution when
+    #   BITGET_EXECUTION_PROFILE=elite.
+    bitget_execution_profile: str = "elite"
+    bitget_standard_api_key: str = ""
+    bitget_standard_api_secret: str = ""
+    bitget_standard_api_passphrase: str = ""
+    bitget_elite_api_key: str = ""
+    bitget_elite_api_secret: str = ""
+    bitget_elite_api_passphrase: str = ""
+    bitget_elite_request_timeout: float = 8.0
+
+    # Legacy names retained for backwards compatibility. New deployments should
+    # use BITGET_STANDARD_* and BITGET_ELITE_* instead.
     bitget_api_key: str = ""
     bitget_api_secret: str = ""
     bitget_api_passphrase: str = ""
+
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
     okx_api_key: str = ""
     okx_api_secret: str = ""
     okx_api_passphrase: str = ""
@@ -95,3 +112,20 @@ class Settings(BaseSettings):
     @property
     def crypto_fallback_exchange_list(self) -> list[str]:
         return [x.strip().lower() for x in self.crypto_volume_fallback_exchanges.split(",") if x.strip()]
+
+    @property
+    def bitget_standard_credentials(self) -> tuple[str, str, str]:
+        """Return new standard credentials, falling back to legacy names."""
+        return (
+            self.bitget_standard_api_key or self.bitget_api_key,
+            self.bitget_standard_api_secret or self.bitget_api_secret,
+            self.bitget_standard_api_passphrase or self.bitget_api_passphrase,
+        )
+
+    @property
+    def bitget_elite_credentials(self) -> tuple[str, str, str]:
+        return (
+            self.bitget_elite_api_key,
+            self.bitget_elite_api_secret,
+            self.bitget_elite_api_passphrase,
+        )
