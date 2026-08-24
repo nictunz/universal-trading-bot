@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     rsi_overbought_max: float = 90.0
     allow_long: bool = True
     allow_short: bool = True
-    max_pyramiding: int = 2
+    # First entry + two add-on entries = three total entries.
+    max_pyramiding: int = 3
     cooldown_bars: int = 6
     reentry_bars: int = 6
     use_start_date: bool = True
@@ -55,14 +56,21 @@ class Settings(BaseSettings):
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
+
+    # LIVE execution defaults for the user's Classic v2 Elite account.
     leverage: int = 50
     margin_mode: str = "crossed"
     require_exchange_protection: bool = True
     reconciliation_interval_seconds: int = 10
     stale_data_seconds: int = 600
     max_consecutive_api_errors: int = 3
+    # Generic/standard LIVE safety limit retained for non-Elite routing.
     live_max_position_notional_percent: float = 10.0
     live_require_one_way_mode: bool = True
+    # Elite LIVE sizing only. Each signal uses current available USDT x 15.
+    live_entry_multiplier: float = 15.0
+    live_max_entries_per_position: int = 3
+    live_max_total_multiplier: float = 45.0
 
     # Bitget credential routing.
     # - standard: normal Bitget API; reserved for funding/spot/standard account work.
