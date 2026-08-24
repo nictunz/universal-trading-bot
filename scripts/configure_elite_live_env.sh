@@ -17,7 +17,7 @@ read -r -p "대시보드 관리자 아이디: " DASH_USER
 read -r -s -p "대시보드 관리자 비밀번호: " DASH_PASS; echo
 
 echo
-read -r -p "일반 Bitget API Key (없으면 Enter): " BITGET_STANDARD_KEY
+read -r -s -p "일반 Bitget API Key (없으면 Enter): " BITGET_STANDARD_KEY; echo
 if [[ -n "$BITGET_STANDARD_KEY" ]]; then
   read -r -s -p "일반 Bitget API Secret: " BITGET_STANDARD_SECRET; echo
   read -r -s -p "일반 Bitget API Passphrase: " BITGET_STANDARD_PASSPHRASE; echo
@@ -27,7 +27,7 @@ else
 fi
 
 echo
-read -r -p "Elite Trading API Key: " BITGET_ELITE_KEY
+read -r -s -p "Elite Trading API Key: " BITGET_ELITE_KEY; echo
 read -r -s -p "Elite Trading API Secret(HMAC Key): " BITGET_ELITE_SECRET; echo
 read -r -s -p "Elite Trading API Passphrase: " BITGET_ELITE_PASSPHRASE; echo
 
