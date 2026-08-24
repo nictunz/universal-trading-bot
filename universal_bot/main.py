@@ -12,6 +12,7 @@ from universal_bot.dashboard import create_dashboard
 from universal_bot.engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
+from universal_bot.strategy_dashboard import install_strategy_dashboard
 
 
 def build_adapter(settings: Settings):
@@ -70,6 +71,7 @@ def main():
         runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
     scanner = UniversalScanner(runtimes)
     app = create_dashboard(scanner)
+    install_strategy_dashboard(app, scanner)
     threading.Thread(target=lambda: uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port, log_level="warning"), daemon=True).start()
     limit = max(1000, settings.volatility_bars + 20, settings.nbar_volatility_bars + 20)
     while True:
@@ -78,7 +80,8 @@ def main():
             try:
                 frame = runtime.engine.adapter.fetch_ohlcv(runtime.symbol, settings.timeframe, limit=limit)
                 frame = completed_candles(frame, settings.timeframe)
-                if len(frame) < max(settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 2, 50):
+                needed = runtime.engine.settings
+                if len(frame) < max(needed.volatility_bars, needed.nbar_volatility_bars, needed.adx_length * 2, needed.rsi_length + 2, 50):
                     raise RuntimeError(f"insufficient completed candles: {len(frame)}")
                 frames[runtime.symbol] = frame
             except Exception as exc:
