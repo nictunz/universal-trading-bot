@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     rsi_overbought_max: float = 90.0
     allow_long: bool = True
     allow_short: bool = True
-    # First entry + two add-on entries = three total entries.
-    max_pyramiding: int = 3
+    # First entry + one add-on entry = two total entries.
+    max_pyramiding: int = 2
     cooldown_bars: int = 6
     reentry_bars: int = 6
     use_start_date: bool = True
@@ -69,8 +69,8 @@ class Settings(BaseSettings):
     live_require_one_way_mode: bool = True
     # Elite LIVE sizing only. Each signal uses current available USDT x 15.
     live_entry_multiplier: float = 15.0
-    live_max_entries_per_position: int = 3
-    live_max_total_multiplier: float = 45.0
+    live_max_entries_per_position: int = 2
+    live_max_total_multiplier: float = 30.0
 
     # Bitget credential routing.
     # - standard: normal Bitget API; reserved for funding/spot/standard account work.
