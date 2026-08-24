@@ -78,6 +78,11 @@ updates = {
     'BITGET_ELITE_API_KEY': os.environ['BITGET_ELITE_KEY'],
     'BITGET_ELITE_API_SECRET': os.environ['BITGET_ELITE_SECRET'],
     'BITGET_ELITE_API_PASSPHRASE': os.environ['BITGET_ELITE_PASSPHRASE'],
+    # Clear old ambiguous names so Elite credentials can never be confused with
+    # the former single Bitget credential set.
+    'BITGET_API_KEY': '',
+    'BITGET_API_SECRET': '',
+    'BITGET_API_PASSPHRASE': '',
 }
 
 def encode(value: str) -> str:
