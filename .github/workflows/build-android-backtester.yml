@@ -1,0 +1,68 @@
+name: Build Android Backtester APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'universal_bot/local_cache_core.py'
+      - 'universal_bot/archive_historical.py'
+      - 'universal_bot/fast_backtest.py'
+      - 'universal_bot/backtest_service.py'
+      - 'universal_bot/providers/**'
+      - 'universal_bot/strategy/**'
+      - '.github/workflows/build-android-backtester.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Sync shared Python engine into Android app
+        shell: bash
+        run: |
+          rm -rf android/app/src/main/python/universal_bot
+          cp -R universal_bot android/app/src/main/python/universal_bot
+          find android/app/src/main/python/universal_bot -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+
+      - name: Build APK
+        shell: bash
+        run: gradle -p android :app:assembleDebug --stacktrace
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk UniversalTradingBacktester-Android.apk
+          ls -lh UniversalTradingBacktester-Android.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniversalTradingBacktester-Android
+          path: UniversalTradingBacktester-Android.apk
+          if-no-files-found: error
+          retention-days: 30
