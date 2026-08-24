@@ -7,6 +7,7 @@ import uvicorn
 import pandas as pd
 
 from universal_bot.adapters import HybridCCXTAdapter, YFinanceMarketAdapter
+from universal_bot.cache_refresh_dashboard import install_cache_refresh_dashboard
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
 from universal_bot.dashboard_auth import install_dashboard_auth
@@ -87,6 +88,7 @@ def main():
     app = create_dashboard(scanner)
     install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
+    install_cache_refresh_dashboard(app)
     install_dashboard_navigation(app)
     threading.Thread(target=lambda: uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port, log_level="warning"), daemon=True).start()
     limit = _scanner_fetch_limit(settings)
