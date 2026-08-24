@@ -8,8 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from universal_bot.archive_historical import OfficialArchiveHistoricalDataManager
-from universal_bot.backtest_service import run_symbol_backtest, _validate_crypto_data
+from universal_bot.backtest_service import _validate_crypto_data
 from universal_bot.config import Settings
+from universal_bot.fast_backtest import run_cached_symbol_backtest
 from universal_bot.historical import DataRequest
 from universal_bot.trade_history import TradeHistoryStore
 
@@ -93,21 +94,27 @@ def main() -> None:
             del df
             gc.collect()
 
-    print("\n===== FULL ONE-YEAR BACKTEST =====", flush=True)
-    result = run_symbol_backtest(
+    # Important: once all four exchanges have been cached and validated, the
+    # final strategy calculation must be cache-only. Calling run_symbol_backtest
+    # here would re-enter sync() for the entire one-year range and can hit
+    # blocked Binance/Bybit endpoints or archive edge conditions even though the
+    # database is already complete.
+    print("\n===== FULL ONE-YEAR BACKTEST (CACHE ONLY) =====", flush=True)
+    result = run_cached_symbol_backtest(
         symbol=SYMBOL,
         asset_class="crypto",
         exchange="bitget",
         timeframe=TIMEFRAME,
         start=START,
         end=END,
+        database_path=db,
     )
 
     run_id = f"BT-1Y-{slug}-{TIMEFRAME}-{START}-{END}"
     TradeHistoryStore().record_backtest(
         result,
         run_id=run_id,
-        params={"symbol": SYMBOL, "timeframe": TIMEFRAME, "start": START, "end": END, "source": "one-year-runner"},
+        params={"symbol": SYMBOL, "timeframe": TIMEFRAME, "start": START, "end": END, "source": "one-year-runner-cache-only"},
     )
 
     keys = (
@@ -130,6 +137,7 @@ def main() -> None:
     summary["requested_start"] = START
     summary["requested_end"] = END
     summary["database"] = str(db)
+    summary["fast_cache"] = True
     summary["run_id"] = run_id
 
     out = Path(os.environ.get("ONE_YEAR_RESULT", str(cache_dir / f"latest-{slug}-one-year-backtest.json")))
