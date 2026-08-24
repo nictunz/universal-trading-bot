@@ -24,6 +24,8 @@ EXCHANGES = ("binance", "bitget", "okx", "bybit")
 DEFAULT_SERVER = "34.132.172.40"
 DEFAULT_USER = "kpj3669"
 DEFAULT_REMOTE_DIR = "/home/kpj3669/.cache/universal-trading-bot"
+MIN_SERVER_UPLOAD_DAYS = 360
+MAX_SERVER_UPLOAD_DAYS = 370
 
 
 def symbol_slug(symbol: str) -> str:
@@ -41,6 +43,32 @@ def parse_day(value: str, end: bool = False) -> datetime:
     else:
         dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
     return dt.astimezone(timezone.utc)
+
+
+def inclusive_days(start_text: str, end_text: str) -> int:
+    start = datetime.fromisoformat(start_text).date()
+    end = datetime.fromisoformat(end_text).date()
+    days = (end - start).days + 1
+    if days <= 0:
+        raise ValueError("종료일은 시작일보다 같거나 뒤여야 합니다.")
+    return days
+
+
+def server_upload_eligible(start_text: str, end_text: str) -> bool:
+    days = inclusive_days(start_text, end_text)
+    return MIN_SERVER_UPLOAD_DAYS <= days <= MAX_SERVER_UPLOAD_DAYS
+
+
+def cache_file_names(symbol: str, timeframe: str, start_text: str, end_text: str) -> tuple[str, str]:
+    slug = symbol_slug(symbol)
+    if server_upload_eligible(start_text, end_text):
+        return f"{slug}-1y-{timeframe}.db", f"latest-{slug}-one-year-backtest.json"
+    start_tag = start_text.replace("-", "")
+    end_tag = end_text.replace("-", "")
+    return (
+        f"{slug}-{start_tag}-{end_tag}-{timeframe}.db",
+        f"latest-{slug}-{start_tag}-{end_tag}-backtest.json",
+    )
 
 
 def month_chunks(start: datetime, end: datetime):
@@ -72,19 +100,26 @@ def build_cache_and_backtest(
     os.environ["COINAPI_API_KEY"] = ""
     os.environ["USE_FOUR_CRYPTO_EXCHANGES"] = "true"
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    slug = symbol_slug(symbol)
-    db = output_dir / f"{slug}-1y-{timeframe}.db"
-    os.environ["DATABASE_URL"] = f"sqlite:///{db}"
-
     start = parse_day(start_text)
     end = parse_day(end_text, end=True)
+    range_days = inclusive_days(start_text, end_text)
+    upload_eligible = server_upload_eligible(start_text, end_text)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    db_name, result_name = cache_file_names(symbol, timeframe, start_text, end_text)
+    db = output_dir / db_name
+    os.environ["DATABASE_URL"] = f"sqlite:///{db}"
+
     settings = Settings()
     manager = OfficialArchiveHistoricalDataManager(settings.database_url, coinapi_api_key="", fallback_exchanges=[])
 
     log(f"심볼: {symbol}")
-    log(f"기간: {start_text} ~ {end_text}")
+    log(f"기간: {start_text} ~ {end_text} ({range_days}일)")
     log(f"캐시: {db}")
+    if upload_eligible:
+        log("서버 업로드 보호: 1년 범위 확인됨 - 완료 후 업로드 가능")
+    else:
+        log("서버 업로드 보호: 테스트/비1년 범위 - 서버 업로드 자동 잠금")
 
     for exchange in EXCHANGES:
         log(f"\n===== {exchange.upper()} =====")
@@ -124,12 +159,14 @@ def build_cache_and_backtest(
     summary.update({
         "requested_start": start_text,
         "requested_end": end_text,
+        "range_days": range_days,
+        "server_upload_eligible": upload_eligible,
         "database": str(db),
         "fast_cache": True,
         "cache_sha256": sha256_file(db),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    result_path = output_dir / f"latest-{slug}-one-year-backtest.json"
+    result_path = output_dir / result_name
     result_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     log(json.dumps(summary, ensure_ascii=False, indent=2))
     log("BACKTEST COMPLETE")
@@ -147,6 +184,14 @@ def upload_to_server(
     log: Callable[[str], None],
 ) -> None:
     import paramiko
+
+    result_meta = json.loads(result_path.read_text(encoding="utf-8"))
+    start_text = str(result_meta.get("requested_start", ""))
+    end_text = str(result_meta.get("requested_end", ""))
+    if not start_text or not end_text or not server_upload_eligible(start_text, end_text):
+        raise RuntimeError("서버 업로드 차단: 1년 범위(360~370일)로 완료된 캐시만 서버에 업로드할 수 있습니다.")
+    if not bool(result_meta.get("server_upload_eligible", False)):
+        raise RuntimeError("서버 업로드 차단: 결과 파일이 서버 업로드용으로 검증되지 않았습니다.")
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -182,6 +227,9 @@ def upload_to_server(
         manifest = {
             "database": db.name,
             "result": result_path.name,
+            "requested_start": start_text,
+            "requested_end": end_text,
+            "range_days": inclusive_days(start_text, end_text),
             "database_sha256": sha256_file(db),
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -204,6 +252,7 @@ class App(tk.Tk):
         self.queue: queue.Queue[str] = queue.Queue()
         self.last_db: Path | None = None
         self.last_result: Path | None = None
+        self.last_summary: dict | None = None
         self._build()
         self.after(150, self._drain)
 
@@ -284,30 +333,43 @@ class App(tk.Tk):
     def _run(self) -> None:
         self.run_btn.config(state="disabled")
         self.upload_btn.config(state="disabled")
+        self.last_db = None
+        self.last_result = None
+        self.last_summary = None
         self.status.config(text="백테스트 실행 중...")
+
         def worker():
             try:
                 db, result, summary = build_cache_and_backtest(
                     self.symbol.get().strip(), self.tf.get().strip(), self.start.get().strip(), self.end.get().strip(),
                     Path(self.outdir.get()).expanduser(), self._emit,
                 )
-                self.last_db, self.last_result = db, result
-                self.after(0, lambda: self.status.config(text=f"완료 · 거래 {summary.get('trades')} · 승률 {summary.get('win_rate', 0):.2f}%"))
-                self.after(0, lambda: self.upload_btn.config(state="normal"))
+                self.last_db, self.last_result, self.last_summary = db, result, summary
+                if bool(summary.get("server_upload_eligible")):
+                    self.after(0, lambda: self.status.config(text=f"완료 · 거래 {summary.get('trades')} · 승률 {summary.get('win_rate', 0):.2f}% · 서버 업로드 가능"))
+                    self.after(0, lambda: self.upload_btn.config(state="normal"))
+                else:
+                    self._emit("서버 업로드 잠금: 테스트/비1년 캐시는 로컬에만 저장됩니다.")
+                    self.after(0, lambda: self.status.config(text=f"완료 · 거래 {summary.get('trades')} · 승률 {summary.get('win_rate', 0):.2f}% · 테스트 캐시(업로드 잠금)"))
             except Exception:
                 self._emit(traceback.format_exc())
                 self.after(0, lambda: self.status.config(text="오류 발생 - 로그 확인"))
                 self.after(0, lambda: messagebox.showerror("백테스트 오류", "오류가 발생했습니다. 로그를 확인하세요."))
             finally:
                 self.after(0, lambda: self.run_btn.config(state="normal"))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _upload(self) -> None:
-        if not self.last_db or not self.last_result:
-            messagebox.showwarning("업로드", "먼저 백테스트를 완료하세요.")
+        if not self.last_db or not self.last_result or not self.last_summary:
+            messagebox.showwarning("업로드", "먼저 1년 백테스트를 완료하세요.")
+            return
+        if not bool(self.last_summary.get("server_upload_eligible")):
+            messagebox.showwarning("업로드 차단", "테스트/비1년 캐시는 서버에 업로드할 수 없습니다. 1년 범위로 실행하세요.")
             return
         self.upload_btn.config(state="disabled")
         self.status.config(text="서버 업로드 중...")
+
         def worker():
             try:
                 upload_to_server(
@@ -322,6 +384,7 @@ class App(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("업로드 오류", "서버 업로드에 실패했습니다. 로그를 확인하세요."))
             finally:
                 self.after(0, lambda: self.upload_btn.config(state="normal"))
+
         threading.Thread(target=worker, daemon=True).start()
 
 
