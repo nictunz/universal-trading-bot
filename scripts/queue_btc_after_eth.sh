@@ -44,15 +44,17 @@ PY
 
 cd "$ROOT"
 
-echo "STARTING BTC ONE-YEAR BACKTEST"
+echo "STARTING BTC ONE-YEAR BACKTEST (LOW PRIORITY)"
 BACKTEST_SYMBOL="BTC/USDT:USDT" \
 ONE_YEAR_DB="$CACHE/btc-1y-5m.db" \
 ONE_YEAR_RESULT="$BTC_RESULT" \
-nohup "$VENV/bin/python" scripts/run_one_year_backtest.py \
+nohup nice -n 15 ionice -c2 -n7 "$VENV/bin/python" scripts/run_one_year_backtest.py \
   > "$BTC_LOG" 2>&1 < /dev/null &
 
 BTC_PID=$!
 echo "$BTC_PID" > "$BTC_PID_FILE"
 echo "BTC_PID=$BTC_PID"
+echo "BTC_NICE=15"
+echo "BTC_IONICE=best-effort/7"
 echo "BTC_LOG=$BTC_LOG"
 echo "BTC_RESULT=$BTC_RESULT"
