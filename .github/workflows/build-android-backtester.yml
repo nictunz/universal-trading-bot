@@ -52,8 +52,33 @@ jobs:
           echo 'Android compatibility config applied'
 
       - name: Build APK
+        id: build_apk
         shell: bash
-        run: gradle -p android :app:assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle -p android :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
+          code=${PIPESTATUS[0]}
+
+          echo '## Android build diagnosis' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          grep -E -A 18 -B 8 'What went wrong:|Execution failed for task|ERROR:|Could not find a version|No matching distribution|Caused by:|error:' android-build.log | tail -n 120 >> "$GITHUB_STEP_SUMMARY" || tail -n 120 android-build.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$code" -ne 0 ]; then
+            echo '===== CONCISE FAILURE DIAGNOSIS ====='
+            grep -E -A 18 -B 8 'What went wrong:|Execution failed for task|ERROR:|Could not find a version|No matching distribution|Caused by:|error:' android-build.log | tail -n 160 || true
+            exit "$code"
+          fi
+
+      - name: Upload Android build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-build-log
+          path: android-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Prepare artifact
         shell: bash
