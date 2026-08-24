@@ -57,6 +57,37 @@ class TradeHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_trade_query ON trades(symbol, mode, exit_time)"
             )
             con.execute(
+                """CREATE TABLE IF NOT EXISTS trade_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                event_no INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                asset_class TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                event_time TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                entry_no INTEGER,
+                side TEXT,
+                price REAL,
+                qty REAL,
+                position_size REAL,
+                pnl REAL,
+                pnl_percent REAL,
+                reason TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL
+                )"""
+            )
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_event_identity ON trade_events(mode, run_id, symbol, event_no)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_event_query ON trade_events(symbol, mode, event_time)"
+            )
+            con.execute(
                 """CREATE TABLE IF NOT EXISTS backtest_runs (
                 run_id TEXT PRIMARY KEY,
                 strategy TEXT NOT NULL,
@@ -112,6 +143,34 @@ class TradeHistoryStore:
                 ),
             )
 
+    def record_event(
+        self,
+        *,
+        run_id: str,
+        event_no: int,
+        mode: str,
+        symbol: str,
+        asset_class: str,
+        exchange: str,
+        timeframe: str,
+        event: dict[str, Any],
+        strategy: str = "Volume Strategy FINAL Universal v15",
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """INSERT OR REPLACE INTO trade_events
+                (run_id,event_no,mode,strategy,symbol,asset_class,exchange,timeframe,event_time,event_type,
+                 entry_no,side,price,qty,position_size,pnl,pnl_percent,reason,metadata_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id, int(event_no), mode.upper(), strategy, symbol, asset_class, exchange, timeframe,
+                    str(event.get("event_time") or self._now()), str(event.get("event_type") or "").upper(),
+                    event.get("entry_no"), event.get("side"), event.get("price"), event.get("qty"),
+                    event.get("position_size"), event.get("pnl"), event.get("pnl_percent"), event.get("reason"),
+                    json.dumps(event.get("metadata") or {}, ensure_ascii=False, default=str), self._now(),
+                ),
+            )
+
     def record_backtest(self, result: dict[str, Any], *, run_id: str, params: dict[str, Any] | None = None) -> None:
         with self._connect() as con:
             con.execute(
@@ -155,6 +214,28 @@ class TradeHistoryStore:
         with self._connect() as con:
             rows = con.execute(
                 "SELECT * FROM trades" + where + " ORDER BY COALESCE(exit_time,entry_time,created_at) DESC LIMIT ?", params
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_events(
+        self, *, symbol: str | None = None, mode: str | None = None,
+        start: str | None = None, end: str | None = None, limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if symbol:
+            clauses.append("symbol=?"); params.append(symbol)
+        if mode and mode.upper() != "ALL":
+            clauses.append("mode=?"); params.append(mode.upper())
+        if start:
+            clauses.append("event_time>=?"); params.append(start)
+        if end:
+            clauses.append("event_time<=?"); params.append(end)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 10000)))
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM trade_events" + where + " ORDER BY event_time ASC LIMIT ?", params
             ).fetchall()
         return [dict(row) for row in rows]
 
