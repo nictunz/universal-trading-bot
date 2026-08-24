@@ -285,6 +285,32 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         data = self._request("GET", "/api/v3/trade/order-info", params={"orderId": order_id})
         return dict(data or {})
 
+    def _place_protection(self, symbol: str, pos_side: str, tp_price: float | None, sl_price: float | None) -> dict[str, Any] | None:
+        if tp_price is None and sl_price is None:
+            return None
+        body: dict[str, Any] = {
+            "category": self.CATEGORY,
+            "symbol": self._symbol_id(symbol),
+            "type": "tpsl",
+            "tpslMode": "full",
+            "posSide": pos_side,
+            "clientOid": self._client_oid("utb-tpsl"),
+        }
+        if tp_price is not None:
+            body.update({
+                "takeProfit": self._price(symbol, float(tp_price)),
+                "tpTriggerBy": "mark",
+                "tpOrderType": "market",
+            })
+        if sl_price is not None:
+            body.update({
+                "stopLoss": self._price(symbol, float(sl_price)),
+                "slTriggerBy": "mark",
+                "slOrderType": "market",
+            })
+        data = self._request("POST", "/api/v3/trade/place-strategy-order", body=body)
+        return dict(data or {})
+
     def market_order(self, symbol: str, side: str, amount: float, reduce_only: bool = False, **kwargs):
         side = side.lower()
         if side not in {"buy", "sell"}:
@@ -302,19 +328,6 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "marginMode": "crossed",
             "clientOid": self._client_oid("utb-elite"),
         }
-        if not reduce_only:
-            if kwargs.get("tp_price") is not None:
-                body.update({
-                    "takeProfit": self._price(symbol, float(kwargs["tp_price"])),
-                    "tpTriggerBy": "mark",
-                    "tpOrderType": "market",
-                })
-            if kwargs.get("sl_price") is not None:
-                body.update({
-                    "stopLoss": self._price(symbol, float(kwargs["sl_price"])),
-                    "slTriggerBy": "mark",
-                    "slOrderType": "market",
-                })
         data = self._request("POST", "/api/v3/trade/place-order", body=body) or {}
         order_id = str(data.get("orderId") or "")
         detail: dict[str, Any] = {}
@@ -327,6 +340,23 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 except Exception:
                     pass
                 time.sleep(0.2)
+
+        protection_data = None
+        protection_error = None
+        if not reduce_only and (kwargs.get("tp_price") is not None or kwargs.get("sl_price") is not None):
+            try:
+                protection_data = self._place_protection(
+                    symbol,
+                    pos_side,
+                    float(kwargs["tp_price"]) if kwargs.get("tp_price") is not None else None,
+                    float(kwargs["sl_price"]) if kwargs.get("sl_price") is not None else None,
+                )
+            except Exception as exc:
+                # Do not hide an already-filled entry by raising after the fact.
+                # TradingEngine immediately verifies exchange protection and will
+                # emergency-flatten if TP/SL cannot be confirmed.
+                protection_error = f"{type(exc).__name__}: {exc}"
+
         filled = float(detail.get("cumExecQty") or qty)
         average = float(detail.get("avgPrice") or 0.0) or None
         return {
@@ -337,7 +367,11 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "average": average,
             "price": average,
             "status": detail.get("orderStatus") or "accepted",
-            "raw": detail or data,
+            "raw": {
+                "order": detail or data,
+                "protection": protection_data,
+                "protection_error": protection_error,
+            },
         }
 
     def _protection_orders(self, symbol: str) -> list[dict[str, Any]]:
