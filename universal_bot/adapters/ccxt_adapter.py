@@ -30,7 +30,11 @@ class CCXTAdapter(MarketAdapter):
                 params["password"] = password
         self.exchange_id = exchange_id
         self.exchange = exchange_class(params)
-        self.exchange.load_markets()
+        # Do not call load_markets() here. Dashboard startup builds adapters before
+        # starting Uvicorn, so an exchange/network delay here can leave systemd
+        # showing "active" while port 8000 is never bound. CCXT fetch methods load
+        # markets lazily, and order-sizing paths call _market(), which now ensures
+        # markets are loaded only when actually required.
         self._volume_exchanges: dict[str, object] = {exchange_id: self.exchange}
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
         self._coinapi = CoinAPIMarketData(coinapi_api_key)
@@ -134,6 +138,8 @@ class CCXTAdapter(MarketAdapter):
         return float(usdt.get("total", 0.0) or usdt.get("free", 0.0) or 0.0)
 
     def _market(self, symbol: str) -> dict:
+        if not getattr(self.exchange, "markets", None):
+            self.exchange.load_markets()
         market = self.exchange.market(symbol)
         if not market:
             raise RuntimeError(f"unknown market: {symbol}")
@@ -254,3 +260,14 @@ class CCXTAdapter(MarketAdapter):
                     self.exchange.cancel_order(oid, symbol, {"trigger": True})
                 except Exception:
                     pass
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        self.exchange.cancel_order(order_id, symbol)
+
+    def fetch_order(self, symbol: str, order_id: str) -> dict:
+        order = self.exchange.fetch_order(order_id, symbol)
+        return self._normalize_order_amounts(symbol, order)
+
+    def open_orders(self, symbol: str) -> list[dict]:
+        orders = self.exchange.fetch_open_orders(symbol)
+        return [self._normalize_order_amounts(symbol, o) for o in orders]
