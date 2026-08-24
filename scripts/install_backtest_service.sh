@@ -30,10 +30,12 @@ Nice=19
 IOSchedulingClass=idle
 CPUAccounting=true
 MemoryAccounting=true
+CPUWeight=1
+IOWeight=1
 CPUQuota=35%
-MemoryHigh=300M
-MemoryMax=420M
-MemorySwapMax=768M
+MemoryHigh=260M
+MemoryMax=360M
+MemorySwapMax=512M
 OOMScoreAdjust=500
 StandardOutput=append:%h/.cache/universal-trading-bot/%i-one-year-backtest.log
 StandardError=append:%h/.cache/universal-trading-bot/%i-one-year-backtest.log
@@ -45,5 +47,6 @@ EOF
 sudo systemctl daemon-reload
 
 echo "Installed $SERVICE"
-echo "CPUQuota=35%, MemoryHigh=300M, MemoryMax=420M, MemorySwapMax=768M"
+echo "CPUQuota=35%, CPUWeight=1, IOWeight=1, MemoryHigh=260M, MemoryMax=360M, MemorySwapMax=512M"
+echo "Dashboard keeps reserved high CPU/IO/memory priority."
 echo "This affects future systemd-managed backtests only; it does not interrupt a currently running nohup backtest."
