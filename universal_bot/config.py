@@ -49,15 +49,12 @@ class Settings(BaseSettings):
     excluded_hours: str = "00"
     order_percent_of_equity: float = 5.0
     initial_capital: float = 1_000_000.0
-
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
-
     crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
-
     leverage: int = 50
     margin_mode: str = "cross"
     require_exchange_protection: bool = True
@@ -81,12 +78,10 @@ class Settings(BaseSettings):
     broker_api_key: str = ""
     broker_api_secret: str = ""
     database_url: str = "sqlite:///data/universal_bot.db"
-
-    # Dashboard network/auth. Keep FastAPI private on loopback behind nginx.
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8000
     dashboard_public_url: str = "http://34.132.172.40"
-    dashboard_auth_enabled: bool = False
+    dashboard_auth_enabled: bool = True
     dashboard_username: str = ""
     dashboard_password: str = ""
     dashboard_session_secret: str = ""
