@@ -39,8 +39,6 @@ chaquopy {
             install("pandas>=2.0")
             install("requests>=2.32")
             install("python-dotenv>=1.0")
-            install("pydantic>=2.0")
-            install("pydantic-settings>=2.0")
             install("ccxt>=4.0")
             install("paramiko>=3.5")
         }
