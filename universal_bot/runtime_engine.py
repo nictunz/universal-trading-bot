@@ -7,7 +7,7 @@ from universal_bot.models import Position
 
 
 class TradingEngine(_BaseTradingEngine):
-    """Runtime engine with LIVE-only Elite sizing.
+    """Runtime engine with LIVE-only Elite sizing and chart event journaling.
 
     Backtest/PAPER sizing stays on ORDER_PERCENT_OF_EQUITY. When LIVE execution
     uses the Bitget Elite profile, each entry uses current available USDT times
@@ -19,12 +19,49 @@ class TradingEngine(_BaseTradingEngine):
     def __init__(self, settings, adapter, strategy):
         super().__init__(settings, adapter, strategy)
         self._live_entry_equity_basis: float | None = None
+        self._event_no = 0
 
     def _elite_live(self) -> bool:
         return (
             self.live
             and self.settings.exchange.lower() == "bitget"
             and self.settings.bitget_execution_profile.strip().lower() == "elite"
+        )
+
+    def _record_runtime_event(self, event: dict) -> None:
+        try:
+            self._event_no += 1
+            self.trade_history.record_event(
+                run_id=self.trade_history_run_id,
+                event_no=self._event_no,
+                mode="LIVE" if self.live else "PAPER",
+                symbol=self.settings.symbol,
+                asset_class=self.settings.asset_class,
+                exchange=self.settings.exchange,
+                timeframe=self.settings.timeframe,
+                event=event,
+            )
+        except Exception:
+            # Trading must never fail because chart journaling failed.
+            pass
+
+    def _record_entry_event(self, *, side: str, price: float, qty: float) -> None:
+        self._record_runtime_event(
+            {
+                "event_time": self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+                "event_type": "ENTRY",
+                "entry_no": int(self.position.entries),
+                "side": side,
+                "price": float(price),
+                "qty": float(qty),
+                "position_size": abs(float(self.position.size)),
+                "reason": "FIRST_ENTRY" if self.position.entries == 1 else "ADD_ENTRY",
+                "metadata": {
+                    "tp": self.position.tp,
+                    "sl": self.position.sl,
+                    "live_entry_multiplier": float(self.settings.live_entry_multiplier) if self._elite_live() else None,
+                },
+            }
         )
 
     def _initialize_live(self) -> None:
@@ -50,9 +87,9 @@ class TradingEngine(_BaseTradingEngine):
 
         super()._initialize_live()
 
-        # After a process restart we cannot reliably reconstruct how many of the
-        # allowed three tranches created an already-open exchange position. Be
-        # conservative and block further pyramiding until that position closes.
+        # After a process restart we cannot reliably reconstruct how many
+        # tranches created an already-open exchange position. Be conservative
+        # and block further pyramiding until that position closes.
         if self._elite_live() and self._live_initialized and not self.position.flat:
             self.position.entries = max(
                 self.position.entries,
@@ -80,7 +117,11 @@ class TradingEngine(_BaseTradingEngine):
 
     def _open(self, side: str, price: float, tp_pct: float, sl_pct: float) -> None:
         if not self._elite_live():
+            before_entries = int(self.position.entries)
             super()._open(side, price, tp_pct, sl_pct)
+            if int(self.position.entries) > before_entries:
+                qty = abs(float(self.position.size)) if before_entries == 0 else max(0.0, abs(float(self.position.size)))
+                self._record_entry_event(side=side, price=float(self.position.entry_price or price), qty=qty)
             return
 
         max_entries = int(self.settings.live_max_entries_per_position)
@@ -170,10 +211,28 @@ class TradingEngine(_BaseTradingEngine):
             self.entry_notional += actual_amount * actual_price
 
         self.last_entry_bar = self.bar_number
+        self._record_entry_event(side=side, price=actual_price, qty=actual_amount)
         exchange_pos = self.adapter.position(self.settings.symbol)
         self.safety.reconcile(self._internal_position_dict(), exchange_pos)
 
     def _close(self, price: float, reason: str) -> None:
+        before_trades = len(self.trade_log)
         super()._close(price, reason)
+        if len(self.trade_log) > before_trades:
+            trade = self.trade_log[-1]
+            self._record_runtime_event(
+                {
+                    "event_time": trade.get("exit_time") or self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+                    "event_type": "EXIT",
+                    "entry_no": None,
+                    "side": trade.get("side"),
+                    "price": trade.get("exit_price"),
+                    "qty": trade.get("qty"),
+                    "position_size": 0.0,
+                    "pnl": trade.get("pnl"),
+                    "pnl_percent": trade.get("pnl_percent"),
+                    "reason": trade.get("reason") or reason,
+                }
+            )
         if self.position.flat:
             self._live_entry_equity_basis = None
