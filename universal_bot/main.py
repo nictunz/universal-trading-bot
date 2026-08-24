@@ -9,6 +9,7 @@ import pandas as pd
 from universal_bot.adapters import HybridCCXTAdapter, YFinanceMarketAdapter
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
+from universal_bot.dashboard_auth import install_dashboard_auth
 from universal_bot.dashboard_nav import install_dashboard_navigation
 from universal_bot.engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
@@ -63,13 +64,6 @@ def completed_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 
 def _scanner_fetch_limit(settings: Settings) -> int:
-    """Fetch only the history the live strategy actually needs.
-
-    The old dashboard always requested at least 1000 candles every polling
-    cycle. On the small GCP host that needlessly competed with long backtests
-    for CPU, memory and network time. Keep a modest warm-up margin while
-    avoiding work that cannot affect the current signal.
-    """
     required = max(
         settings.volatility_bars,
         settings.nbar_volatility_bars,
@@ -91,6 +85,7 @@ def main():
         runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
     scanner = UniversalScanner(runtimes)
     app = create_dashboard(scanner)
+    install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
     install_dashboard_navigation(app)
     threading.Thread(target=lambda: uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port, log_level="warning"), daemon=True).start()
