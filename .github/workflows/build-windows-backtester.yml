@@ -34,6 +34,7 @@ jobs:
             --name UniversalTradingBacktester `
             --collect-all ccxt `
             --collect-all paramiko `
+            --collect-all tkcalendar `
             universal_bot/local_cache_gui.py
 
       - name: Smoke test artifact exists
