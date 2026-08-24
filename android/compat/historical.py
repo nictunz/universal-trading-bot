@@ -33,10 +33,10 @@ class HistoricalDataManager:
     """Android-only history manager.
 
     Keeps the same SQLite/read/sync contract as the server implementation while
-    avoiding ccxt and its compiled Android dependency chain. Bitget uses the
-    existing native REST provider, OKX uses the public REST history endpoint,
-    and Binance/Bybit intentionally raise here so OfficialArchiveHistoricalDataManager
-    can fall back to exchange-owned archives.
+    avoiding ccxt and its compiled Android dependency chain. On a phone we can
+    call the public futures REST APIs directly, so Binance/Bitget/OKX/Bybit all
+    use native HTTP here. The archive-aware wrapper may still fall back to the
+    exchange-owned archives if Binance or Bybit direct access fails.
     """
 
     def __init__(self, database_url: str = "sqlite:///data/universal_bot.db", *, coinapi_api_key: str = "", fallback_exchanges: list[str] | None = None) -> None:
@@ -47,6 +47,11 @@ class HistoricalDataManager:
         self._bitget_history = BitgetHistoricalMarketData()
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
         self.last_fetch_status: dict[str, dict[str, str]] = {}
+        self._session = requests.Session()
+        self._session.headers.update({
+            "User-Agent": "UniversalTradingBacktester-Android/1.0",
+            "Accept": "application/json,text/plain,*/*",
+        })
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -76,6 +81,10 @@ class HistoricalDataManager:
         seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit)
         return value * seconds * 1000 if seconds else None
 
+    @staticmethod
+    def _compact_symbol(symbol: str) -> str:
+        return symbol.split(":", 1)[0].upper().replace("/", "").replace("-", "")
+
     def _bounds(self, request: DataRequest) -> tuple[int | None, int | None]:
         with self._connect() as con:
             row = con.execute(
@@ -96,6 +105,125 @@ class HistoricalDataManager:
         with self._connect() as con:
             con.executemany("INSERT OR REPLACE INTO ohlcv (asset_class, exchange, symbol, timeframe, timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
         return len(rows)
+
+    @staticmethod
+    def _rows_to_frame(rows: dict[int, list], *, indexes=(1, 2, 3, 4, 5)) -> pd.DataFrame:
+        if not rows:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        oi, hi, li, ci, vi = indexes
+        data = [[ts, item[oi], item[hi], item[li], item[ci], item[vi]] for ts, item in sorted(rows.items())]
+        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna().drop_duplicates("timestamp").set_index("timestamp").sort_index()
+
+    def _fetch_binance(self, request: DataRequest) -> pd.DataFrame:
+        start_ms = self._ms(request.start)
+        end_ms = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
+        if start_ms is None:
+            raise ValueError("Binance history requires a start date")
+        url = "https://fapi.binance.com/fapi/v1/klines"
+        step = self._timeframe_ms(request.timeframe)
+        if step is None:
+            raise ValueError(f"unsupported Binance timeframe on Android: {request.timeframe}")
+        rows: dict[int, list] = {}
+        cursor = start_ms
+        calls = 0
+        while cursor <= end_ms:
+            params = {
+                "symbol": self._compact_symbol(request.symbol),
+                "interval": request.timeframe,
+                "startTime": str(cursor),
+                "endTime": str(end_ms),
+                "limit": "1500",
+            }
+            r = self._session.get(url, params=params, timeout=20)
+            if r.status_code != 200:
+                raise RuntimeError(f"Binance futures history HTTP {r.status_code}: {r.text[:180]}")
+            batch = r.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            stamps: list[int] = []
+            for item in batch:
+                if not isinstance(item, list) or len(item) < 6:
+                    continue
+                ts = int(item[0])
+                stamps.append(ts)
+                if start_ms <= ts <= end_ms:
+                    rows[ts] = item
+            if not stamps:
+                break
+            newest = max(stamps)
+            next_cursor = newest + step
+            if next_cursor <= cursor or newest >= end_ms:
+                break
+            cursor = next_cursor
+            calls += 1
+            if calls % 10 == 0:
+                time.sleep(0.10)
+        return self._rows_to_frame(rows)
+
+    @staticmethod
+    def _bybit_interval(timeframe: str) -> str:
+        if timeframe.endswith("m"):
+            return str(int(timeframe[:-1]))
+        if timeframe.endswith("h"):
+            return str(int(timeframe[:-1]) * 60)
+        if timeframe.endswith("d"):
+            return "D" if int(timeframe[:-1]) == 1 else str(int(timeframe[:-1]) * 1440)
+        if timeframe.endswith("w") and int(timeframe[:-1]) == 1:
+            return "W"
+        raise ValueError(f"unsupported Bybit timeframe on Android: {timeframe}")
+
+    def _fetch_bybit(self, request: DataRequest) -> pd.DataFrame:
+        start_ms = self._ms(request.start)
+        end_ms = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
+        if start_ms is None:
+            raise ValueError("Bybit history requires a start date")
+        url = "https://api.bybit.com/v5/market/kline"
+        rows: dict[int, list] = {}
+        cursor_end = end_ms
+        calls = 0
+        while cursor_end >= start_ms:
+            params = {
+                "category": "linear",
+                "symbol": self._compact_symbol(request.symbol),
+                "interval": self._bybit_interval(request.timeframe),
+                "start": str(start_ms),
+                "end": str(cursor_end),
+                "limit": "1000",
+            }
+            r = self._session.get(url, params=params, timeout=20)
+            if r.status_code != 200:
+                raise RuntimeError(f"Bybit history HTTP {r.status_code}: {r.text[:180]}")
+            payload = r.json()
+            if payload.get("retCode") != 0:
+                raise RuntimeError(f"Bybit history API error: {str(payload)[:220]}")
+            batch = ((payload.get("result") or {}).get("list") or [])
+            if not batch:
+                break
+            stamps: list[int] = []
+            for item in batch:
+                if not isinstance(item, list) or len(item) < 6:
+                    continue
+                ts = int(item[0])
+                stamps.append(ts)
+                if start_ms <= ts <= end_ms:
+                    rows[ts] = item
+            if not stamps:
+                break
+            oldest = min(stamps)
+            if oldest <= start_ms:
+                break
+            next_end = oldest - 1
+            if next_end >= cursor_end:
+                break
+            cursor_end = next_end
+            calls += 1
+            if calls % 10 == 0:
+                time.sleep(0.10)
+        return self._rows_to_frame(rows)
 
     @staticmethod
     def _okx_inst_id(symbol: str) -> str:
@@ -128,7 +256,7 @@ class HistoricalDataManager:
                 "after": str(cursor),
                 "limit": "300",
             }
-            r = requests.get(url, params=params, timeout=20)
+            r = self._session.get(url, params=params, timeout=20)
             if r.status_code != 200:
                 raise RuntimeError(f"OKX history HTTP {r.status_code}: {r.text[:180]}")
             payload = r.json()
@@ -156,26 +284,21 @@ class HistoricalDataManager:
             calls += 1
             if calls % 10 == 0:
                 time.sleep(0.10)
-        if not rows:
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        data = [[ts, item[1], item[2], item[3], item[4], item[5]] for ts, item in sorted(rows.items())]
-        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-        for col in ("open", "high", "low", "close", "volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df.dropna().drop_duplicates("timestamp").set_index("timestamp").sort_index()
+        return self._rows_to_frame(rows)
 
     def _fetch_crypto_direct(self, request: DataRequest) -> pd.DataFrame:
         exchange = request.exchange.lower()
         if request.start is None:
             raise ValueError("crypto historical requests require a start date")
         end = request.end or datetime.now(timezone.utc)
+        if exchange == "binance":
+            return self._fetch_binance(request)
         if exchange == "bitget":
             return self._bitget_history.fetch_history(request.symbol, request.timeframe, request.start, end)
         if exchange == "okx":
             return self._fetch_okx(request)
-        if exchange in {"binance", "bybit"}:
-            raise RuntimeError(f"{exchange} direct disabled on Android; use official archive")
+        if exchange == "bybit":
+            return self._fetch_bybit(request)
         raise ValueError(f"unsupported crypto exchange on Android: {exchange}")
 
     def _fetch_crypto(self, request: DataRequest) -> pd.DataFrame:
