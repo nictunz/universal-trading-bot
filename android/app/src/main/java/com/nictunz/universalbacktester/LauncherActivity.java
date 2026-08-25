@@ -2,6 +2,8 @@ package com.nictunz.universalbacktester;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -49,6 +51,7 @@ public class LauncherActivity extends android.app.Activity {
     private EditText remoteInput;
     private TextView relayStatus;
     private TextView keyStatus;
+    private TextView publicKeyText;
     private TextView updateStatus;
     private Button startRelayButton;
     private Button oneShotButton;
@@ -125,6 +128,17 @@ public class LauncherActivity extends android.app.Activity {
         keyStatus = text("SSH 키 상태 확인 중...", 11, MUTED, false);
         relay.addView(keyStatus, mt(6));
 
+        Button copyKeyButton = actionButton("📋 SSH 공개키 보기 / 복사", Color.rgb(30, 41, 59));
+        copyKeyButton.setOnClickListener(v -> showAndCopyPublicKey());
+        relay.addView(copyKeyButton, mt(8));
+
+        publicKeyText = text("", 10, MUTED, false);
+        publicKeyText.setTextIsSelectable(true);
+        publicKeyText.setPadding(dp(10), dp(10), dp(10), dp(10));
+        publicKeyText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
+        publicKeyText.setVisibility(View.GONE);
+        relay.addView(publicKeyText, mt(8));
+
         oneShotButton = actionButton("🧪 Binance/Bybit + 서버 1회 중계 테스트", WARNING);
         oneShotButton.setOnClickListener(v -> prepareRelay(MobileMarketRelayService.ACTION_ONCE));
         relay.addView(oneShotButton, mt(10));
@@ -183,11 +197,36 @@ public class LauncherActivity extends android.app.Activity {
                 String keyPath = obj.getString("private_key");
                 prefs().edit().putString("relay_key_path", keyPath).apply();
                 main.post(() -> {
-                    keyStatus.setText("SSH 키 준비됨 · 기존 서버 authorized_keys 사용");
+                    keyStatus.setText("휴대폰 SSH 키 생성됨 · 서버 등록 전이면 아래에서 공개키를 복사하세요");
                     toast("SSH 키 준비 완료");
                 });
             } catch (Exception e) {
                 main.post(() -> keyStatus.setText("SSH 키 오류: " + shortError(e)));
+            }
+        });
+    }
+
+    private void showAndCopyPublicKey() {
+        keyStatus.setText("SSH 공개키 확인 중...");
+        executor.execute(() -> {
+            try {
+                JSONObject obj = new JSONObject(SshBridge.ensureKey(getFilesDir().getAbsolutePath()));
+                String keyPath = obj.getString("private_key");
+                String publicKey = obj.getString("public_key");
+                prefs().edit().putString("relay_key_path", keyPath).apply();
+                main.post(() -> {
+                    ClipboardManager clipboard =
+                            (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    clipboard.setPrimaryClip(
+                            ClipData.newPlainText("Universal Backtester SSH public key", publicKey)
+                    );
+                    publicKeyText.setText(publicKey);
+                    publicKeyText.setVisibility(View.VISIBLE);
+                    keyStatus.setText("SSH 공개키가 표시되고 클립보드에 복사됐습니다");
+                    toast("SSH 공개키 복사 완료");
+                });
+            } catch (Exception e) {
+                main.post(() -> keyStatus.setText("SSH 공개키 오류: " + shortError(e)));
             }
         });
     }
