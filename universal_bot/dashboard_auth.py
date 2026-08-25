@@ -63,14 +63,14 @@ def _is_protected(request: Request) -> bool:
     return False
 
 
-def _login_page(message: str = "") -> str:
+def _login_page(message: str = "", next_url: str = "/strategy") -> str:
     msg = f"<div class='msg'>{html.escape(message)}</div>" if message else ""
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Universal Trading Bot Login</title><style>
 *{{box-sizing:border-box}}body{{margin:0;background:#0b0f14;color:#eef2f7;font-family:system-ui;display:grid;place-items:center;min-height:100vh;padding:18px}}
 .card{{width:min(420px,100%);background:#17202c;border:1px solid #334155;border-radius:16px;padding:20px}}h1{{font-size:22px;margin-top:0}}label{{display:block;color:#9daabd;font-size:13px;margin:12px 0 5px}}input{{width:100%;padding:12px;border-radius:9px;border:1px solid #556579;background:#0b0f14;color:#eef2f7}}button{{width:100%;margin-top:16px;padding:12px;border:0;border-radius:9px;background:#2563a8;color:white;font-weight:800}}.msg{{color:#ffcc66;margin:10px 0}}a{{color:#7db7ff}}</style></head>
 <body><div class='card'><h1>🔐 관리자 로그인</h1><div style='color:#9daabd'>전략 설정과 LIVE 제어는 로그인 후 사용할 수 있습니다.</div>{msg}
-<form method='post' action='/login'><input type='hidden' name='next' value='/strategy'><label>아이디</label><input name='username' autocomplete='username' required><label>비밀번호</label><input name='password' type='password' autocomplete='current-password' required><button type='submit'>로그인</button></form><p><a href='/'>← 공개 대시보드로 돌아가기</a></p></div></body></html>"""
+<form method='post' action='/login'><input type='hidden' name='next' value='{html.escape(next_url, quote=True)}'><label>아이디</label><input name='username' autocomplete='username' required><label>비밀번호</label><input name='password' type='password' autocomplete='current-password' required><button type='submit'>로그인</button></form><p><a href='/'>← 공개 대시보드로 돌아가기</a></p></div></body></html>"""
 
 
 def install_dashboard_auth(app: FastAPI) -> None:
@@ -108,7 +108,7 @@ def install_dashboard_auth(app: FastAPI) -> None:
         if _configured(current) and _valid_token(current, request.cookies.get(COOKIE_NAME)):
             return RedirectResponse(next if next.startswith("/") else "/strategy", status_code=303)
         message = "" if not current.dashboard_auth_enabled or _configured(current) else "관리자 인증값이 아직 .env에 설정되지 않았습니다."
-        return HTMLResponse(_login_page(message))
+        return HTMLResponse(_login_page(message, next if next.startswith('/') and not next.startswith('//') else '/strategy'))
 
     @app.post("/login")
     async def login(request: Request):
