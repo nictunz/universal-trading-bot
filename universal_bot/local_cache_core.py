@@ -247,6 +247,7 @@ def build_cache_and_backtest(
     )
     summary = {k: result.get(k) for k in keys}
     summary.update({
+        "timeframe": timeframe,
         "trades_log": result.get("trades_log", []),
         "equity_curve": _downsample_equity(result.get("equity_curve", [])),
         "requested_start": start_text,
