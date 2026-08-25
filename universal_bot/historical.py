@@ -97,22 +97,52 @@ class HistoricalDataManager:
             )
 
         import ccxt
+        exchange_id = request.exchange.lower()
         exchange_cls = getattr(ccxt, request.exchange)
-        exchange = exchange_cls({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        hostnames: list[str | None] = (
+            ["openapi.okx.com", "www.okx.com"] if exchange_id == "okx" else [None]
+        )
         rows: list[list[float]] = []
-        since = start
-        limit = 1000
-        while since <= end:
-            batch = exchange.fetch_ohlcv(request.symbol, request.timeframe, since=since, limit=limit)
-            if not batch:
+        last_error: Exception | None = None
+        for hostname in hostnames:
+            config = {
+                "enableRateLimit": True,
+                "timeout": 40_000,
+                "options": {"defaultType": "swap"},
+            }
+            if hostname is not None:
+                config["hostname"] = hostname
+            exchange = exchange_cls(config)
+            candidate_rows: list[list[float]] = []
+            since = start
+            limit = 300 if exchange_id == "okx" else 1000
+            try:
+                while since <= end:
+                    batch = exchange.fetch_ohlcv(
+                        request.symbol,
+                        request.timeframe,
+                        since=since,
+                        limit=limit,
+                    )
+                    if not batch:
+                        break
+                    candidate_rows.extend(batch)
+                    last = int(batch[-1][0])
+                    if last <= since:
+                        break
+                    since = last + 1
+                    if last >= end:
+                        break
+                rows = candidate_rows
                 break
-            rows.extend(batch)
-            last = int(batch[-1][0])
-            if last <= since:
-                break
-            since = last + 1
-            if last >= end:
-                break
+            except Exception as exc:
+                last_error = exc
+                if exchange_id != "okx":
+                    raise
+        if not rows and last_error is not None:
+            raise RuntimeError(
+                "OKX 공식 API 주소(openapi.okx.com, www.okx.com)에 모두 연결하지 못했습니다"
+            ) from last_error
         if not rows:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
