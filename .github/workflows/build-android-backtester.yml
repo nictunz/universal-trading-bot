@@ -19,6 +19,10 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/build-android-backtester.yml'
 
+concurrency:
+  group: android-backtester-main
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -158,6 +162,40 @@ jobs:
               f.write('\n')
           print(json.dumps(data, ensure_ascii=False))
           PY
+
+      - name: Configure private update server
+        if: env.UPDATE_RELEASE_READY == 'true'
+        shell: bash
+        env:
+          UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$UPDATE_SSH_PRIVATE_KEY" ]]; then
+            echo 'UPDATE_SERVER_READY=false' >> "$GITHUB_ENV"
+            echo 'Android update server SSH secret is not configured; signed build can be archived but not pushed to the phone update channel.'
+            exit 0
+          fi
+          KEYFILE="$RUNNER_TEMP/android-update-ssh"
+          printf '%s\n' "$UPDATE_SSH_PRIVATE_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+          mkdir -p "$HOME/.ssh"
+          ssh-keyscan -H 34.132.172.40 >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          echo "ANDROID_UPDATE_SSH_KEYFILE=$KEYFILE" >> "$GITHUB_ENV"
+          echo 'UPDATE_SERVER_READY=true' >> "$GITHUB_ENV"
+
+      - name: Publish verified update to server
+        if: env.UPDATE_RELEASE_READY == 'true' && env.UPDATE_SERVER_READY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST=34.132.172.40
+          USER=kpj3669
+          REMOTE=/home/kpj3669/.cache/universal-trading-bot/android-updates
+          ssh -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" "mkdir -p '$REMOTE'"
+          scp -i "$ANDROID_UPDATE_SSH_KEYFILE" UniversalTradingBacktester-Android.apk "$USER@$HOST:$REMOTE/UniversalTradingBacktester-Android.apk.uploading"
+          scp -i "$ANDROID_UPDATE_SSH_KEYFILE" android-update.json "$USER@$HOST:$REMOTE/android-update.json.uploading"
+          ssh -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" \
+            "mv '$REMOTE/UniversalTradingBacktester-Android.apk.uploading' '$REMOTE/UniversalTradingBacktester-Android.apk' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
+          echo 'Verified Android update published to private SFTP channel.'
 
       - name: Upload signed update artifact
         if: env.UPDATE_RELEASE_READY == 'true'
