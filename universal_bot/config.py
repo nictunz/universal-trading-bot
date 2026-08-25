@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
 
-    # LIVE execution defaults for the user's Classic v2 Elite account.
+    # LIVE execution defaults for the Classic v2 Elite account.
     leverage: int = 50
     margin_mode: str = "crossed"
     require_exchange_protection: bool = True
@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     live_entry_multiplier: float = 15.0
     live_max_entries_per_position: int = 2
     live_max_total_multiplier: float = 30.0
+
+    # Discord notifications. Keep the webhook only in .env, never in source.
+    discord_notifications_enabled: bool = False
+    discord_webhook_url: str = ""
+    discord_timeout: float = 5.0
 
     # Bitget credential routing.
     # - standard: normal Bitget API; reserved for funding/spot/standard account work.
