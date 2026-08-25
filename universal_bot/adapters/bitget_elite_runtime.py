@@ -101,6 +101,12 @@ class BitgetEliteAdapter(_ClassicBitgetEliteAdapter):
         client_oid = str(order.get("clientOid") or "")
         return client_oid.startswith("utb-")
 
+    @staticmethod
+    def _plan_key(order: dict[str, Any]) -> str:
+        order_id = str(order.get("orderId") or "").strip()
+        client_oid = str(order.get("clientOid") or "").strip()
+        return f"id:{order_id}" if order_id else f"client:{client_oid}" if client_oid else ""
+
     def _bot_plan_orders(self, symbol: str) -> list[dict[str, Any]]:
         return [x for x in self._pending_plan_orders(symbol) if self._is_bot_plan(x)]
 
@@ -121,16 +127,19 @@ class BitgetEliteAdapter(_ClassicBitgetEliteAdapter):
             body["clientOid"] = str(client_oid)
         self._request("POST", "/api/v2/mix/order/cancel-plan-order", body=body)
 
+    @staticmethod
+    def _active_plans(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            x for x in orders
+            if str(x.get("triggerPrice") or "").strip() not in {"", "0"}
+        ]
+
     def protection_status(self, symbol: str) -> dict[str, Any]:
-        """Verify at least two active TP/SL plans owned by this bot."""
+        """Verify at least one bot-owned TP and SL pair is active."""
         last_error: Exception | None = None
         for _ in range(5):
             try:
-                orders = self._bot_plan_orders(symbol)
-                active = [
-                    x for x in orders
-                    if str(x.get("triggerPrice") or "").strip() not in {"", "0"}
-                ]
+                active = self._active_plans(self._bot_plan_orders(symbol))
                 if len(active) >= 2:
                     return {
                         "ok": True,
@@ -170,11 +179,11 @@ class BitgetEliteAdapter(_ClassicBitgetEliteAdapter):
         tp_price: float,
         sl_price: float,
     ) -> dict[str, Any]:
-        """Replace tranche protections with one full-position TP and SL pair.
+        """Replace tranche protections with exactly one full TP and SL pair.
 
         New full-position orders are placed *before* old bot orders are removed,
-        avoiding an intentional unprotected gap during a pyramiding update. The
-        old snapshot is then cancelled, leaving only the new full-position pair.
+        avoiding an intentional unprotected gap. The pre-existing snapshot is
+        then cancelled. Verification requires a clean two-order bot-owned set.
         """
         side = str(position_side).strip().lower()
         if side not in {"long", "short"}:
@@ -196,23 +205,62 @@ class BitgetEliteAdapter(_ClassicBitgetEliteAdapter):
                 "created": created,
             }
 
+        created_keys = {self._plan_key(x) for x in created if self._plan_key(x)}
+
         # Cancel only the plans that existed before the replacement was placed.
         for order in old_orders:
             try:
                 self._cancel_plan(symbol, order)
             except Exception:
-                # Verification below is authoritative. A leftover old reduce-only
-                # plan is safer than deleting the newly created full protection.
                 pass
 
-        status = self.protection_status(symbol)
+        last_active: list[dict[str, Any]] = []
+        for _ in range(10):
+            try:
+                last_active = self._active_plans(self._bot_plan_orders(symbol))
+
+                # Eventual consistency can briefly leave an old bot plan visible.
+                # If the newly created IDs are known, remove only non-new extras.
+                if len(last_active) > 2 and created_keys:
+                    for order in list(last_active):
+                        key = self._plan_key(order)
+                        if key and key not in created_keys:
+                            try:
+                                self._cancel_plan(symbol, order)
+                            except Exception:
+                                pass
+                    time.sleep(0.15)
+                    continue
+
+                active_keys = {self._plan_key(x) for x in last_active if self._plan_key(x)}
+                new_pair_visible = not created_keys or created_keys.issubset(active_keys)
+                if len(last_active) == 2 and new_pair_visible:
+                    return {
+                        "ok": True,
+                        "symbol": self._symbol_id(symbol),
+                        "total_qty": qty,
+                        "tp_price": float(tp_price),
+                        "sl_price": float(sl_price),
+                        "old_plan_count": len(old_orders),
+                        "created_count": len(created),
+                        "verification": {
+                            "ok": True,
+                            "count": 2,
+                            "orders": last_active,
+                        },
+                    }
+            except Exception:
+                pass
+            time.sleep(0.2)
+
         return {
-            "ok": bool(status.get("ok")),
+            "ok": False,
             "symbol": self._symbol_id(symbol),
             "total_qty": qty,
             "tp_price": float(tp_price),
             "sl_price": float(sl_price),
             "old_plan_count": len(old_orders),
             "created_count": len(created),
-            "verification": status,
+            "reason": f"replacement protection did not converge to exactly 2 bot plans (active={len(last_active)})",
+            "verification": {"ok": False, "count": len(last_active), "orders": last_active},
         }
