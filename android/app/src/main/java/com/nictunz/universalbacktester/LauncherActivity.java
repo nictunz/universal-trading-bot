@@ -157,7 +157,7 @@ public class LauncherActivity extends android.app.Activity {
         updateStatus = text("현재 버전: " + (current.isEmpty() ? "확인 불가" : current), 12, MUTED, false);
         update.addView(updateStatus, mt(5));
         update.addView(text(
-                "GitHub 검증과 Android 빌드가 모두 성공한 서명 APK만 업데이트 채널에 게시됩니다. APK는 SHA-256과 Android 서명을 모두 확인합니다.",
+                "GitHub 테스트와 Android 빌드가 모두 성공한 안정 서명 APK만 서버 업데이트 채널에 게시됩니다. 휴대폰에는 GitHub 토큰을 저장하지 않고 기존 SSH 키로 APK를 받아 SHA-256과 Android 서명을 확인합니다.",
                 11, MUTED, false
         ), mt(7));
         updateButton = actionButton("업데이트 확인", PRIMARY);
@@ -260,11 +260,21 @@ public class LauncherActivity extends android.app.Activity {
             confirmDownload(pendingUpdate);
             return;
         }
+        saveRelayInputs();
         updateButton.setEnabled(false);
-        updateStatus.setText("GitHub 최신 검증 빌드 확인 중...");
+        updateStatus.setText("서버의 최신 검증 빌드 확인 중...");
         executor.execute(() -> {
             try {
-                AppUpdateManager.UpdateInfo info = AppUpdateManager.checkLatest(this);
+                JSONObject key = new JSONObject(SshBridge.ensureKey(getFilesDir().getAbsolutePath()));
+                String keyPath = key.getString("private_key");
+                prefs().edit().putString("relay_key_path", keyPath).apply();
+                String manifest = ServerUpdateBridge.readManifest(
+                        hostInput.getText().toString(),
+                        userInput.getText().toString(),
+                        remoteInput.getText().toString(),
+                        keyPath
+                );
+                AppUpdateManager.UpdateInfo info = AppUpdateManager.fromManifest(this, manifest);
                 main.post(() -> {
                     updateButton.setEnabled(true);
                     if (!info.updateAvailable()) {
@@ -292,18 +302,34 @@ public class LauncherActivity extends android.app.Activity {
     private void confirmDownload(AppUpdateManager.UpdateInfo info) {
         new AlertDialog.Builder(this)
                 .setTitle("앱 업데이트")
-                .setMessage(info.versionName + " 버전을 다운로드하고 설치할까요?\n\nGitHub 검증 성공 후 게시된 APK만 사용합니다.")
+                .setMessage(info.versionName + " 버전을 서버에서 받아 설치할까요?\n\nGitHub 테스트와 Android 빌드가 성공한 안정 서명 APK만 게시됩니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("업데이트", (d, which) -> downloadUpdate(info))
                 .show();
     }
 
     private void downloadUpdate(AppUpdateManager.UpdateInfo info) {
+        saveRelayInputs();
         updateButton.setEnabled(false);
-        updateStatus.setText("APK 다운로드 및 SHA-256 검증 중...");
+        updateStatus.setText("APK SFTP 다운로드 및 SHA-256 검증 중...");
         executor.execute(() -> {
             try {
-                File apk = AppUpdateManager.downloadVerified(this, info);
+                String keyPath = prefs().getString("relay_key_path", "");
+                if (keyPath.isEmpty()) {
+                    JSONObject key = new JSONObject(SshBridge.ensureKey(getFilesDir().getAbsolutePath()));
+                    keyPath = key.getString("private_key");
+                    prefs().edit().putString("relay_key_path", keyPath).apply();
+                }
+                String localPath = ServerUpdateBridge.downloadApk(
+                        hostInput.getText().toString(),
+                        userInput.getText().toString(),
+                        remoteInput.getText().toString(),
+                        info.apkName,
+                        getCacheDir().getAbsolutePath(),
+                        keyPath
+                );
+                File apk = new File(localPath);
+                AppUpdateManager.verifyDownloaded(info, apk);
                 main.post(() -> {
                     updateButton.setEnabled(true);
                     updateStatus.setText("APK 검증 완료 · Android 설치 확인을 진행하세요.");
