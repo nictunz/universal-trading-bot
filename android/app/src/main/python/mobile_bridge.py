@@ -29,8 +29,33 @@ def defaults() -> str:
     )
 
 
-def run_backtest(symbol: str, timeframe: str, start_text: str, end_text: str, output_dir: str) -> str:
+def run_backtest(
+    symbol: str,
+    timeframe: str,
+    start_text: str,
+    end_text: str,
+    output_dir: str,
+    host: str = "",
+    username: str = "",
+    remote_dir: str = "",
+    key_path: str = "",
+) -> str:
     logs: list[str] = []
+    overrides: dict = {}
+    if host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
+        try:
+            raw = str(
+                _ssh_bridge().readStrategySettings(
+                    host.strip(), username.strip(), remote_dir.strip(), key_path.strip()
+                )
+            )
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                overrides = parsed
+        except Exception as exc:
+            logs.append(
+                f"서버 전략 설정 동기화 실패 - 현재 앱 기본값 사용: {type(exc).__name__}: {exc}"
+            )
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
         timeframe.strip(),
@@ -38,6 +63,7 @@ def run_backtest(symbol: str, timeframe: str, start_text: str, end_text: str, ou
         end_text.strip(),
         Path(output_dir),
         logs.append,
+        strategy_overrides=overrides,
     )
     return json.dumps(
         {
