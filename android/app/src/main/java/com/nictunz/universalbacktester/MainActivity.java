@@ -1,5 +1,6 @@
 package com.nictunz.universalbacktester;
 
+import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -69,6 +70,10 @@ public class MainActivity extends android.app.Activity {
     private TextView pfValue;
     private TextView returnValue;
     private TextView mddValue;
+    private Button resultSummaryButton;
+    private Button tradeHistoryButton;
+    private Button chartButton;
+    private JSONObject lastSummary;
 
     private String lastDbPath = "";
     private String lastResultPath = "";
@@ -160,6 +165,20 @@ public class MainActivity extends android.app.Activity {
         backtestCard.addView(runButton, marginTop(12));
 
         root.addView(buildMetrics(), marginTop(14));
+
+        LinearLayout resultActions = panel();
+        root.addView(resultActions, marginTop(12));
+        resultActions.addView(sectionTitle("백테스트 결과 확인"));
+        resultSummaryButton = actionButton("결과 요약 팝업", Color.rgb(30, 41, 59));
+        resultSummaryButton.setOnClickListener(v -> showResultSummary());
+        resultActions.addView(resultSummaryButton);
+        tradeHistoryButton = actionButton("전체 거래내역 팝업", Color.rgb(30, 41, 59));
+        tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
+        resultActions.addView(tradeHistoryButton, marginTop(8));
+        chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
+        chartButton.setOnClickListener(v -> showBacktestChart());
+        resultActions.addView(chartButton, marginTop(8));
+        enableResultActions(false);
 
         LinearLayout serverCard = panel();
         root.addView(serverCard, marginTop(14));
@@ -305,7 +324,9 @@ public class MainActivity extends android.app.Activity {
         lastDbPath = "";
         lastResultPath = "";
         lastUploadEligible = false;
+        lastSummary = null;
         enableUpload(false);
+        enableResultActions(false);
         logText.setText("로컬 캐시 생성 및 백테스트 시작...\n");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -321,6 +342,7 @@ public class MainActivity extends android.app.Activity {
                 lastDbPath = obj.getString("db");
                 lastResultPath = obj.getString("result");
                 lastUploadEligible = summary.optBoolean("server_upload_eligible", false);
+                lastSummary = summary;
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < logs.length(); i++) sb.append(logs.getString(i)).append('\n');
 
@@ -329,6 +351,7 @@ public class MainActivity extends android.app.Activity {
                     logText.setText(sb.toString());
                     statusText.setText(lastUploadEligible ? "완료 · 서버 업로드 가능" : "완료 · 로컬 캐시");
                     enableUpload(lastUploadEligible);
+                    enableResultActions(true);
                     setBusy(false, statusText.getText().toString());
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     toast("백테스트 완료");
@@ -529,6 +552,103 @@ public class MainActivity extends android.app.Activity {
                 });
             }
         });
+    }
+
+    private void showResultSummary() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        String[] keys = {
+                "symbol", "bars", "trades", "wins", "win_rate", "profit_factor",
+                "gross_pnl", "estimated_costs", "pnl", "return_percent",
+                "max_drawdown_percent", "data_start", "data_end", "cache_sha256"
+        };
+        StringBuilder sb = new StringBuilder();
+        for (String key : keys) {
+            if (lastSummary.has(key) && !lastSummary.isNull(key)) {
+                sb.append(key).append(": ").append(lastSummary.opt(key)).append('\n');
+            }
+        }
+        showTextDialog("백테스트 결과 요약", sb.toString());
+    }
+
+    private void showTradeHistory() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        JSONArray trades = lastSummary.optJSONArray("trades_log");
+        if (trades == null || trades.length() == 0) {
+            showTextDialog("전체 거래내역", "거래 기록이 없습니다.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < trades.length(); i++) {
+            JSONObject t = trades.optJSONObject(i);
+            if (t == null) continue;
+            sb.append("#").append(t.optInt("trade", i + 1))
+                    .append(" · ").append(t.optString("side"))
+                    .append(" · ").append(t.optString("reason"))
+                    .append("\n진입 ").append(t.optString("entry_time"))
+                    .append(" @ ").append(t.optDouble("avg_entry_price", t.optDouble("entry_price")))
+                    .append("\n청산 ").append(t.optString("exit_time"))
+                    .append(" @ ").append(t.optDouble("exit_price"))
+                    .append("\n수량 ").append(t.optDouble("qty"))
+                    .append(" · 손익 ").append(String.format(Locale.US, "%+.4f", t.optDouble("pnl")))
+                    .append(" (").append(String.format(Locale.US, "%+.3f%%", t.optDouble("pnl_percent")))
+                    .append(") · 비용 ").append(String.format(Locale.US, "%.4f", t.optDouble("estimated_cost")))
+                    .append("\n\n");
+        }
+        showTextDialog("전체 거래내역 · " + trades.length() + "건", sb.toString());
+    }
+
+    private void showBacktestChart() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        BacktestChartView chart = new BacktestChartView(this);
+        chart.setData(
+                lastSummary.optJSONArray("equity_curve"),
+                lastSummary.optJSONArray("trades_log")
+        );
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(chart, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                dp(420)
+        ));
+        new AlertDialog.Builder(this)
+                .setTitle("순자산 차트 · 진입/청산 표시")
+                .setView(scroll)
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void showTextDialog(String title, String value) {
+        TextView body = text(value, 11, TEXT, false);
+        body.setTypeface(Typeface.MONOSPACE);
+        body.setTextIsSelectable(true);
+        body.setPadding(dp(14), dp(12), dp(14), dp(12));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setMinimumHeight(dp(420));
+        scroll.addView(body);
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(scroll)
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void enableResultActions(boolean enabled) {
+        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton};
+        for (Button button : buttons) {
+            if (button == null) continue;
+            button.setEnabled(enabled);
+            button.setAlpha(enabled ? 1f : 0.45f);
+        }
     }
 
     private void updateMetrics(JSONObject summary) {
