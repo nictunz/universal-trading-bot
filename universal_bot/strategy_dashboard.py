@@ -16,6 +16,7 @@ from universal_bot.strategy import UniversalV15Strategy
 from universal_bot.trade_history import TradeHistoryStore
 
 STORE = Path("data/dashboard-strategy-settings.json")
+MOBILE_STORE = Path.home() / ".cache" / "universal-trading-bot" / "mobile-strategy-settings.json"
 FIELDS = (
     "volume_lookback", "volume_break_multiplier", "min_one_bar_vol", "max_one_bar_vol",
     "volatility_bars", "tp_vol_multiplier", "sl_vol_multiplier", "min_tp_percent",
@@ -81,6 +82,14 @@ def _validate(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _persist(values: dict[str, Any]) -> None:
+    text = json.dumps(values, ensure_ascii=False, indent=2)
+    STORE.parent.mkdir(parents=True, exist_ok=True)
+    STORE.write_text(text, encoding="utf-8")
+    MOBILE_STORE.parent.mkdir(parents=True, exist_ok=True)
+    MOBILE_STORE.write_text(text, encoding="utf-8")
+
+
 def _apply(scanner, values: dict[str, Any]) -> None:
     for runtime in scanner.runtimes:
         new_settings = runtime.engine.settings.model_copy(update=values)
@@ -89,7 +98,9 @@ def _apply(scanner, values: dict[str, Any]) -> None:
 
 
 def install_strategy_dashboard(app, scanner) -> None:
-    _apply(scanner, _load())
+    initial_values = _load()
+    _apply(scanner, initial_values)
+    _persist(initial_values)
     history = TradeHistoryStore()
 
     @app.get("/api/strategy-settings")
@@ -111,8 +122,7 @@ def install_strategy_dashboard(app, scanner) -> None:
     def save_strategy_settings(req: StrategyUpdate):
         try:
             values = _validate(req.values)
-            STORE.parent.mkdir(parents=True, exist_ok=True)
-            STORE.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
+            _persist(values)
             _apply(scanner, values)
             return {"status": "ok", "values": values, "applied_runtimes": len(scanner.runtimes)}
         except ValueError as exc:
