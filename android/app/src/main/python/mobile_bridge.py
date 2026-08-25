@@ -87,15 +87,16 @@ def run_backtest(
 def list_saved_results(output_dir: str) -> str:
     history_dir = Path(output_dir) / "BacktestResults"
     items: list[dict] = []
-    if history_dir.is_dir():
-        for path in sorted(history_dir.glob("*-backtest.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
+    candidates = list(history_dir.glob("*-backtest.json")) if history_dir.is_dir() else []
+    candidates.extend(Path(output_dir).glob("*backtest.json"))
+    for path in sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
                 meta = json.loads(path.read_text(encoding="utf-8"))
-                db = Path(str(meta.get("database", "")))
-                if not db.is_file():
-                    continue
-                items.append(
-                    {
+            db = Path(str(meta.get("database", "")))
+            if not db.is_file():
+                continue
+            items.append(
+                {
                         "path": str(path),
                         "db": str(db),
                         "summary": meta,
@@ -103,10 +104,10 @@ def list_saved_results(output_dir: str) -> str:
                             f"{meta.get('symbol', '-')} · {meta.get('requested_start', '-')}~"
                             f"{meta.get('requested_end', '-')} · {meta.get('created_at', '-')}"
                         ),
-                    }
-                )
-            except Exception:
-                continue
+                }
+            )
+        except Exception:
+            continue
     return json.dumps({"items": items}, ensure_ascii=False)
 
 
