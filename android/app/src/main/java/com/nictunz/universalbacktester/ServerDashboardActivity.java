@@ -100,7 +100,9 @@ public class ServerDashboardActivity extends android.app.Activity {
                 );
                 String keyPath = key.getString("private_key");
                 tunnel = SshBridge.openDashboardTunnel(host, user, keyPath, 8000);
-                String url = "http://127.0.0.1:" + tunnel.getLocalPort() + "/";
+                String path = getIntent().getStringExtra("dashboard_path");
+                if (path == null || !path.startsWith("/") || path.contains("://")) path = "/";
+                String url = "http://127.0.0.1:" + tunnel.getLocalPort() + path;
                 runOnUiThread(() -> {
                     status.setText("서버 인증 화면 여는 중...");
                     webView.loadUrl(url);
