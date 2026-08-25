@@ -23,12 +23,12 @@ permissions:
 jobs:
   optimize:
     runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 210
+    timeout-minutes: 420
     env:
       PYTHONUNBUFFERED: '1'
       CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Prepare runtime
         run: |
@@ -42,7 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           trials="${{ github.event.inputs.trials || '300' }}"
-          "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py             --symbol ETH/USDT:USDT             --timeframe 5m             --trials "$trials"             --start-trial 196             --replay-trials 154             --output reports/latest-strategy-optimization.json             2>&1 | tee reports/latest-strategy-optimization.log
+          "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py \
+            --symbol ETH/USDT:USDT \
+            --timeframe 5m \
+            --trials "$trials" \
+            --start-trial 1 \
+            --output reports/latest-strategy-optimization.json \
+            2>&1 | tee reports/latest-strategy-optimization.log
 
       - name: Write summary
         run: |
@@ -50,15 +56,25 @@ jobs:
           import json
           from pathlib import Path
           d=json.loads(Path('reports/latest-strategy-optimization.json').read_text())
-          b=d['best']; r=b['result']; p=b['parameters']
+          b=d['best']; r=b['result']; p=b['parameters']; a=d['execution_assumptions']
           lines=[
             '# Latest one-year strategy optimization','',
             f"- Generated UTC: {d['generated_at']}",
             f"- Market: {d['symbol']} {d['timeframe']}",
-            f"- Trials: {d['trials_requested']}",
-            '- LIVE limit: max 15x per entry, max 2 entries, max 30x total','',
+            f"- Trials: {d['trials_requested']}",'',
+            '## Execution assumptions','',
+            f"- Initial capital: {a['initial_capital_usdt']} USDT",
+            f"- Entry notional: {a['entry_multiplier_range'][0]}x to {a['entry_multiplier_range'][1]}x equity per entry",
+            f"- Exchange leverage: {a['exchange_leverage']}x",
+            f"- Maximum entries: {a['max_entries_range'][0]} to {a['max_entries_range'][1]}",
+            f"- Maximum total notional: {a['maximum_total_notional_multiplier']}x equity",
+            f"- Fee: {a['fee_percent_per_side']}% per side",
+            f"- Slippage: {a['slippage_percent_per_side']}% per side",'',
             '## Best result','',
-            f"- Net PnL: {r['pnl']}",
+            f"- Trial: {b['trial']}",
+            f"- Entry multiplier: {p['entry_multiplier']}x",
+            f"- Maximum entries: {p['max_pyramiding']}",
+            f"- Net PnL: {r['pnl']} USDT",
             f"- Return: {r['return_percent']}%",
             f"- Profit factor: {r['profit_factor']}",
             f"- Win rate: {r['win_rate']}%",
@@ -66,7 +82,7 @@ jobs:
             f"- Trades: {r['trades']}",'',
             '## Parameters','',
             '```json',json.dumps(p,ensure_ascii=False,indent=2),'```','',
-            '> PAPER forward validation is required before LIVE.'
+            '> Research only. Not automatically applied to PAPER or LIVE.'
           ]
           Path('reports/latest-strategy-optimization.md').write_text('\n'.join(lines)+'\n')
           PY
@@ -77,7 +93,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add reports/latest-strategy-optimization.json reports/latest-strategy-optimization.md
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: publish one-year strategy optimization [skip ci]"
-            git push origin HEAD:main
+          if git diff --cached --quiet; then
+            exit 0
           fi
+          git commit -m "ci: publish leveraged strategy optimization [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "Failed to publish reports after 5 synchronized attempts" >&2
+          exit 1
