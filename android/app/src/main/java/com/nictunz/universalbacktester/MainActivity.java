@@ -82,6 +82,7 @@ public class MainActivity extends android.app.Activity {
             Python.start(new AndroidPlatform(this));
         }
         setContentView(buildUi());
+        loadPhoneKey();
     }
 
     @Override
@@ -114,8 +115,24 @@ public class MainActivity extends android.app.Activity {
                 "BNB/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
         }, "ETH/USDT:USDT");
         timeframeInput = autocomplete(new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}, "5m");
-        backtestCard.addView(labeled("심볼 (선택 또는 직접 입력)", symbolInput));
-        backtestCard.addView(labeled("타임프레임 (선택 또는 직접 입력)", timeframeInput), marginTop(10));
+        backtestCard.addView(labeled("심볼 (목록 선택 또는 직접 입력)", symbolInput));
+        backtestCard.addView(quickChoiceRow(
+                "자주 쓰는 코인",
+                symbolInput,
+                new String[]{"BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"},
+                new String[]{
+                        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
+                        "XRP/USDT:USDT", "BNB/USDT:USDT", "DOGE/USDT:USDT",
+                        "ADA/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
+                }
+        ), marginTop(8));
+        backtestCard.addView(labeled("타임프레임 (목록 선택 또는 직접 입력)", timeframeInput), marginTop(10));
+        backtestCard.addView(quickChoiceRow(
+                "자주 쓰는 주기",
+                timeframeInput,
+                new String[]{"1분", "3분", "5분", "15분", "30분", "1시간", "4시간", "1일"},
+                new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}
+        ), marginTop(8));
 
         Calendar today = Calendar.getInstance();
         Calendar start = (Calendar) today.clone();
@@ -154,7 +171,7 @@ public class MainActivity extends android.app.Activity {
         serverCard.addView(labeled("사용자", userInput), marginTop(8));
         serverCard.addView(labeled("원격 캐시 폴더", remoteInput), marginTop(8));
 
-        keyButton = actionButton("휴대폰 전용 SSH 키 생성 / 확인", Color.rgb(30, 41, 59));
+        keyButton = actionButton("휴대폰 SSH 키 불러오기 / 다시 확인", Color.rgb(30, 41, 59));
         keyButton.setOnClickListener(v -> ensurePhoneKey());
         serverCard.addView(keyButton, marginTop(12));
 
@@ -167,7 +184,7 @@ public class MainActivity extends android.app.Activity {
         Button copyKeyButton = smallButton("공개키 복사", v -> copyPublicKey());
         serverCard.addView(copyKeyButton, marginTop(8));
 
-        sshTestButton = actionButton("SSH 연결 테스트", Color.rgb(30, 41, 59));
+        sshTestButton = actionButton("SSH 서버 연결 다시 확인", Color.rgb(30, 41, 59));
         sshTestButton.setOnClickListener(v -> testSsh());
         serverCard.addView(sshTestButton, marginTop(10));
 
@@ -323,6 +340,27 @@ public class MainActivity extends android.app.Activity {
         });
     }
 
+    private void loadPhoneKey() {
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                String value = bridge.callAttr(
+                        "ensure_ssh_key",
+                        getFilesDir().getAbsolutePath()
+                ).toString();
+                JSONObject obj = new JSONObject(value);
+                privateKeyPath = obj.getString("private_key");
+                String pub = obj.getString("public_key");
+                main.post(() -> {
+                    publicKeyText.setText(pub);
+                    statusText.setText("기존 휴대폰 SSH 키 불러옴");
+                });
+            } catch (Exception e) {
+                main.post(() -> statusText.setText("SSH 키 확인 필요"));
+            }
+        });
+    }
+
     private void ensurePhoneKey() {
         keyButton.setEnabled(false);
         statusText.setText("휴대폰 SSH 키 준비 중...");
@@ -471,6 +509,33 @@ public class MainActivity extends android.app.Activity {
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.addView(text(label, 12, TEXT, true));
         wrap.addView(field, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        return wrap;
+    }
+
+    private View quickChoiceRow(
+            String title,
+            AutoCompleteTextView target,
+            String[] labels,
+            String[] values
+    ) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(text(title + " · 버튼으로 바로 선택", 11, MUTED, true));
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < labels.length && i < values.length; i++) {
+            final String value = values[i];
+            Button button = smallButton(labels[i], v -> target.setText(value, false));
+            LinearLayout.LayoutParams params =
+                    new LinearLayout.LayoutParams(dp(76), dp(42));
+            params.setMargins(i == 0 ? 0 : dp(6), 0, 0, 0);
+            row.addView(button, params);
+        }
+        scroll.addView(row);
+        wrap.addView(scroll, marginTop(4));
         return wrap;
     }
 
