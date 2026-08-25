@@ -97,6 +97,7 @@ def main() -> None:
     p.add_argument("--trials", type=int, default=300)
     p.add_argument("--seed", type=int, default=50031502)
     p.add_argument("--start-trial", type=int, default=1)
+    p.add_argument("--end-trial", type=int, default=0, help="inclusive; 0 means --trials")
     p.add_argument("--replay-trials", default="")
     p.add_argument("--output", default="reports/latest-strategy-optimization.json")
     args = p.parse_args()
@@ -107,9 +108,10 @@ def main() -> None:
     rng = random.Random(args.seed)
     candidates = [sample(rng) for _ in range(max(1, args.trials))]
     replay = {int(x.strip()) for x in args.replay_trials.split(",") if x.strip()}
+    end_trial = args.end_trial if args.end_trial > 0 else args.trials
     selected = [
         (i, params) for i, params in enumerate(candidates, 1)
-        if i >= max(1, args.start_trial) or i in replay
+        if (max(1, args.start_trial) <= i <= min(args.trials, end_trial)) or i in replay
     ]
     ranked: list[dict[str, Any]] = []
     for position, (i, params) in enumerate(selected, 1):
@@ -137,9 +139,9 @@ def main() -> None:
         except Exception as exc:
             print(f"{i}/{len(candidates)} failed: {type(exc).__name__}: {exc}", flush=True)
 
+    if not ranked:
+        raise SystemExit("no successful optimization trials in selected batch")
     viable = [x for x in ranked if x["score"] > -1e17]
-    if not viable:
-        raise SystemExit("no viable optimization trials (all failed, under 30 trades, or MDD >= 100%)")
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "symbol": args.symbol,
@@ -147,7 +149,7 @@ def main() -> None:
         "cache": str(cache),
         "trials_requested": args.trials,
         "trials_executed": len(selected),
-        "trial_selection": {"start_trial": args.start_trial, "replay_trials": sorted(replay)},
+        "trial_selection": {"start_trial": args.start_trial, "end_trial": end_trial, "replay_trials": sorted(replay)},
         "trials_ranked": len(ranked),
         "execution_assumptions": {
             "initial_capital_usdt": 1000.0,
@@ -160,7 +162,8 @@ def main() -> None:
         },
         "objective": "net pnl; reject fewer than 30 trades or MDD >= 100%; drawdown/PF tie-break",
         "warning": "Research only. Results are not automatically applied to PAPER or LIVE.",
-        "best": viable[0],
+        "best": viable[0] if viable else ranked[0],
+        "has_viable_candidate": bool(viable),
         "top20": ranked,
     }
     out = Path(args.output)
