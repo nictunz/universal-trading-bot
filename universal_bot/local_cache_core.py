@@ -96,6 +96,16 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _downsample_equity(points: list[dict], max_points: int = 1200) -> list[dict]:
+    if len(points) <= max_points:
+        return points
+    step = max(1, (len(points) + max_points - 1) // max_points)
+    sampled = points[::step]
+    if sampled[-1] is not points[-1]:
+        sampled.append(points[-1])
+    return sampled
+
+
 def build_cache_and_backtest(
     symbol: str,
     timeframe: str,
@@ -169,6 +179,8 @@ def build_cache_and_backtest(
     )
     summary = {k: result.get(k) for k in keys}
     summary.update({
+        "trades_log": result.get("trades_log", []),
+        "equity_curve": _downsample_equity(result.get("equity_curve", [])),
         "requested_start": start_text,
         "requested_end": end_text,
         "range_days": range_days,
