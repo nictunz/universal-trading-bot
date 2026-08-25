@@ -157,6 +157,8 @@ public class LauncherActivity extends android.app.Activity {
         relayStatus = text("중계 상태 확인 중...", 12, TEXT, true);
         relayStatus.setPadding(dp(10), dp(10), dp(10), dp(10));
         relayStatus.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
+        relayStatus.setClickable(true);
+        relayStatus.setOnClickListener(v -> showRelayLogDialog());
         relay.addView(relayStatus, mt(10));
 
         relay.addView(text(
@@ -187,6 +189,32 @@ public class LauncherActivity extends android.app.Activity {
         backtest.addView(openBacktester, mt(10));
 
         return scroll;
+    }
+
+    private void showRelayLogDialog() {
+        String history = prefs().getString("relay_log_history", "");
+        TextView logView = text(
+                history.isEmpty() ? "아직 저장된 중계 로그가 없습니다." : history,
+                12,
+                TEXT,
+                false
+        );
+        logView.setTextIsSelectable(true);
+        logView.setPadding(dp(16), dp(14), dp(16), dp(14));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setMinimumHeight(dp(420));
+        scroll.addView(logView);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("실시간 중계 이전 로그")
+                .setMessage("최근 300개 기록 · 성공/오류/시작/중지")
+                .setView(scroll)
+                .setNegativeButton("닫기", null)
+                .create();
+        dialog.setOnShowListener(ignored -> scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN)));
+        dialog.show();
     }
 
     private void ensureKeyOnly() {
@@ -290,6 +318,7 @@ public class LauncherActivity extends android.app.Activity {
         sb.append(running || requested ? "● 중계 ON" : "○ 중계 OFF");
         if (lastOk > 0) sb.append("\n마지막 성공: ").append(formatTime(lastOk));
         sb.append("\n").append(detail);
+        sb.append("\n\n🔎 눌러서 이전 로그 보기");
         relayStatus.setText(sb.toString());
         startRelayButton.setAlpha(running || requested ? 0.55f : 1f);
     }
