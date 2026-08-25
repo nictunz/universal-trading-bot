@@ -21,6 +21,7 @@ DEFAULT_USER = "kpj3669"
 DEFAULT_REMOTE_DIR = "/home/kpj3669/.cache/universal-trading-bot"
 MIN_SERVER_UPLOAD_DAYS = 360
 MAX_SERVER_UPLOAD_DAYS = 370
+MAX_BACKTEST_DAYS = 3660
 COMMON_SYMBOLS = (
     "BTC/USDT:USDT",
     "ETH/USDT:USDT",
@@ -58,6 +59,8 @@ def inclusive_days(start_text: str, end_text: str) -> int:
     days = (end - start).days + 1
     if days <= 0:
         raise ValueError("종료일은 시작일보다 같거나 뒤여야 합니다.")
+    if days > MAX_BACKTEST_DAYS:
+        raise ValueError("백테스트 기간은 최대 10년(3660일)까지 가능합니다.")
     return days
 
 
