@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import random
+import time
 import zipfile
 
 import pandas as pd
@@ -39,12 +41,25 @@ class OfficialArchiveMarketData:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
     def _get_bytes(self, url: str) -> bytes | None:
-        r = self.session.get(url, timeout=self.timeout)
-        if r.status_code == 404:
-            return None
-        if r.status_code != 200:
-            raise RuntimeError(f"archive HTTP {r.status_code}: {url}")
-        return r.content
+        last_error: Exception | None = None
+        for attempt in range(1, 5):
+            try:
+                r = self.session.get(url, timeout=(15, self.timeout))
+                if r.status_code == 404:
+                    return None
+                if r.status_code == 429 or 500 <= r.status_code < 600:
+                    raise requests.HTTPError(f"archive HTTP {r.status_code}: {url}", response=r)
+                if r.status_code != 200:
+                    raise RuntimeError(f"archive HTTP {r.status_code}: {url}")
+                if not r.content:
+                    raise requests.ConnectionError(f"empty archive response: {url}")
+                return r.content
+            except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+                last_error = exc
+                if attempt == 4:
+                    break
+                time.sleep((2 ** (attempt - 1)) + random.uniform(0.0, 0.75))
+        raise RuntimeError(f"archive download failed after 4 attempts: {url}") from last_error
 
     @staticmethod
     def _binance_zip(content: bytes) -> pd.DataFrame:
