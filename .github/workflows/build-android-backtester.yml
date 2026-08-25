@@ -8,6 +8,7 @@ on:
       - 'android/**'
       - 'universal_bot/local_cache_core.py'
       - 'universal_bot/archive_historical.py'
+      - 'universal_bot/historical.py'
       - 'universal_bot/fast_backtest.py'
       - 'universal_bot/backtest_service.py'
       - 'universal_bot/providers/**'
