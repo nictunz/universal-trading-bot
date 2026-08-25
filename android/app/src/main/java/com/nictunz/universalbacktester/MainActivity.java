@@ -188,6 +188,10 @@ public class MainActivity extends android.app.Activity {
         sshTestButton.setOnClickListener(v -> testSsh());
         serverCard.addView(sshTestButton, marginTop(10));
 
+        Button inspectCacheButton = actionButton("서버 백테스트 캐시 연결 / 목록 확인", Color.rgb(30, 41, 59));
+        inspectCacheButton.setOnClickListener(v -> inspectServerCache(inspectCacheButton));
+        serverCard.addView(inspectCacheButton, marginTop(8));
+
         uploadButton = actionButton("⬆ 1년 결과 서버 업로드", SUCCESS);
         uploadButton.setEnabled(false);
         uploadButton.setAlpha(0.45f);
@@ -421,6 +425,63 @@ public class MainActivity extends android.app.Activity {
                     logText.append("\nSSH ERROR\n" + stackMessage(e) + "\n");
                     sshTestButton.setEnabled(true);
                     toast("SSH 연결 실패");
+                });
+            }
+        });
+    }
+
+    private void inspectServerCache(Button button) {
+        if (privateKeyPath.isEmpty()) {
+            toast("휴대폰 SSH 키를 확인한 뒤 다시 시도하세요.");
+            loadPhoneKey();
+            return;
+        }
+        button.setEnabled(false);
+        statusText.setText("서버 캐시 목록 확인 중...");
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                String response = bridge.callAttr(
+                        "inspect_server_cache",
+                        hostInput.getText().toString(),
+                        userInput.getText().toString(),
+                        remoteInput.getText().toString(),
+                        privateKeyPath
+                ).toString();
+                JSONObject obj = new JSONObject(response);
+                JSONArray files = obj.getJSONArray("files");
+                StringBuilder sb = new StringBuilder();
+                sb.append("\n===== SERVER BACKTEST CACHE =====\n");
+                sb.append(obj.getString("server"))
+                        .append(" · ")
+                        .append(obj.getString("remote_dir"))
+                        .append("\n");
+                if (files.length() == 0) {
+                    sb.append("백테스트 캐시 파일 없음\n");
+                } else {
+                    for (int i = 0; i < files.length(); i++) {
+                        JSONObject file = files.getJSONObject(i);
+                        double mb = file.optLong("size", 0L) / 1024.0 / 1024.0;
+                        sb.append(String.format(
+                                Locale.US,
+                                "%s · %.2f MB\n",
+                                file.optString("name"),
+                                mb
+                        ));
+                    }
+                }
+                main.post(() -> {
+                    logText.append(sb.toString());
+                    statusText.setText("서버 캐시 연결 정상 · " + files.length() + "개");
+                    button.setEnabled(true);
+                    toast("서버 백테스트 캐시 확인 완료");
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    logText.append("\nSERVER CACHE ERROR\n" + stackMessage(e) + "\n");
+                    statusText.setText("서버 캐시 연결 실패");
+                    button.setEnabled(true);
+                    toast("서버 캐시 연결 실패");
                 });
             }
         });
