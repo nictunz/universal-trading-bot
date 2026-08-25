@@ -6,7 +6,6 @@ import com.jcraft.jsch.Session;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Properties;
@@ -67,10 +66,11 @@ public final class ServerUpdateBridge {
         try {
             sftp = (ChannelSftp) session.openChannel("sftp");
             sftp.connect(15000);
-            try (InputStream in = sftp.get(remote); FileOutputStream out = new FileOutputStream(temp)) {
-                byte[] buffer = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buffer)) >= 0) out.write(buffer, 0, n);
+            // Let JSch own the complete SFTP transfer lifecycle. Holding the
+            // ChannelSftp InputStream directly can close early on large APKs.
+            sftp.get(remote, temp.getAbsolutePath());
+            if (!temp.isFile() || temp.length() <= 0L) {
+                throw new IllegalStateException("다운로드된 APK 파일이 비어 있습니다.");
             }
         } catch (Exception e) {
             temp.delete();
