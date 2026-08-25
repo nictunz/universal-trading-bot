@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from universal_bot.discord_notifier import DiscordNotifier
@@ -13,8 +14,8 @@ class TradingEngine(_BaseTradingEngine):
     Backtest/PAPER sizing stays on ORDER_PERCENT_OF_EQUITY. When LIVE execution
     uses the Bitget Elite profile, each entry uses current available USDT times
     LIVE_ENTRY_MULTIPLIER and the position is capped at
-    LIVE_MAX_ENTRIES_PER_POSITION. After an add-on fill the full position's TP
-    and SL are re-centered around the exchange-reported average entry price.
+    LIVE_MAX_ENTRIES_PER_POSITION. After every fill the bot re-reads Bitget and
+    installs one full-position TP/SL pair centered on the exchange average price.
     """
 
     def __init__(self, settings, adapter, strategy):
@@ -181,6 +182,28 @@ class TradingEngine(_BaseTradingEngine):
             return avg * (1 + tp_pct / 100), avg * (1 - sl_pct / 100)
         return avg * (1 - tp_pct / 100), avg * (1 + sl_pct / 100)
 
+    def _position_after_fill(self, side: str, fallback_qty: float, fallback_notional: float) -> dict:
+        last = None
+        for _ in range(7):
+            last = self.adapter.position(self.settings.symbol)
+            if (
+                last.get("side") == side
+                and float(last.get("size") or 0.0) > 0
+                and float(last.get("entry_price") or 0.0) > 0
+            ):
+                return last
+            time.sleep(0.2)
+        # Do not pretend an exchange position is verified. Return a marked
+        # fallback only so the emergency-close path has a quantity to use.
+        qty = max(0.0, float(fallback_qty))
+        avg = float(fallback_notional) / qty if qty > 0 and fallback_notional > 0 else 0.0
+        return {
+            "side": last.get("side") if isinstance(last, dict) else "UNKNOWN",
+            "size": qty,
+            "entry_price": avg,
+            "verified": False,
+        }
+
     def _flatten_full_position_after_protection_failure(self, side: str, total_qty: float) -> None:
         try:
             close_side = "sell" if side == "LONG" else "buy"
@@ -255,8 +278,9 @@ class TradingEngine(_BaseTradingEngine):
             self.safety.fail("LIVE_TOTAL_MULTIPLIER_LIMIT_EXCEEDED")
             return
 
-        # Temporary protection is attached to the new tranche immediately. For
-        # an add-on entry it is replaced moments later by one full-position pair.
+        # Temporary protection is attached to the new tranche immediately.
+        # It is then superseded by one full-position pair after Bitget reports
+        # the final size and average entry price.
         temp_tp, temp_sl = self._prices_from_average(side, price, active_tp_pct, active_sl_pct)
 
         if not self.safety.can_open:
@@ -276,24 +300,8 @@ class TradingEngine(_BaseTradingEngine):
 
         actual_price = float(order.get("average") or order.get("price") or price)
         actual_amount = float(order.get("filled") or order.get("amount") or amount)
-        protection = self.adapter.protection_status(self.settings.symbol)
-        self.safety.protection_ok = bool(protection.get("ok"))
-        if self.settings.require_exchange_protection and not self.safety.protection_ok:
-            self._emergency_flatten(
-                self.settings.symbol,
-                actual_amount,
-                "sell" if side == "LONG" else "buy",
-            )
-            if self.position.flat:
-                self._live_entry_equity_basis = None
-                self._active_tp_pct = None
-                self._active_sl_pct = None
-            self.safety.fail(
-                "ENTRY_FILLED_BUT_PROTECTION_NOT_VERIFIED_EMERGENCY_FLATTEN"
-            )
-            return
-
         signed_amount = actual_amount if side == "LONG" else -actual_amount
+
         if self.position.flat:
             self.position = Position(
                 side=side,
@@ -312,13 +320,21 @@ class TradingEngine(_BaseTradingEngine):
             self.position.size += signed_amount
             self.entry_notional += actual_amount * actual_price
 
-        # Re-read Bitget after every fill so the internal size/average matches the
-        # exchange. This is especially important after the second entry.
-        exchange_pos = self.adapter.position(self.settings.symbol)
-        total_qty = abs(float(exchange_pos.get("size") or self.position.size))
+        fallback_qty = abs(float(self.position.size))
+        exchange_pos = self._position_after_fill(side, fallback_qty, self.entry_notional)
+        verified_exchange_position = (
+            exchange_pos.get("side") == side
+            and float(exchange_pos.get("size") or 0.0) > 0
+            and float(exchange_pos.get("entry_price") or 0.0) > 0
+            and exchange_pos.get("verified", True) is not False
+        )
+        total_qty = abs(float(exchange_pos.get("size") or fallback_qty))
         avg_entry = float(exchange_pos.get("entry_price") or 0.0)
-        if avg_entry <= 0 and total_qty > 0:
-            avg_entry = self.entry_notional / total_qty
+
+        if not verified_exchange_position or total_qty <= 0 or avg_entry <= 0:
+            self._flatten_full_position_after_protection_failure(side, max(total_qty, fallback_qty))
+            self.safety.fail("ENTRY_FILLED_BUT_EXCHANGE_POSITION_NOT_VERIFIED")
+            return
 
         full_tp, full_sl = self._prices_from_average(
             side,
@@ -327,28 +343,27 @@ class TradingEngine(_BaseTradingEngine):
             active_sl_pct,
         )
 
-        if before_entries > 0:
-            if not hasattr(self.adapter, "replace_full_protection"):
-                self._flatten_full_position_after_protection_failure(side, total_qty)
-                self.safety.fail("FULL_POSITION_PROTECTION_REPLACE_UNSUPPORTED")
-                return
-            try:
-                replaced = self.adapter.replace_full_protection(
-                    self.settings.symbol,
-                    "long" if side == "LONG" else "short",
-                    total_qty,
-                    full_tp,
-                    full_sl,
-                )
-            except Exception as exc:
-                replaced = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
-            self.safety.protection_ok = bool(replaced.get("ok"))
-            if self.settings.require_exchange_protection and not self.safety.protection_ok:
-                self._flatten_full_position_after_protection_failure(side, total_qty)
-                self.safety.fail(
-                    f"ADD_ENTRY_FULL_PROTECTION_REPLACE_FAILED: {replaced.get('reason', replaced)}"
-                )
-                return
+        if not hasattr(self.adapter, "replace_full_protection"):
+            self._flatten_full_position_after_protection_failure(side, total_qty)
+            self.safety.fail("FULL_POSITION_PROTECTION_REPLACE_UNSUPPORTED")
+            return
+        try:
+            replaced = self.adapter.replace_full_protection(
+                self.settings.symbol,
+                "long" if side == "LONG" else "short",
+                total_qty,
+                full_tp,
+                full_sl,
+            )
+        except Exception as exc:
+            replaced = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        self.safety.protection_ok = bool(replaced.get("ok"))
+        if self.settings.require_exchange_protection and not self.safety.protection_ok:
+            self._flatten_full_position_after_protection_failure(side, total_qty)
+            self.safety.fail(
+                f"FULL_POSITION_PROTECTION_REPLACE_FAILED: {replaced.get('reason', replaced)}"
+            )
+            return
 
         # Align the internal position with Bitget and the final full-position TP/SL.
         self.position.side = side
