@@ -11,12 +11,9 @@ B64FILE="$SIGN_DIR/ANDROID_KEYSTORE_BASE64.txt"
 mkdir -p "$SIGN_DIR"
 chmod 700 "$SIGN_DIR"
 
-if ! command -v keytool >/dev/null 2>&1; then
-  echo "ERROR: keytool not found. Install a JDK first." >&2
-  exit 2
-fi
 if ! command -v openssl >/dev/null 2>&1; then
   echo "ERROR: openssl not found." >&2
+  echo "Ubuntu에서는: sudo apt-get update && sudo apt-get install -y openssl" >&2
   exit 2
 fi
 
@@ -24,17 +21,40 @@ if [[ ! -f "$KEYSTORE" ]]; then
   PASS="$(openssl rand -hex 24)"
   printf '%s' "$PASS" > "$PASSFILE"
   chmod 600 "$PASSFILE"
-  keytool -genkeypair \
-    -keystore "$KEYSTORE" \
-    -storetype PKCS12 \
-    -alias universal \
-    -keyalg RSA \
-    -keysize 3072 \
-    -validity 3650 \
-    -dname "CN=Universal Trading Bot Android,O=nictunz,C=KR" \
-    -storepass "$PASS" \
-    -keypass "$PASS" \
-    >/dev/null 2>&1
+
+  if command -v keytool >/dev/null 2>&1; then
+    echo "Android signing keystore 생성 방식: keytool"
+    keytool -genkeypair \
+      -keystore "$KEYSTORE" \
+      -storetype PKCS12 \
+      -alias universal \
+      -keyalg RSA \
+      -keysize 3072 \
+      -validity 3650 \
+      -dname "CN=Universal Trading Bot Android,O=nictunz,C=KR" \
+      -storepass "$PASS" \
+      -keypass "$PASS" \
+      >/dev/null 2>&1
+  else
+    echo "keytool 없음: OpenSSL로 동일한 PKCS12 서명 키를 생성합니다. JDK 설치는 필요 없습니다."
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+    openssl req -x509 -newkey rsa:3072 -sha256 -nodes \
+      -keyout "$TMP_DIR/release-key.pem" \
+      -out "$TMP_DIR/release-cert.pem" \
+      -days 3650 \
+      -subj "/CN=Universal Trading Bot Android/O=nictunz/C=KR" \
+      >/dev/null 2>&1
+    openssl pkcs12 -export \
+      -out "$KEYSTORE" \
+      -inkey "$TMP_DIR/release-key.pem" \
+      -in "$TMP_DIR/release-cert.pem" \
+      -name universal \
+      -passout "pass:$PASS" \
+      >/dev/null 2>&1
+    rm -rf "$TMP_DIR"
+    trap - EXIT
+  fi
   chmod 600 "$KEYSTORE"
 else
   if [[ ! -s "$PASSFILE" ]]; then
@@ -44,12 +64,20 @@ else
   fi
 fi
 
+# Basic PKCS12 integrity check without printing its password or contents.
+PASS="$(cat "$PASSFILE")"
+if ! openssl pkcs12 -in "$KEYSTORE" -passin "pass:$PASS" -noout >/dev/null 2>&1; then
+  echo "ERROR: generated Android signing PKCS12 failed integrity verification." >&2
+  exit 4
+fi
+unset PASS
+
 base64 -w0 "$KEYSTORE" > "$B64FILE"
 printf '\n' >> "$B64FILE"
 chmod 600 "$B64FILE"
 
 echo "===== ANDROID UPDATE SIGNING ====="
-echo "Stable signing key ready. Secret values are NOT printed."
+echo "Stable PKCS12 signing key ready and verified. Secret values are NOT printed."
 echo "keystore_backup=$KEYSTORE"
 echo "password_backup=$PASSFILE"
 echo "base64_secret_file=$B64FILE"
