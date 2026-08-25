@@ -12,7 +12,12 @@ class MobileRelayMarketData:
 
     The Android app fetches public perpetual-futures candles on the user's
     network and atomically uploads one JSON snapshot over the phone's existing
-    SSH key.  No exchange/API credentials ever leave the server.
+    SSH key. No exchange/API credentials ever leave the server.
+
+    Relay rows can include the exchange's currently-forming candle. This class
+    deliberately removes any candle which had not completed at the snapshot's
+    generated_at_ms. That prevents the server from treating a partial 5m volume
+    value as final during the few seconds around a candle boundary.
     """
 
     DEFAULT_PATH = Path.home() / ".cache" / "universal-trading-bot" / "mobile-market-relay.json"
@@ -57,6 +62,23 @@ class MobileRelayMarketData:
                 return f"{base}/{quote}:{quote}"
         return text
 
+    @staticmethod
+    def _timeframe_delta(timeframe: str) -> pd.Timedelta:
+        text = timeframe.strip()
+        if len(text) < 2:
+            raise ValueError(f"invalid timeframe: {timeframe}")
+        value = int(text[:-1])
+        unit = text[-1]
+        seconds = {
+            "m": 60,
+            "h": 3600,
+            "d": 86400,
+            "w": 604800,
+        }.get(unit)
+        if seconds is None:
+            raise ValueError(f"unsupported mobile relay timeframe: {timeframe}")
+        return pd.Timedelta(seconds=value * seconds)
+
     def fetch_volume(self, exchange_id: str, symbol: str, timeframe: str, limit: int = 1000) -> pd.Series:
         exchange = exchange_id.strip().lower()
         if exchange not in self.SUPPORTED_EXCHANGES:
@@ -87,8 +109,12 @@ class MobileRelayMarketData:
         index = pd.to_datetime(timestamps, unit="ms", utc=True, errors="coerce")
         series = pd.Series(volumes, index=index, dtype=float).dropna().sort_index()
         series = series.loc[~series.index.duplicated(keep="last")]
+
+        generated = pd.to_datetime(int(payload["generated_at_ms"]), unit="ms", utc=True)
+        delta = self._timeframe_delta(timeframe)
+        series = series[(series.index + delta) <= generated]
         if series.empty:
-            raise RuntimeError(f"mobile relay parsed empty for {exchange} {symbol_key}")
+            raise RuntimeError(f"mobile relay has no completed candles for {exchange} {symbol_key}")
         return series.tail(max(1, int(limit)))
 
     def latest_common_timestamp(self, symbol: str, timeframe: str) -> pd.Timestamp:
