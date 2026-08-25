@@ -11,11 +11,15 @@ from typing import Any
 from universal_bot.config import Settings
 from universal_bot.fast_backtest import default_cache_path, run_cached_symbol_backtest
 
+# Research-only execution assumptions requested by the user.
+# order_percent_of_equity is a notional percentage: 500% == 5x account equity.
 FIXED = {
     "allow_long": True,
     "allow_short": True,
-    "max_pyramiding": 2,
-    "order_percent_of_equity": 5.0,
+    "initial_capital": 1_000.0,
+    "leverage": 50,
+    "backtest_fee_percent": 0.02,
+    "backtest_slippage_percent": 0.01,
 }
 
 
@@ -30,10 +34,12 @@ def sample(rng: random.Random) -> dict[str, Any]:
     os_min = round(rng.uniform(0, max(1, os_max - 8)), 1)
     ob_min = round(rng.uniform(58, 82), 1)
     ob_max = round(rng.uniform(min(99, ob_min + 8), 100), 1)
-    use_adx = rng.random() < 0.65
-    use_nbar = rng.random() < 0.75
+    entry_multiplier = round(rng.randrange(10, 31) / 2.0, 1)  # 5.0x .. 15.0x
     return {
         **FIXED,
+        "entry_multiplier": entry_multiplier,
+        "order_percent_of_equity": entry_multiplier * 100.0,
+        "max_pyramiding": rng.randint(1, 3),
         "volume_lookback": rng.randint(20, 160),
         "volume_break_multiplier": round(rng.uniform(1.2, 15.0), 2),
         "min_one_bar_vol": one_min,
@@ -45,10 +51,10 @@ def sample(rng: random.Random) -> dict[str, Any]:
         "max_tp_percent": tp_max,
         "min_sl_percent": sl_min,
         "max_sl_percent": sl_max,
-        "use_nbar_volatility_block": use_nbar,
+        "use_nbar_volatility_block": rng.random() < 0.75,
         "nbar_volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288]),
         "max_nbar_volatility": round(rng.uniform(0.8, 10.0), 2),
-        "use_adx_filter": use_adx,
+        "use_adx_filter": rng.random() < 0.65,
         "adx_length": rng.randint(5, 30),
         "adx_min": round(rng.uniform(5, 35), 1),
         "adx_max": round(rng.uniform(45, 100), 1),
@@ -71,15 +77,16 @@ def score(result: dict[str, Any]) -> float:
     pf = result.get("profit_factor")
     pfv = float(pf) if pf is not None and math.isfinite(float(pf)) else 0.0
     trades = int(result.get("trades") or 0)
-    if trades < 30:
+    # A configuration which exhausts the account is not a viable optimum.
+    if trades < 30 or mdd >= 100.0:
         return -1e18 + trades
-    return pnl - abs(pnl) * min(mdd, 100) / 200 + min(pfv, 5.0) * 500
+    return pnl - abs(pnl) * min(mdd, 100) / 200 + min(pfv, 5.0) * 5
 
 
 def compact(result: dict[str, Any]) -> dict[str, Any]:
     keys = ("trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
-            "estimated_costs", "return_percent", "max_drawdown_percent",
-            "data_start", "data_end", "bars")
+            "estimated_costs", "fee_percent_per_side", "slippage_percent_per_side",
+            "return_percent", "max_drawdown_percent", "data_start", "data_end", "bars")
     return {k: result.get(k) for k in keys}
 
 
@@ -88,7 +95,7 @@ def main() -> None:
     p.add_argument("--symbol", default="ETH/USDT:USDT")
     p.add_argument("--timeframe", default="5m")
     p.add_argument("--trials", type=int, default=300)
-    p.add_argument("--seed", type=int, default=1502)
+    p.add_argument("--seed", type=int, default=50031502)
     p.add_argument("--start-trial", type=int, default=1)
     p.add_argument("--replay-trials", default="")
     p.add_argument("--output", default="reports/latest-strategy-optimization.json")
@@ -98,9 +105,7 @@ def main() -> None:
         raise SystemExit(f"cache missing: {cache}")
 
     rng = random.Random(args.seed)
-    defaults = {k: getattr(Settings(), k) for k in sample(random.Random(0))}
-    candidates = [defaults]
-    candidates.extend(sample(rng) for _ in range(max(1, args.trials - 1)))
+    candidates = [sample(rng) for _ in range(max(1, args.trials))]
     replay = {int(x.strip()) for x in args.replay_trials.split(",") if x.strip()}
     selected = [
         (i, params) for i, params in enumerate(candidates, 1)
@@ -109,22 +114,32 @@ def main() -> None:
     ranked: list[dict[str, Any]] = []
     for position, (i, params) in enumerate(selected, 1):
         try:
+            engine_params = {k: v for k, v in params.items() if k != "entry_multiplier"}
             result = run_cached_symbol_backtest(
                 args.symbol, "crypto", "bitget", args.timeframe,
-                overrides=params, database_path=cache,
+                overrides=engine_params, database_path=cache,
             )
             ranked.append({"trial": i, "score": score(result), "parameters": params, "result": compact(result)})
             ranked.sort(key=lambda x: x["score"], reverse=True)
             ranked = ranked[:20]
             best = ranked[0]
-            print(f"{position}/{len(selected)} trial={i}/{len(candidates)} best_pnl={best['result']['pnl']:.4f} "
-                  f"pf={best['result']['profit_factor']} mdd={best['result']['max_drawdown_percent']:.3f} "
-                  f"trades={best['result']['trades']}", flush=True)
+            print(
+                f"{position}/{len(selected)} trial={i}/{len(candidates)} "
+                f"entry={best['parameters']['entry_multiplier']}x "
+                f"entries={best['parameters']['max_pyramiding']} "
+                f"best_pnl={best['result']['pnl']:.4f} "
+                f"return={best['result']['return_percent']:.3f}% "
+                f"pf={best['result']['profit_factor']} "
+                f"mdd={best['result']['max_drawdown_percent']:.3f}% "
+                f"trades={best['result']['trades']}",
+                flush=True,
+            )
         except Exception as exc:
             print(f"{i}/{len(candidates)} failed: {type(exc).__name__}: {exc}", flush=True)
 
-    if not ranked:
-        raise SystemExit("no successful optimization trials")
+    viable = [x for x in ranked if x["score"] > -1e17]
+    if not viable:
+        raise SystemExit("no viable optimization trials (all failed, under 30 trades, or MDD >= 100%)")
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "symbol": args.symbol,
@@ -134,10 +149,18 @@ def main() -> None:
         "trials_executed": len(selected),
         "trial_selection": {"start_trial": args.start_trial, "replay_trials": sorted(replay)},
         "trials_ranked": len(ranked),
-        "live_limits": {"max_entry_multiplier": 15.0, "max_entries": 2, "max_total_multiplier": 30.0},
-        "objective": "net pnl with minimum 30 trades and drawdown/PF tie-break adjustment",
-        "warning": "Optimization is research output. PAPER forward validation is required before LIVE.",
-        "best": ranked[0],
+        "execution_assumptions": {
+            "initial_capital_usdt": 1000.0,
+            "entry_multiplier_range": [5.0, 15.0],
+            "exchange_leverage": 50,
+            "max_entries_range": [1, 3],
+            "maximum_total_notional_multiplier": 45.0,
+            "fee_percent_per_side": 0.02,
+            "slippage_percent_per_side": 0.01,
+        },
+        "objective": "net pnl; reject fewer than 30 trades or MDD >= 100%; drawdown/PF tie-break",
+        "warning": "Research only. Results are not automatically applied to PAPER or LIVE.",
+        "best": viable[0],
         "top20": ranked,
     }
     out = Path(args.output)
