@@ -5,6 +5,7 @@ import android.app.DatePickerDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -119,18 +120,25 @@ public class MainActivity extends android.app.Activity {
 
         symbolInput = autocomplete(new String[]{
                 "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
-                "BNB/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
+                "BNB/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "AVAX/USDT:USDT",
+                "LINK/USDT:USDT", "DOT/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
+                "TRX/USDT:USDT", "TON/USDT:USDT", "SUI/USDT:USDT", "APT/USDT:USDT",
+                "NEAR/USDT:USDT", "UNI/USDT:USDT", "FIL/USDT:USDT", "ATOM/USDT:USDT",
+                "ETC/USDT:USDT", "AAVE/USDT:USDT", "ARB/USDT:USDT", "OP/USDT:USDT"
         }, "ETH/USDT:USDT");
         timeframeInput = autocomplete(new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}, "5m");
         backtestCard.addView(labeled("심볼 (목록 선택 또는 직접 입력)", symbolInput));
         backtestCard.addView(quickChoiceRow(
                 "자주 쓰는 코인",
                 symbolInput,
-                new String[]{"BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK"},
+                new String[]{"BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK", "DOT", "LTC", "BCH", "TRX", "TON", "SUI", "APT", "NEAR", "UNI", "FIL", "ATOM", "ETC", "AAVE", "ARB", "OP"},
                 new String[]{
-                        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-                        "XRP/USDT:USDT", "BNB/USDT:USDT", "DOGE/USDT:USDT",
-                        "ADA/USDT:USDT", "AVAX/USDT:USDT", "LINK/USDT:USDT"
+                        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
+                        "BNB/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "AVAX/USDT:USDT",
+                        "LINK/USDT:USDT", "DOT/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
+                        "TRX/USDT:USDT", "TON/USDT:USDT", "SUI/USDT:USDT", "APT/USDT:USDT",
+                        "NEAR/USDT:USDT", "UNI/USDT:USDT", "FIL/USDT:USDT", "ATOM/USDT:USDT",
+                        "ETC/USDT:USDT", "AAVE/USDT:USDT", "ARB/USDT:USDT", "OP/USDT:USDT"
                 }
         ), marginTop(8));
         backtestCard.addView(labeled("타임프레임 (목록 선택 또는 직접 입력)", timeframeInput), marginTop(10));
@@ -154,9 +162,10 @@ public class MainActivity extends android.app.Activity {
         quickRow.setGravity(Gravity.CENTER_VERTICAL);
         quickRow.addView(text("빠른 기간", 12, MUTED, true));
         quickRow.addView(smallButton("30일", v -> setQuickRange(30)), smallButtonParams());
-        quickRow.addView(smallButton("90일", v -> setQuickRange(90)), smallButtonParams());
-        quickRow.addView(smallButton("180일", v -> setQuickRange(180)), smallButtonParams());
         quickRow.addView(smallButton("1년", v -> setQuickRange(365)), smallButtonParams());
+        quickRow.addView(smallButton("3년", v -> setQuickRange(1095)), smallButtonParams());
+        quickRow.addView(smallButton("5년", v -> setQuickRange(1826)), smallButtonParams());
+        quickRow.addView(smallButton("10년", v -> setQuickRange(3653)), smallButtonParams());
         backtestCard.addView(quickRow, marginTop(10));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
@@ -165,6 +174,15 @@ public class MainActivity extends android.app.Activity {
         runButton = actionButton("▶ 캐시 생성 + 백테스트", PRIMARY);
         runButton.setOnClickListener(v -> runBacktest());
         backtestCard.addView(runButton, marginTop(12));
+        Button strategyLabButton = actionButton("⚙ 서버와 동일한 전략 수치 조정 / 백테스트", Color.rgb(30, 41, 59));
+        strategyLabButton.setOnClickListener(v -> {
+            Intent intent = new Intent(this, ServerDashboardActivity.class);
+            intent.putExtra("dashboard_path", "/strategy");
+            startActivity(intent);
+        });
+        backtestCard.addView(strategyLabButton, marginTop(8));
+        TextView rangeHint = text("모든 USDT 무기한 선물 심볼 직접 입력 가능 · 최대 10년 · 실제 시작일은 4개 거래소 공통 상장 이력에 따라 달라집니다.", 11, MUTED, false);
+        backtestCard.addView(rangeHint, marginTop(8));
 
         root.addView(buildMetrics(), marginTop(14));
 
@@ -324,8 +342,15 @@ public class MainActivity extends android.app.Activity {
         String timeframe = timeframeInput.getText().toString().trim();
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
-        if (symbol.isEmpty() || timeframe.isEmpty() || parseDate(start) == null || parseDate(end) == null) {
+        Calendar startCal = parseDate(start);
+        Calendar endCal = parseDate(end);
+        if (symbol.isEmpty() || timeframe.isEmpty() || startCal == null || endCal == null) {
             toast("심볼, 타임프레임, 날짜를 확인하세요.");
+            return;
+        }
+        long rangeDays = (endCal.getTimeInMillis() - startCal.getTimeInMillis()) / 86_400_000L + 1L;
+        if (rangeDays <= 0L || rangeDays > 3660L) {
+            toast("백테스트 기간은 1일 이상 최대 10년(3660일)까지 가능합니다.");
             return;
         }
 
