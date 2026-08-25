@@ -20,6 +20,9 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +36,7 @@ public class MobileMarketRelayService extends Service {
     private static final int NOTIFICATION_ID = 4401;
     private static final int RELAY_INTERVAL_SECONDS = 30;
     private static final int CANDLE_LIMIT = 240;
+    private static final int MAX_HISTORY_LINES = 300;
 
     private ScheduledExecutorService scheduler;
     private SshBridge.RelayClient relayClient;
@@ -81,6 +85,7 @@ public class MobileMarketRelayService extends Service {
     private synchronized void startContinuous() {
         if (scheduler != null && !scheduler.isShutdown()) return;
         continuous = true;
+        appendHistory("시작", "30초 실시간 중계를 시작했습니다.");
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(() -> {
             try {
@@ -143,6 +148,7 @@ public class MobileMarketRelayService extends Service {
                 .putString("relay_status", status)
                 .putString("relay_last_error", "")
                 .apply();
+        appendHistory("성공", status);
         updateNotification(status);
     }
 
@@ -226,6 +232,7 @@ public class MobileMarketRelayService extends Service {
                 .putString("relay_status", "오류 · " + message)
                 .putString("relay_last_error", message)
                 .apply();
+        appendHistory("오류", message);
         updateNotification("오류 · 앱에서 상태 확인");
     }
 
@@ -236,9 +243,28 @@ public class MobileMarketRelayService extends Service {
             scheduler = null;
         }
         closeRelayClient();
+        appendHistory("중지", "중계를 중지했습니다.");
         prefs().edit().putBoolean("relay_running", false).apply();
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
+    }
+
+    private synchronized void appendHistory(String kind, String detail) {
+        String clean = String.valueOf(detail).replace('\n', ' ').replace('\r', ' ').trim();
+        String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.KOREA)
+                .format(new Date());
+        String entry = timestamp + " · " + kind + " · " + clean;
+        SharedPreferences p = prefs();
+        String previous = p.getString("relay_log_history", "");
+        String combined = previous.isEmpty() ? entry : previous + "\n" + entry;
+        String[] lines = combined.split("\\n");
+        int start = Math.max(0, lines.length - MAX_HISTORY_LINES);
+        StringBuilder kept = new StringBuilder();
+        for (int i = start; i < lines.length; i++) {
+            if (kept.length() > 0) kept.append('\n');
+            kept.append(lines[i]);
+        }
+        p.edit().putString("relay_log_history", kept.toString()).apply();
     }
 
     private void closeRelayClient() {
