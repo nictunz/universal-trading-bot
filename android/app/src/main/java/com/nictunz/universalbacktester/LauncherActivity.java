@@ -180,6 +180,21 @@ public class LauncherActivity extends android.app.Activity {
         updateButton.setOnClickListener(v -> checkUpdate());
         update.addView(updateButton, mt(10));
 
+        LinearLayout dashboard = panel();
+        root.addView(dashboard, mt(14));
+        dashboard.addView(section("🖥 서버 관리 대시보드"));
+        dashboard.addView(text(
+                "SSH 암호화 터널로 서버의 실제 전략 설정·거래 기록·차트·캐시·LIVE 설정을 앱 안에서 직접 관리합니다.",
+                12,
+                MUTED,
+                false
+        ), mt(5));
+        Button openDashboard = actionButton("서버 대시보드 열기", SUCCESS);
+        openDashboard.setOnClickListener(v ->
+                startActivity(new Intent(this, ServerDashboardActivity.class))
+        );
+        dashboard.addView(openDashboard, mt(10));
+
         LinearLayout backtest = panel();
         root.addView(backtest, mt(14));
         backtest.addView(section("🧪 로컬 백테스터"));
