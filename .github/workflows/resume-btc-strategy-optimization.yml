@@ -9,7 +9,7 @@ on:
 
 concurrency:
   group: resume-btc-strategy-optimization
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
