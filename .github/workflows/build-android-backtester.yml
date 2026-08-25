@@ -14,6 +14,9 @@ on:
       - 'universal_bot/strategy/**'
       - '.github/workflows/build-android-backtester.yml'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -42,6 +45,20 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Set monotonic app version
+        shell: bash
+        run: |
+          echo "ANDROID_VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_NAME=1.1.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Verify Python project
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          python -m compileall -q universal_bot
+          pytest -q
+
       - name: Sync shared Python engine into Android app
         shell: bash
         run: |
@@ -52,21 +69,11 @@ jobs:
           find android/app/src/main/python/universal_bot -type d -name '__pycache__' -prune -exec rm -rf {} + || true
           echo 'Android compatibility modules applied'
 
-      - name: Build APK
+      - name: Build debug APK
         shell: bash
         run: |
-          set -e
+          set -o pipefail
           gradle -p android :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
-          code=${PIPESTATUS[0]}
-          echo '## Android build diagnosis' >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          grep -E -A 18 -B 8 'What went wrong:|Execution failed for task|ERROR:|Could not find a version|No matching distribution|Caused by:|error:' android-build.log | tail -n 120 >> "$GITHUB_STEP_SUMMARY" || tail -n 120 android-build.log >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          if [ "$code" -ne 0 ]; then
-            echo '===== CONCISE FAILURE DIAGNOSIS ====='
-            grep -E -A 18 -B 8 'What went wrong:|Execution failed for task|ERROR:|Could not find a version|No matching distribution|Caused by:|error:' android-build.log | tail -n 160 || tail -n 160 android-build.log
-            exit "$code"
-          fi
 
       - name: Upload build log
         if: always()
@@ -77,16 +84,98 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Prepare artifact
+      - name: Prepare debug artifact
         shell: bash
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk UniversalTradingBacktester-Android.apk
-          ls -lh UniversalTradingBacktester-Android.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk UniversalTradingBacktester-Android-debug.apk
+          ls -lh UniversalTradingBacktester-Android-debug.apk
 
-      - name: Upload Android APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: UniversalTradingBacktester-Android
-          path: UniversalTradingBacktester-Android.apk
+          name: UniversalTradingBacktester-Android-debug
+          path: UniversalTradingBacktester-Android-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Configure stable release signing
+        id: signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD_SECRET: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_B64" || -z "$STORE_PASSWORD" ]]; then
+            echo 'UPDATE_RELEASE_READY=false' >> "$GITHUB_ENV"
+            echo 'Stable signing secrets are not configured; debug build is valid but no self-update release will be published.'
+            exit 0
+          fi
+          KEYSTORE="$RUNNER_TEMP/universal-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=${KEY_ALIAS_SECRET:-universal}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=${KEY_PASSWORD_SECRET:-$STORE_PASSWORD}" >> "$GITHUB_ENV"
+          echo 'UPDATE_RELEASE_READY=true' >> "$GITHUB_ENV"
+
+      - name: Build stable signed update APK
+        if: env.UPDATE_RELEASE_READY == 'true'
+        shell: bash
+        run: |
+          gradle -p android :app:assembleRelease --stacktrace
+          cp android/app/build/outputs/apk/release/app-release.apk UniversalTradingBacktester-Android.apk
+          test -s UniversalTradingBacktester-Android.apk
+          ls -lh UniversalTradingBacktester-Android.apk
+
+      - name: Prepare signed update manifest
+        if: env.UPDATE_RELEASE_READY == 'true'
+        shell: bash
+        run: |
+          APK_SHA256="$(sha256sum UniversalTradingBacktester-Android.apk | awk '{print $1}')"
+          export APK_SHA256
+          python - <<'PY'
+          import json, os
+          data = {
+              'schema_version': 1,
+              'package_id': 'com.nictunz.universalbacktester',
+              'version_code': int(os.environ['ANDROID_VERSION_CODE']),
+              'version_name': os.environ['ANDROID_VERSION_NAME'],
+              'commit': os.environ['GITHUB_SHA'],
+              'apk_name': 'UniversalTradingBacktester-Android.apk',
+              'sha256': os.environ['APK_SHA256'],
+              'verified': True,
+          }
+          with open('android-update.json', 'w', encoding='utf-8') as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          print(json.dumps(data, ensure_ascii=False))
+          PY
+
+      - name: Upload signed update artifact
+        if: env.UPDATE_RELEASE_READY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniversalTradingBacktester-Android-signed
+          path: |
+            UniversalTradingBacktester-Android.apk
+            android-update.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Android update release
+        if: env.UPDATE_RELEASE_READY == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-v${ANDROID_VERSION_CODE}"
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Android ${ANDROID_VERSION_NAME}" \
+            --notes "Verified Android build for commit ${GITHUB_SHA}. Python tests and Android build passed before publication." \
+            --latest \
+            UniversalTradingBacktester-Android.apk \
+            android-update.json
