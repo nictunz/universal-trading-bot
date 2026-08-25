@@ -14,6 +14,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.net.Uri;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -71,6 +74,7 @@ public class LauncherActivity extends android.app.Activity {
         super.onCreate(savedInstanceState);
         setContentView(buildUi());
         refreshRelayStatus();
+        resumeRequestedRelay();
     }
 
     @Override
@@ -149,6 +153,10 @@ public class LauncherActivity extends android.app.Activity {
             prepareRelay(MobileMarketRelayService.ACTION_START);
         });
         relay.addView(startRelayButton, mt(8));
+
+        Button battery = actionButton("🔋 배터리 제한 해제 / 상태 확인", Color.rgb(30, 41, 59));
+        battery.setOnClickListener(v -> requestUnlimitedBattery());
+        relay.addView(battery, mt(8));
 
         Button stop = actionButton("■ 중계 중지", Color.rgb(71, 85, 105));
         stop.setOnClickListener(v -> stopRelay());
@@ -426,6 +434,44 @@ public class LauncherActivity extends android.app.Activity {
                 });
             }
         });
+    }
+
+    private void resumeRequestedRelay() {
+        SharedPreferences p = prefs();
+        if (!p.getBoolean("relay_requested", false)) return;
+        Intent intent = new Intent(this, MobileMarketRelayService.class);
+        intent.setAction(MobileMarketRelayService.ACTION_START);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
+            else startService(intent);
+        } catch (Exception e) {
+            p.edit()
+                    .putBoolean("relay_running", false)
+                    .putString("relay_status", "자동 복구 대기 · " + shortError(e))
+                    .apply();
+        }
+    }
+
+    private void requestUnlimitedBattery() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            toast("이 Android 버전은 별도 배터리 제한 해제가 필요하지 않습니다.");
+            return;
+        }
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        String packageName = getPackageName();
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            toast("배터리 사용량이 이미 제한 없음 상태입니다.");
+            return;
+        }
+        try {
+            Intent intent = new Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + packageName)
+            );
+            startActivity(intent);
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        }
     }
 
     private void requestNotificationPermissionIfNeeded() {
