@@ -65,6 +65,56 @@ public final class SshBridge {
         }
     }
 
+    public static final class RelayClient implements AutoCloseable {
+        private final Session session;
+        private final ChannelSftp sftp;
+
+        public RelayClient(String host, String username, String keyPath) throws Exception {
+            session = connect(host, username, keyPath);
+            session.setServerAliveInterval(15000);
+            session.setServerAliveCountMax(3);
+            sftp = (ChannelSftp) session.openChannel("sftp");
+            sftp.connect(15000);
+        }
+
+        public boolean isConnected() {
+            return session.isConnected() && sftp.isConnected();
+        }
+
+        public synchronized void uploadTextAtomic(String remotePath, String text) throws Exception {
+            if (!isConnected()) throw new IllegalStateException("SSH relay channel is disconnected");
+            int slash = remotePath.lastIndexOf('/');
+            if (slash <= 0) throw new IllegalArgumentException("invalid remote path: " + remotePath);
+            String remoteDir = remotePath.substring(0, slash);
+            ensureRemoteDir(session, remoteDir);
+            String temp = remotePath + ".uploading";
+            byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+            try {
+                sftp.rm(temp);
+            } catch (SftpException ignored) {
+            }
+            sftp.put(new ByteArrayInputStream(bytes), temp);
+            try {
+                sftp.rm(remotePath);
+            } catch (SftpException e) {
+                if (e.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e;
+            }
+            sftp.rename(temp, remotePath);
+        }
+
+        @Override
+        public void close() {
+            try {
+                if (sftp.isConnected()) sftp.disconnect();
+            } catch (Exception ignored) {
+            }
+            try {
+                if (session.isConnected()) session.disconnect();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public static String uploadFiles(
             String dbPath,
             String resultPath,
