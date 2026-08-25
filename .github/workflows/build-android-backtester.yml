@@ -11,7 +11,12 @@ on:
       - 'universal_bot/fast_backtest.py'
       - 'universal_bot/backtest_service.py'
       - 'universal_bot/providers/**'
+      - 'universal_bot/adapters/**'
       - 'universal_bot/strategy/**'
+      - 'universal_bot/config.py'
+      - 'universal_bot/paper.py'
+      - 'tests/**'
+      - 'pyproject.toml'
       - '.github/workflows/build-android-backtester.yml'
 
 permissions:
