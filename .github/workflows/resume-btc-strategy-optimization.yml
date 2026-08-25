@@ -1,0 +1,266 @@
+name: resume-btc-strategy-optimization
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/resume-btc-strategy-optimization.yml'
+
+concurrency:
+  group: resume-btc-strategy-optimization
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+  SOURCE_RUN_ID: '32851243323'
+
+jobs:
+  prepare_btc_cache:
+    name: Repair and snapshot BTC cache
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare runtime
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then python3 -m venv "$CI_VENV"; fi
+          "$CI_VENV/bin/pip" install -e .
+      - name: Validate or recover SQLite cache
+        run: |
+          set -euo pipefail
+          mkdir -p repaired
+          "$CI_VENV/bin/python" - <<'PY'
+          import shutil
+          import sqlite3
+          import subprocess
+          import time
+          from pathlib import Path
+          from universal_bot.fast_backtest import run_cached_symbol_backtest
+
+          root = Path.home() / ".cache" / "universal-trading-bot"
+          live = root / "btc-1y-5m.db"
+          output = Path("repaired/btc-1y-5m.db")
+          root.mkdir(parents=True, exist_ok=True)
+
+          def sqlite_ok(path: Path) -> bool:
+              if not path.is_file() or path.stat().st_size == 0:
+                  return False
+              try:
+                  con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                  row = con.execute("PRAGMA quick_check").fetchone()
+                  con.close()
+                  return bool(row and row[0] == "ok")
+              except Exception as exc:
+                  print(f"SQLITE_CHECK_FAIL {path}: {type(exc).__name__}: {exc}", flush=True)
+                  return False
+
+          def backtest_ok(path: Path) -> bool:
+              try:
+                  result = run_cached_symbol_backtest(
+                      "BTC/USDT:USDT", "crypto", "bitget", "5m", database_path=path
+                  )
+                  print(
+                      f"CACHE_VALID {path} bars={result.get('bars')} "
+                      f"sources={result.get('volume_source_bars')}",
+                      flush=True,
+                  )
+                  return True
+              except Exception as exc:
+                  print(f"BACKTEST_CHECK_FAIL {path}: {type(exc).__name__}: {exc}", flush=True)
+                  return False
+
+          candidates = [live]
+          candidates += sorted(
+              (p for p in root.glob("btc*5m*.db") if p != live),
+              key=lambda p: (p.stat().st_size, p.stat().st_mtime),
+              reverse=True,
+          )
+
+          selected = next((p for p in candidates if sqlite_ok(p) and backtest_ok(p)), None)
+
+          if selected is None and live.is_file():
+              sqlite_bin = shutil.which("sqlite3")
+              if sqlite_bin:
+                  recovered = root / f"btc-1y-5m.recovered-{int(time.time())}.db"
+                  print(f"RECOVER_START source={live} target={recovered}", flush=True)
+                  command = (
+                      f"{sqlite_bin} {shlex_quote(str(live))} '.recover' | "
+                      f"{sqlite_bin} {shlex_quote(str(recovered))}"
+                  )
+                  proc = subprocess.run(command, shell=True, text=True, capture_output=True)
+                  print(proc.stdout[-4000:], flush=True)
+                  if proc.stderr:
+                      print(proc.stderr[-4000:], flush=True)
+                  if proc.returncode == 0 and sqlite_ok(recovered) and backtest_ok(recovered):
+                      selected = recovered
+              else:
+                  print("sqlite3 CLI unavailable; skipped .recover", flush=True)
+
+          if selected is None:
+              raise SystemExit(
+                  "No complete valid BTC 1y 5m cache was found or recovered. "
+                  "Re-upload a completed BTC cache before retrying."
+              )
+
+          shutil.copy2(selected, output)
+          if not sqlite_ok(output) or not backtest_ok(output):
+              raise SystemExit("isolated BTC cache snapshot failed final validation")
+          print(f"BTC_CACHE_SNAPSHOT_READY source={selected} output={output}", flush=True)
+
+          def shlex_quote(value: str) -> str:
+              raise AssertionError("unreachable")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: btc-cache-repaired
+          path: repaired/btc-1y-5m.db
+          retention-days: 7
+
+  btc_batches:
+    name: BTC trials ${{ matrix.start }}-${{ matrix.end }}
+    needs: prepare_btc_cache
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { start: 1, end: 75 }
+          - { start: 76, end: 150 }
+          - { start: 151, end: 225 }
+          - { start: 226, end: 300 }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare runtime
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then python3 -m venv "$CI_VENV"; fi
+          "$CI_VENV/bin/pip" install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: btc-cache-repaired
+          path: ${{ runner.temp }}/btc-cache/.cache/universal-trading-bot
+      - name: Optimize BTC batch
+        run: |
+          set -euo pipefail
+          mkdir -p batch
+          HOME="${{ runner.temp }}/btc-cache" "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py \
+            --symbol BTC/USDT:USDT --timeframe 5m --trials 300 \
+            --start-trial "${{ matrix.start }}" --end-trial "${{ matrix.end }}" \
+            --output "batch/btc-${{ matrix.start }}-${{ matrix.end }}.json" \
+            2>&1 | tee "batch/btc-${{ matrix.start }}-${{ matrix.end }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: btc-resume-batch-${{ matrix.start }}
+          path: batch/btc-${{ matrix.start }}-${{ matrix.end }}.*
+          if-no-files-found: ignore
+          retention-days: 7
+
+  finalize:
+    name: Aggregate BTC and publish ETH plus BTC
+    needs: btc_batches
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: eth-final
+          path: stage/eth
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: btc-resume-batch-*
+          merge-multiple: true
+          path: stage/btc
+      - name: Merge and verify BTC 1-300
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          python3 scripts/aggregate_strategy_optimization.py \
+            --input-dir stage/btc --symbol BTC/USDT:USDT --timeframe 5m \
+            --trials 300 --output reports/latest-strategy-optimization-btc.json
+          cp stage/eth/latest-strategy-optimization-eth.json reports/latest-strategy-optimization-eth.json
+      - name: Write Markdown and combined reports
+        run: |
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def markdown(data):
+              b=data["best"]; r=b["result"]; p=b["parameters"]; a=data["execution_assumptions"]
+              return "\n".join([
+                  f"# {data['symbol']} one-year strategy optimization", "",
+                  f"- Generated UTC: {data['generated_at']}",
+                  f"- Market: {data['symbol']} {data['timeframe']}",
+                  f"- Trials fully merged: {data['trials_executed']}", "",
+                  "## Execution assumptions", "",
+                  f"- Initial capital: {a['initial_capital_usdt']} USDT",
+                  f"- Entry notional: {a['entry_multiplier_range'][0]}x to {a['entry_multiplier_range'][1]}x equity",
+                  f"- Exchange leverage: {a['exchange_leverage']}x",
+                  f"- Maximum entries: {a['max_entries_range'][0]} to {a['max_entries_range'][1]}",
+                  f"- Fee: {a['fee_percent_per_side']}% per side",
+                  f"- Slippage: {a['slippage_percent_per_side']}% per side", "",
+                  "## Best result", "",
+                  f"- Trial: {b['trial']}",
+                  f"- Entry multiplier: {p['entry_multiplier']}x",
+                  f"- Maximum entries: {p['max_pyramiding']}",
+                  f"- Net PnL: {r['pnl']} USDT",
+                  f"- Return: {r['return_percent']}%",
+                  f"- Profit factor: {r['profit_factor']}",
+                  f"- Win rate: {r['win_rate']}%",
+                  f"- Max drawdown: {r['max_drawdown_percent']}%",
+                  f"- Trades: {r['trades']}", "",
+                  "## Parameters", "", "~~~json",
+                  json.dumps(p, ensure_ascii=False, indent=2), "~~~", "",
+                  "> Research only. Not automatically applied to PAPER or LIVE.", ""
+              ])
+
+          markets={}
+          for slug in ("eth","btc"):
+              path=Path(f"reports/latest-strategy-optimization-{slug}.json")
+              data=json.loads(path.read_text())
+              markets[slug]=data
+              Path(f"reports/latest-strategy-optimization-{slug}.md").write_text(
+                  markdown(data), encoding="utf-8"
+              )
+          combined={
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "markets": markets,
+              "warning": "Research only. Not automatically applied to PAPER or LIVE."
+          }
+          Path("reports/latest-strategy-optimization.json").write_text(
+              json.dumps(combined, ensure_ascii=False, indent=2)+"\n", encoding="utf-8"
+          )
+          Path("reports/latest-strategy-optimization.md").write_text(
+              "# ETH and BTC one-year strategy optimization\n\n"
+              "## ETH\n\n"+markdown(markets["eth"])+"\n## BTC\n\n"+markdown(markets["btc"]),
+              encoding="utf-8",
+          )
+          PY
+      - name: Publish synchronized reports
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/latest-strategy-optimization*.json reports/latest-strategy-optimization*.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "ci: publish recovered ETH and BTC optimization [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
