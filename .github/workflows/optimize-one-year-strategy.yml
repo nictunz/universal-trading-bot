@@ -23,7 +23,7 @@ permissions:
 jobs:
   optimize:
     runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 180
+    timeout-minutes: 210
     env:
       PYTHONUNBUFFERED: '1'
       CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           trials="${{ github.event.inputs.trials || '300' }}"
-          "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py             --symbol ETH/USDT:USDT             --timeframe 5m             --trials "$trials"             --output reports/latest-strategy-optimization.json             2>&1 | tee reports/latest-strategy-optimization.log
+          "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py             --symbol ETH/USDT:USDT             --timeframe 5m             --trials "$trials"             --start-trial 196             --replay-trials 154             --output reports/latest-strategy-optimization.json             2>&1 | tee reports/latest-strategy-optimization.log
 
       - name: Write summary
         run: |
