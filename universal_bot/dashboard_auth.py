@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from universal_bot.config import Settings
 
 COOKIE_NAME = "utb_session"
+MIN_SESSION_SECONDS = 7 * 24 * 60 * 60
 _LOGIN_FAILURES: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -29,8 +30,12 @@ def _sign(secret: str, payload: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _session_seconds(settings: Settings) -> int:
+    return max(MIN_SESSION_SECONDS, max(1, int(settings.dashboard_session_hours)) * 3600)
+
+
 def _make_token(settings: Settings) -> str:
-    exp = int(time.time()) + max(1, int(settings.dashboard_session_hours)) * 3600
+    exp = int(time.time()) + _session_seconds(settings)
     payload = f"{settings.dashboard_username}:{exp}"
     return f"{payload}:{_sign(settings.dashboard_session_secret, payload)}"
 
@@ -138,7 +143,7 @@ def install_dashboard_auth(app: FastAPI) -> None:
         response.set_cookie(
             COOKIE_NAME,
             _make_token(current),
-            max_age=max(1, int(current.dashboard_session_hours)) * 3600,
+            max_age=_session_seconds(current),
             httponly=True,
             samesite="strict",
             secure=bool(current.dashboard_cookie_secure),
