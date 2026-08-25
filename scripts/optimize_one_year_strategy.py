@@ -89,6 +89,8 @@ def main() -> None:
     p.add_argument("--timeframe", default="5m")
     p.add_argument("--trials", type=int, default=300)
     p.add_argument("--seed", type=int, default=1502)
+    p.add_argument("--start-trial", type=int, default=1)
+    p.add_argument("--replay-trials", default="")
     p.add_argument("--output", default="reports/latest-strategy-optimization.json")
     args = p.parse_args()
     cache = default_cache_path(args.symbol, args.timeframe)
@@ -99,8 +101,13 @@ def main() -> None:
     defaults = {k: getattr(Settings(), k) for k in sample(random.Random(0))}
     candidates = [defaults]
     candidates.extend(sample(rng) for _ in range(max(1, args.trials - 1)))
+    replay = {int(x.strip()) for x in args.replay_trials.split(",") if x.strip()}
+    selected = [
+        (i, params) for i, params in enumerate(candidates, 1)
+        if i >= max(1, args.start_trial) or i in replay
+    ]
     ranked: list[dict[str, Any]] = []
-    for i, params in enumerate(candidates, 1):
+    for position, (i, params) in enumerate(selected, 1):
         try:
             result = run_cached_symbol_backtest(
                 args.symbol, "crypto", "bitget", args.timeframe,
@@ -110,7 +117,7 @@ def main() -> None:
             ranked.sort(key=lambda x: x["score"], reverse=True)
             ranked = ranked[:20]
             best = ranked[0]
-            print(f"{i}/{len(candidates)} best_pnl={best['result']['pnl']:.4f} "
+            print(f"{position}/{len(selected)} trial={i}/{len(candidates)} best_pnl={best['result']['pnl']:.4f} "
                   f"pf={best['result']['profit_factor']} mdd={best['result']['max_drawdown_percent']:.3f} "
                   f"trades={best['result']['trades']}", flush=True)
         except Exception as exc:
@@ -124,6 +131,8 @@ def main() -> None:
         "timeframe": args.timeframe,
         "cache": str(cache),
         "trials_requested": args.trials,
+        "trials_executed": len(selected),
+        "trial_selection": {"start_trial": args.start_trial, "replay_trials": sorted(replay)},
         "trials_ranked": len(ranked),
         "live_limits": {"max_entry_multiplier": 15.0, "max_entries": 2, "max_total_multiplier": 30.0},
         "objective": "net pnl with minimum 30 trades and drawdown/PF tie-break adjustment",
