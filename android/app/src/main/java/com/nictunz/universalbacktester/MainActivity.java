@@ -91,6 +91,7 @@ public class MainActivity extends android.app.Activity {
         }
         setContentView(buildUi());
         loadPhoneKey();
+        loadSavedResults(true);
     }
 
     @Override
@@ -198,6 +199,9 @@ public class MainActivity extends android.app.Activity {
         chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
         chartButton.setOnClickListener(v -> showBacktestChart());
         resultActions.addView(chartButton, marginTop(8));
+        Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
+        savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
+        resultActions.addView(savedResultsButton, marginTop(8));
         enableResultActions(false);
 
         LinearLayout serverCard = panel();
@@ -597,6 +601,74 @@ public class MainActivity extends android.app.Activity {
                 });
             }
         });
+    }
+
+
+    private void loadSavedResults(boolean restoreLatestOnly) {
+        File output = new File(getFilesDir(), "UniversalTradingBotCache");
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject response = new JSONObject(
+                        bridge.callAttr("list_saved_results", output.getAbsolutePath()).toString()
+                );
+                JSONArray items = response.optJSONArray("items");
+                if (items == null || items.length() == 0) {
+                    if (!restoreLatestOnly) main.post(() -> toast("저장된 백테스트 결과가 없습니다."));
+                    return;
+                }
+                if (restoreLatestOnly) {
+                    JSONObject latest = items.getJSONObject(0);
+                    main.post(() -> applySavedResult(latest, true));
+                    return;
+                }
+                String[] labels = new String[items.length()];
+                for (int i = 0; i < items.length(); i++) {
+                    labels[i] = items.getJSONObject(i).optString("label", "백테스트 " + (i + 1));
+                }
+                main.post(() -> new AlertDialog.Builder(this)
+                        .setTitle("저장된 백테스트 기록 · " + items.length() + "개")
+                        .setItems(labels, (dialog, which) -> {
+                            JSONObject selected = items.optJSONObject(which);
+                            if (selected != null) applySavedResult(selected, false);
+                        })
+                        .setNegativeButton("닫기", null)
+                        .show());
+            } catch (Exception e) {
+                if (!restoreLatestOnly) {
+                    main.post(() -> {
+                        logText.append("\nSAVED RESULT ERROR\n" + stackMessage(e) + "\n");
+                        toast("저장된 결과 불러오기 실패");
+                    });
+                }
+            }
+        });
+    }
+
+    private void applySavedResult(JSONObject item, boolean automatic) {
+        JSONObject summary = item.optJSONObject("summary");
+        if (summary == null) {
+            toast("저장된 결과 형식이 올바르지 않습니다.");
+            return;
+        }
+        lastSummary = summary;
+        lastResultPath = item.optString("path", "");
+        lastDbPath = item.optString("db", summary.optString("database", ""));
+        lastUploadEligible = summary.optBoolean("server_upload_eligible", false);
+        String savedSymbol = summary.optString("symbol", "");
+        String savedTimeframe = summary.optString("timeframe", "");
+        if (!savedSymbol.isEmpty()) symbolInput.setText(savedSymbol, false);
+        if (!savedTimeframe.isEmpty()) timeframeInput.setText(savedTimeframe, false);
+        String savedStart = summary.optString("requested_start", "");
+        String savedEnd = summary.optString("requested_end", "");
+        if (!savedStart.isEmpty()) startInput.setText(savedStart);
+        if (!savedEnd.isEmpty()) endInput.setText(savedEnd);
+        updateMetrics(summary);
+        enableResultActions(true);
+        enableUpload(lastUploadEligible && new File(lastDbPath).isFile() && new File(lastResultPath).isFile());
+        statusText.setText(automatic ? "최근 백테스트 자동 복원됨" : "저장된 백테스트 불러옴");
+        logText.append("\n저장 결과 불러옴: " + item.optString("label", lastResultPath) + "\n");
+        if (!automatic) toast("결과·차트·거래내역을 복원했습니다.");
     }
 
     private void showResultSummary() {
