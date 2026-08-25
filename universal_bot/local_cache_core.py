@@ -176,6 +176,7 @@ def build_cache_and_backtest(
     end_text: str,
     output_dir: Path,
     log: Callable[[str], None],
+    strategy_overrides: dict | None = None,
 ) -> tuple[Path, Path, dict]:
     os.environ["CRYPTO_VOLUME_PROVIDER"] = "none"
     os.environ["COINAPI_API_KEY"] = ""
@@ -191,8 +192,10 @@ def build_cache_and_backtest(
     db = output_dir / db_name
     os.environ["DATABASE_URL"] = f"sqlite:///{db}"
 
-    settings = Settings()
+    settings = Settings().model_copy(update=dict(strategy_overrides or {}))
     manager = OfficialArchiveHistoricalDataManager(settings.database_url, coinapi_api_key="", fallback_exchanges=[])
+    if strategy_overrides:
+        log(f"서버 전략 설정 동기화 완료: {len(strategy_overrides)}개 조정값")
 
     log(f"심볼: {symbol}")
     log(f"타임프레임: {timeframe}")
@@ -234,6 +237,7 @@ def build_cache_and_backtest(
         start=start_text,
         end=end_text,
         database_path=db,
+        overrides=dict(strategy_overrides or {}),
     )
 
     keys = (
