@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from universal_bot.backtest_service import run_symbol_backtest
 from universal_bot.config import Settings
 from universal_bot.fast_backtest import cache_available, default_cache_path, run_cached_symbol_backtest
 from universal_bot.strategy import UniversalV15Strategy
+from universal_bot.trade_history import TradeHistoryStore
 
 STORE = Path("data/dashboard-strategy-settings.json")
 FIELDS = (
@@ -22,7 +24,7 @@ FIELDS = (
     "adx_min", "adx_max", "use_rsi_filter", "rsi_length", "rsi_oversold_min",
     "rsi_oversold_max", "rsi_overbought_min", "rsi_overbought_max", "allow_long",
     "allow_short", "max_pyramiding", "cooldown_bars", "reentry_bars",
-    "block_weekend", "excluded_hours", "order_percent_of_equity", "backtest_fee_percent",
+    "block_weekend", "excluded_hours", "order_percent_of_equity", "initial_capital", "backtest_fee_percent",
     "backtest_slippage_percent",
 )
 
@@ -88,6 +90,7 @@ def _apply(scanner, values: dict[str, Any]) -> None:
 
 def install_strategy_dashboard(app, scanner) -> None:
     _apply(scanner, _load())
+    history = TradeHistoryStore()
 
     @app.get("/api/strategy-settings")
     def get_strategy_settings():
@@ -131,6 +134,10 @@ def install_strategy_dashboard(app, scanner) -> None:
                 )
                 result["backtest_mode"] = "CACHE_ONLY"
                 result["network_download"] = False
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                run_id = f"BT-{req.symbol}-{req.timeframe}-{stamp}"
+                history.record_backtest(result, run_id=run_id, params=req.model_dump())
+                result["run_id"] = run_id
                 return result
 
             result = run_symbol_backtest(
@@ -144,6 +151,10 @@ def install_strategy_dashboard(app, scanner) -> None:
             )
             result["backtest_mode"] = "SYNC_AND_BACKTEST"
             result["network_download"] = bool(result.get("inserted", 0))
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            run_id = f"BT-{req.symbol}-{req.timeframe}-{stamp}"
+            history.record_backtest(result, run_id=run_id, params=req.model_dump())
+            result["run_id"] = run_id
             return result
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
