@@ -106,6 +106,38 @@ public final class SshBridge {
         }
     }
 
+    public static String readStrategySettings(
+            String host,
+            String username,
+            String remoteDir,
+            String keyPath
+    ) throws Exception {
+        String root = remoteDir == null ? "" : remoteDir.trim().replaceAll("/+$", "");
+        if (root.isEmpty()) throw new IllegalArgumentException("서버 캐시 폴더가 비어 있습니다.");
+        String path = root + "/mobile-strategy-settings.json";
+        Session session = connect(host, username, keyPath);
+        ChannelSftp sftp = null;
+        try {
+            sftp = (ChannelSftp) session.openChannel("sftp");
+            sftp.connect(15000);
+            try (InputStream in = sftp.get(path);
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = in.read(buffer)) >= 0) out.write(buffer, 0, n);
+                String json = out.toString(StandardCharsets.UTF_8.name());
+                new JSONObject(json);
+                return json;
+            }
+        } catch (SftpException e) {
+            if (e.id == ChannelSftp.SSH_FX_NO_SUCH_FILE) return "{}";
+            throw e;
+        } finally {
+            if (sftp != null && sftp.isConnected()) sftp.disconnect();
+            session.disconnect();
+        }
+    }
+
     public static final class DashboardTunnel implements AutoCloseable {
         private final Session session;
         private final int localPort;
