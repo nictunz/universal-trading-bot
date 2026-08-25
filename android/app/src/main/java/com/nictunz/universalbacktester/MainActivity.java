@@ -369,7 +369,18 @@ public class MainActivity extends android.app.Activity {
             try {
                 Python py = Python.getInstance();
                 PyObject bridge = py.getModule("mobile_bridge");
-                String jsonText = bridge.callAttr("run_backtest", symbol, timeframe, start, end, output.getAbsolutePath()).toString();
+                String jsonText = bridge.callAttr(
+                        "run_backtest",
+                        symbol,
+                        timeframe,
+                        start,
+                        end,
+                        output.getAbsolutePath(),
+                        hostInput.getText().toString(),
+                        userInput.getText().toString(),
+                        remoteInput.getText().toString(),
+                        privateKeyPath
+                ).toString();
                 JSONObject obj = new JSONObject(jsonText);
                 JSONObject summary = obj.getJSONObject("summary");
                 JSONArray logs = obj.getJSONArray("logs");
