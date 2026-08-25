@@ -58,34 +58,63 @@ public final class ServerUpdateBridge {
         }
         File target = new File(root, apkName);
         File temp = new File(root, apkName + ".downloading");
-        if (temp.exists()) temp.delete();
-
         String remote = updateRoot(remoteDir) + "/" + apkName;
-        Session session = connect(host, username, keyPath);
-        ChannelSftp sftp = null;
-        try {
-            sftp = (ChannelSftp) session.openChannel("sftp");
-            sftp.connect(15000);
-            // Let JSch own the complete SFTP transfer lifecycle. Holding the
-            // ChannelSftp InputStream directly can close early on large APKs.
-            sftp.get(remote, temp.getAbsolutePath());
-            if (!temp.isFile() || temp.length() <= 0L) {
-                throw new IllegalStateException("다운로드된 APK 파일이 비어 있습니다.");
+
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            Session session = null;
+            ChannelSftp sftp = null;
+            try {
+                session = connect(host, username, keyPath);
+                sftp = (ChannelSftp) session.openChannel("sftp");
+                sftp.connect(20_000);
+
+                long remoteSize = sftp.lstat(remote).getSize();
+                if (remoteSize <= 0L) {
+                    throw new IllegalStateException("서버 APK 파일이 비어 있습니다.");
+                }
+                if (temp.exists() && temp.length() > remoteSize && !temp.delete()) {
+                    throw new IllegalStateException("손상된 임시 APK를 지울 수 없습니다.");
+                }
+                if (!temp.exists() || temp.length() < remoteSize) {
+                    int mode = temp.exists() && temp.length() > 0L
+                            ? ChannelSftp.RESUME
+                            : ChannelSftp.OVERWRITE;
+                    sftp.get(remote, temp.getAbsolutePath(), null, mode);
+                }
+                if (!temp.isFile() || temp.length() != remoteSize) {
+                    throw new IllegalStateException(
+                            "APK 다운로드 크기 불일치: " + temp.length() + "/" + remoteSize
+                    );
+                }
+                lastError = null;
+                break;
+            } catch (Exception e) {
+                lastError = e;
+                if (attempt < 5) {
+                    try {
+                        Thread.sleep(attempt * 1_500L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw interrupted;
+                    }
+                }
+            } finally {
+                if (sftp != null && sftp.isConnected()) sftp.disconnect();
+                if (session != null && session.isConnected()) session.disconnect();
             }
-        } catch (Exception e) {
-            temp.delete();
-            throw e;
-        } finally {
-            if (sftp != null && sftp.isConnected()) sftp.disconnect();
-            session.disconnect();
+        }
+        if (lastError != null) {
+            throw new IllegalStateException(
+                    "APK 다운로드 연결이 5회 끊겼습니다. 받은 부분은 보존했으므로 다시 누르면 이어받습니다.",
+                    lastError
+            );
         }
 
         if (target.exists() && !target.delete()) {
-            temp.delete();
             throw new IllegalStateException("기존 업데이트 APK를 지울 수 없습니다.");
         }
         if (!temp.renameTo(target)) {
-            temp.delete();
             throw new IllegalStateException("업데이트 APK 파일 이동 실패");
         }
         return target.getAbsolutePath();
@@ -104,7 +133,9 @@ public final class ServerUpdateBridge {
         config.put("StrictHostKeyChecking", "no");
         config.put("PreferredAuthentications", "publickey");
         session.setConfig(config);
-        session.connect(15000);
+        session.setServerAliveInterval(10_000);
+        session.setServerAliveCountMax(6);
+        session.connect(20_000);
         return session;
     }
 
