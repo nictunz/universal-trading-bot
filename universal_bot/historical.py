@@ -113,6 +113,17 @@ class HistoricalDataManager:
             if hostname is not None:
                 config["hostname"] = hostname
             exchange = exchange_cls(config)
+            if exchange_id == "okx" and hostname is not None:
+                def _replace_okx_host(value):
+                    if isinstance(value, str):
+                        return value.replace("www.okx.com", hostname)
+                    if isinstance(value, dict):
+                        return {k: _replace_okx_host(v) for k, v in value.items()}
+                    if isinstance(value, list):
+                        return [_replace_okx_host(v) for v in value]
+                    return value
+                exchange.hostname = hostname
+                exchange.urls = _replace_okx_host(exchange.urls)
             candidate_rows: list[list[float]] = []
             since = start
             limit = 300 if exchange_id == "okx" else 1000
