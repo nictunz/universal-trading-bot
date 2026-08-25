@@ -31,6 +31,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Locale;
@@ -235,7 +237,14 @@ public class MainActivity extends android.app.Activity {
         logText.setTextIsSelectable(true);
         logText.setPadding(dp(10), dp(10), dp(10), dp(10));
         logText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
+        logText.setClickable(true);
+        logText.setFocusable(true);
+        logText.setOnClickListener(v -> showTextDialog("전체 실행 로그", logText.getText().toString()));
+        statusText.setClickable(true);
+        statusText.setOnClickListener(v -> showTextDialog("전체 실행 로그", logText.getText().toString()));
         logCard.addView(logText, marginTop(8));
+        TextView logHint = text("🔎 실행 로그 또는 상태를 누르면 전체 화면으로 확대됩니다.", 11, ACCENT, false);
+        logCard.addView(logHint, marginTop(7));
 
         return scroll;
     }
@@ -824,9 +833,23 @@ public class MainActivity extends android.app.Activity {
     }
 
     private String stackMessage(Exception e) {
-        String message = e.getMessage();
-        if (message == null || message.isEmpty()) message = e.toString();
-        return message;
+        StringBuilder details = new StringBuilder();
+        Throwable current = e;
+        int depth = 0;
+        while (current != null && depth < 10) {
+            if (depth > 0) details.append("\n원인 ").append(depth).append(": ");
+            details.append(current.getClass().getName());
+            String message = current.getMessage();
+            if (message != null && !message.trim().isEmpty()) {
+                details.append(": ").append(message.trim());
+            }
+            current = current.getCause();
+            depth++;
+        }
+        StringWriter trace = new StringWriter();
+        e.printStackTrace(new PrintWriter(trace));
+        details.append("\n\n전체 스택:\n").append(trace);
+        return details.toString();
     }
 
     private void toast(String message) {
