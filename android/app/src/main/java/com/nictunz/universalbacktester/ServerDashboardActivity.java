@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
@@ -50,6 +51,8 @@ public class ServerDashboardActivity extends android.app.Activity {
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(11, 18, 32));
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(false);
@@ -76,6 +79,7 @@ public class ServerDashboardActivity extends android.app.Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                CookieManager.getInstance().flush();
                 status.setText("서버 대시보드 연결됨 · SSH 암호화 터널");
             }
         });
