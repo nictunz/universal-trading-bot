@@ -58,6 +58,22 @@ def test_ssh(host: str, username: str, key_path: str) -> str:
     return str(_ssh_bridge().testConnection(host.strip(), username.strip(), key_path.strip()))
 
 
+def inspect_server_cache(
+    host: str,
+    username: str,
+    remote_dir: str,
+    key_path: str,
+) -> str:
+    return str(
+        _ssh_bridge().inspectServerCache(
+            host.strip(),
+            username.strip(),
+            remote_dir.strip(),
+            key_path.strip(),
+        )
+    )
+
+
 def upload_result(
     db_path: str,
     result_path: str,
