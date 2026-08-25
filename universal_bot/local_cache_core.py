@@ -109,11 +109,44 @@ def _sync_with_retry(
                 f"- {delay}초 후 재시도 {attempt + 1}/{attempts}"
             )
             time.sleep(delay)
+
+    if req.start is not None and req.end is not None:
+        span = req.end - req.start
+        if span > timedelta(days=2):
+            midpoint = req.start + span / 2
+            left_end = midpoint
+            right_start = midpoint + timedelta(microseconds=1)
+            log(
+                f"{req.exchange} {req.start:%Y-%m-%d}..{req.end:%Y-%m-%d} "
+                f"연속 실패 - {req.start:%m-%d}..{left_end:%m-%d}, "
+                f"{right_start:%m-%d}..{req.end:%m-%d} 구간으로 자동 분할"
+            )
+            left = DataRequest(
+                symbol=req.symbol,
+                timeframe=req.timeframe,
+                start=req.start,
+                end=left_end,
+                asset_class=req.asset_class,
+                exchange=req.exchange,
+            )
+            right = DataRequest(
+                symbol=req.symbol,
+                timeframe=req.timeframe,
+                start=right_start,
+                end=req.end,
+                asset_class=req.asset_class,
+                exchange=req.exchange,
+            )
+            left_inserted, _ = _sync_with_retry(manager, left, log, attempts=3)
+            right_inserted, _ = _sync_with_retry(manager, right, log, attempts=3)
+            return left_inserted + right_inserted, manager.read(req)
+
+    detail = f"{type(last_error).__name__}: {last_error}" if last_error else "알 수 없는 오류"
     raise RuntimeError(
         f"{req.exchange} {req.start:%Y-%m-%d}..{req.end:%Y-%m-%d} "
-        f"다운로드가 {attempts}회 실패했습니다. 앱을 다시 실행하면 저장된 캐시 다음부터 이어받습니다."
+        f"다운로드가 {attempts}회 실패했습니다. 마지막 원인: {detail}. "
+        f"앱을 다시 실행하면 저장된 캐시 다음부터 이어받습니다."
     ) from last_error
-
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
