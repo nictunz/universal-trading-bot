@@ -23,6 +23,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.TimeZone;
+import java.util.Vector;
 
 public final class SshBridge {
     private SshBridge() {}
@@ -61,6 +62,46 @@ public final class SshBridge {
         try {
             return "SSH_OK " + username + "@" + host;
         } finally {
+            session.disconnect();
+        }
+    }
+
+    public static String inspectServerCache(
+            String host,
+            String username,
+            String remoteDir,
+            String keyPath
+    ) throws Exception {
+        Session session = connect(host, username, keyPath);
+        ChannelSftp sftp = null;
+        try {
+            sftp = (ChannelSftp) session.openChannel("sftp");
+            sftp.connect(15000);
+            @SuppressWarnings("unchecked")
+            Vector<ChannelSftp.LsEntry> entries = sftp.ls(remoteDir);
+            JSONArray files = new JSONArray();
+            for (ChannelSftp.LsEntry entry : entries) {
+                String name = entry.getFilename();
+                if (".".equals(name) || "..".equals(name) || entry.getAttrs().isDir()) continue;
+                boolean relevant = name.endsWith(".db")
+                        || (name.startsWith("latest-") && name.endsWith(".json"))
+                        || name.endsWith(".upload-manifest.json");
+                if (!relevant) continue;
+                JSONObject item = new JSONObject();
+                item.put("name", name);
+                item.put("size", entry.getAttrs().getSize());
+                item.put("modified_epoch", entry.getAttrs().getMTime());
+                files.put(item);
+            }
+            JSONObject out = new JSONObject();
+            out.put("ok", true);
+            out.put("server", username + "@" + host);
+            out.put("remote_dir", remoteDir);
+            out.put("count", files.length());
+            out.put("files", files);
+            return out.toString();
+        } finally {
+            if (sftp != null && sftp.isConnected()) sftp.disconnect();
             session.disconnect();
         }
     }
