@@ -41,12 +41,13 @@ adapter = HybridCCXTAdapter(
     community_fallback=False,
 )
 volumes = adapter.fetch_volume_sources("ETH/USDT:USDT", "5m", limit=120)
-print("four_exchange_status=", adapter.volume_source_status)
+status = adapter.volume_source_status()
+print("four_exchange_status=", status)
 print("four_exchange_rows=", {name: len(series) for name, series in volumes.items()})
 if set(volumes) != {"binance", "bitget", "okx", "bybit"}:
     raise SystemExit(f"FAIL: four exchange volume incomplete: {sorted(volumes)}")
-if any(item.get("status") != "OK" for item in adapter.volume_source_status.values()):
-    raise SystemExit(f"FAIL: volume source status: {adapter.volume_source_status}")
+if any(item.get("status") != "OK" for item in status.values()):
+    raise SystemExit(f"FAIL: volume source status: {status}")
 frame = adapter.fetch_ohlcv("ETH/USDT:USDT", "5m", limit=120)
 print(f"gated_bitget_ohlcv_rows={len(frame)} latest={frame.index[-1]}")
 print("BOT_MARKET_DATA_CONNECTION=OK")
