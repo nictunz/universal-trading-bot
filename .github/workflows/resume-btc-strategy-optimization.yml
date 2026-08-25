@@ -38,6 +38,7 @@ jobs:
           mkdir -p repaired
           "$CI_VENV/bin/python" - <<'PY'
           import shutil
+          import shlex
           import sqlite3
           import subprocess
           import time
@@ -91,8 +92,8 @@ jobs:
                   recovered = root / f"btc-1y-5m.recovered-{int(time.time())}.db"
                   print(f"RECOVER_START source={live} target={recovered}", flush=True)
                   command = (
-                      f"{sqlite_bin} {shlex_quote(str(live))} '.recover' | "
-                      f"{sqlite_bin} {shlex_quote(str(recovered))}"
+                      f"{shlex.quote(sqlite_bin)} {shlex.quote(str(live))} '.recover' | "
+                      f"{shlex.quote(sqlite_bin)} {shlex.quote(str(recovered))}"
                   )
                   proc = subprocess.run(command, shell=True, text=True, capture_output=True)
                   print(proc.stdout[-4000:], flush=True)
@@ -114,8 +115,6 @@ jobs:
               raise SystemExit("isolated BTC cache snapshot failed final validation")
           print(f"BTC_CACHE_SNAPSHOT_READY source={selected} output={output}", flush=True)
 
-          def shlex_quote(value: str) -> str:
-              raise AssertionError("unreachable")
           PY
       - uses: actions/upload-artifact@v4
         with:
