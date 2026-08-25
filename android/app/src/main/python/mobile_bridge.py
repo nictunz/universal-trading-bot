@@ -91,19 +91,19 @@ def list_saved_results(output_dir: str) -> str:
     candidates.extend(Path(output_dir).glob("*backtest.json"))
     for path in sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-                meta = json.loads(path.read_text(encoding="utf-8"))
+            meta = json.loads(path.read_text(encoding="utf-8"))
             db = Path(str(meta.get("database", "")))
             if not db.is_file():
                 continue
             items.append(
                 {
-                        "path": str(path),
-                        "db": str(db),
-                        "summary": meta,
-                        "label": (
-                            f"{meta.get('symbol', '-')} · {meta.get('requested_start', '-')}~"
-                            f"{meta.get('requested_end', '-')} · {meta.get('created_at', '-')}"
-                        ),
+                    "path": str(path),
+                    "db": str(db),
+                    "summary": meta,
+                    "label": (
+                        f"{meta.get('symbol', '-')} · {meta.get('requested_start', '-')}~"
+                        f"{meta.get('requested_end', '-')} · {meta.get('created_at', '-')}"
+                    ),
                 }
             )
         except Exception:
