@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -88,6 +89,32 @@ def month_chunks(start: datetime, end: datetime):
         cursor = next_month
 
 
+def _sync_with_retry(
+    manager: OfficialArchiveHistoricalDataManager,
+    req: DataRequest,
+    log: Callable[[str], None],
+    attempts: int = 4,
+):
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return manager.sync(req)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            delay = 2 ** (attempt - 1)
+            log(
+                f"일시적 다운로드 오류 ({type(exc).__name__}: {exc}) "
+                f"- {delay}초 후 재시도 {attempt + 1}/{attempts}"
+            )
+            time.sleep(delay)
+    raise RuntimeError(
+        f"{req.exchange} {req.start:%Y-%m-%d}..{req.end:%Y-%m-%d} "
+        f"다운로드가 {attempts}회 실패했습니다. 앱을 다시 실행하면 저장된 캐시 다음부터 이어받습니다."
+    ) from last_error
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -151,7 +178,8 @@ def build_cache_and_backtest(
                 asset_class="crypto",
                 exchange=exchange,
             )
-            inserted, df = manager.sync(req)
+            log(f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} 확인/다운로드")
+            inserted, df = _sync_with_retry(manager, req, log)
             if df.empty:
                 raise RuntimeError(f"{exchange} 데이터 없음: {chunk_start.date()}..{chunk_end.date()}")
             _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
