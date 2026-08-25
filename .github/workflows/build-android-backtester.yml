@@ -215,10 +215,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="android-v${ANDROID_VERSION_CODE}"
-          gh release create "$TAG" \
-            --target "$GITHUB_SHA" \
-            --title "Android ${ANDROID_VERSION_NAME}" \
-            --notes "Verified Android build for commit ${GITHUB_SHA}. Python tests and Android build passed before publication." \
-            --latest \
-            UniversalTradingBacktester-Android.apk \
-            android-update.json
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              UniversalTradingBacktester-Android.apk \
+              android-update.json \
+              --clobber
+            gh release edit "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Android ${ANDROID_VERSION_NAME}" \
+              --notes "Verified Android build for commit ${GITHUB_SHA}. Python tests and Android build passed before publication." \
+              --latest
+          else
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --title "Android ${ANDROID_VERSION_NAME}" \
+              --notes "Verified Android build for commit ${GITHUB_SHA}. Python tests and Android build passed before publication." \
+              --latest \
+              UniversalTradingBacktester-Android.apk \
+              android-update.json
+          fi
