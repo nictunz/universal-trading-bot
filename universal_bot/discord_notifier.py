@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import requests
@@ -45,3 +46,13 @@ class DiscordNotifier:
                 "status": None,
                 "reason": f"{type(exc).__name__}: {exc}",
             }
+
+    def send_async(self, content: str) -> None:
+        if not self.enabled or not str(content or "").strip():
+            return
+        threading.Thread(
+            target=self.send,
+            args=(content,),
+            daemon=True,
+            name="discord-webhook",
+        ).start()
