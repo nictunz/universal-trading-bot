@@ -1,0 +1,83 @@
+name: optimize-one-year-strategy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/optimize_one_year_strategy.py'
+      - '.github/workflows/optimize-one-year-strategy.yml'
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: Optimization trials
+        required: false
+        default: '300'
+
+concurrency:
+  group: optimize-one-year-strategy
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 180
+    env:
+      PYTHONUNBUFFERED: '1'
+      CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare runtime
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then
+            python3 -m venv "$CI_VENV"
+          fi
+          "$CI_VENV/bin/pip" install -e .
+
+      - name: Optimize ETH one-year cache
+        run: |
+          set -euo pipefail
+          trials="${{ github.event.inputs.trials || '300' }}"
+          "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py             --symbol ETH/USDT:USDT             --timeframe 5m             --trials "$trials"             --output reports/latest-strategy-optimization.json             2>&1 | tee reports/latest-strategy-optimization.log
+
+      - name: Write summary
+        run: |
+          "$CI_VENV/bin/python" - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('reports/latest-strategy-optimization.json').read_text())
+          b=d['best']; r=b['result']; p=b['parameters']
+          lines=[
+            '# Latest one-year strategy optimization','',
+            f"- Generated UTC: {d['generated_at']}",
+            f"- Market: {d['symbol']} {d['timeframe']}",
+            f"- Trials: {d['trials_requested']}",
+            '- LIVE limit: max 15x per entry, max 2 entries, max 30x total','',
+            '## Best result','',
+            f"- Net PnL: {r['pnl']}",
+            f"- Return: {r['return_percent']}%",
+            f"- Profit factor: {r['profit_factor']}",
+            f"- Win rate: {r['win_rate']}%",
+            f"- Max drawdown: {r['max_drawdown_percent']}%",
+            f"- Trades: {r['trades']}",'',
+            '## Parameters','',
+            '```json',json.dumps(p,ensure_ascii=False,indent=2),'```','',
+            '> PAPER forward validation is required before LIVE.'
+          ]
+          Path('reports/latest-strategy-optimization.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Publish result
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/latest-strategy-optimization.json reports/latest-strategy-optimization.md
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: publish one-year strategy optimization [skip ci]"
+            git push origin HEAD:main
+          fi
