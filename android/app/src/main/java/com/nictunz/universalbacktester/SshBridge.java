@@ -106,6 +106,50 @@ public final class SshBridge {
         }
     }
 
+    public static final class DashboardTunnel implements AutoCloseable {
+        private final Session session;
+        private final int localPort;
+
+        private DashboardTunnel(Session session, int localPort) {
+            this.session = session;
+            this.localPort = localPort;
+        }
+
+        public int getLocalPort() {
+            return localPort;
+        }
+
+        public boolean isConnected() {
+            return session.isConnected();
+        }
+
+        @Override
+        public void close() {
+            try {
+                if (session.isConnected()) session.disconnect();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    public static DashboardTunnel openDashboardTunnel(
+            String host,
+            String username,
+            String keyPath,
+            int remotePort
+    ) throws Exception {
+        Session session = connect(host, username, keyPath);
+        session.setServerAliveInterval(15000);
+        session.setServerAliveCountMax(3);
+        try {
+            int localPort = session.setPortForwardingL(0, "127.0.0.1", remotePort);
+            return new DashboardTunnel(session, localPort);
+        } catch (Exception e) {
+            session.disconnect();
+            throw e;
+        }
+    }
+
     public static final class RelayClient implements AutoCloseable {
         private final Session session;
         private final ChannelSftp sftp;
