@@ -1,0 +1,201 @@
+name: precision-btc-eth-optimization
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/precision-btc-eth-optimization.yml']
+
+concurrency:
+  group: precision-btc-eth-optimization
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+
+jobs:
+  prepare_caches:
+    name: Validate isolated BTC and ETH caches
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare runtime
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then python3 -m venv "$CI_VENV"; fi
+          "$CI_VENV/bin/pip" install -e .
+      - name: Locate and validate immutable cache snapshots
+        run: |
+          set -euo pipefail
+          mkdir -p snapshots/btc snapshots/eth
+          "$CI_VENV/bin/python" - <<'PY'
+          import shutil, sqlite3
+          from pathlib import Path
+          from universal_bot.fast_backtest import run_cached_symbol_backtest
+          root=Path.home()/".cache"/"universal-trading-bot"
+          def valid(path,symbol):
+              if not path.is_file() or path.stat().st_size==0: return False
+              try:
+                  con=sqlite3.connect(f"file:{path}?mode=ro",uri=True)
+                  ok=con.execute("PRAGMA quick_check").fetchone()[0]=="ok"; con.close()
+                  if not ok: return False
+                  r=run_cached_symbol_backtest(symbol,"crypto","bitget","5m",database_path=path)
+                  return int(r.get("bars") or 0)>=100000
+              except Exception as e:
+                  print("CACHE_REJECT",path,type(e).__name__,e,flush=True); return False
+          specs={"btc":("BTC/USDT:USDT",["btc-1y-5m.db","btc-1y-5m.recovered-*.db","btc*5m*.db"]),"eth":("ETH/USDT:USDT",["eth-1y-5m.db","eth*5m*.db"])}
+          for slug,(symbol,patterns) in specs.items():
+              candidates=[]
+              for pat in patterns: candidates.extend(root.glob(pat))
+              candidates=sorted(set(candidates),key=lambda p:(p.stat().st_mtime,p.stat().st_size),reverse=True)
+              chosen=next((p for p in candidates if valid(p,symbol)),None)
+              if chosen is None: raise SystemExit(f"no valid complete {slug} cache")
+              out=Path("snapshots")/slug/f"{slug}-1y-5m.db"; shutil.copy2(chosen,out)
+              if not valid(out,symbol): raise SystemExit(f"snapshot validation failed: {slug}")
+              print("CACHE_READY",slug,chosen,out,flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with: { name: precision-cache-btc, path: snapshots/btc/btc-1y-5m.db, retention-days: 7 }
+      - uses: actions/upload-artifact@v4
+        with: { name: precision-cache-eth, path: snapshots/eth/eth-1y-5m.db, retention-days: 7 }
+
+  batches:
+    name: ${{ matrix.market }} trials ${{ matrix.start }}-${{ matrix.end }}
+    needs: prepare_caches
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 1, end: 60 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 61, end: 120 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 121, end: 180 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 181, end: 240 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 241, end: 300 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 301, end: 360 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 361, end: 420 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 421, end: 480 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 481, end: 540 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 541, end: 600 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 601, end: 660 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 661, end: 720 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 721, end: 780 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 781, end: 840 }
+          - { market: btc, symbol: 'BTC/USDT:USDT', seed: 610001, start: 841, end: 900 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 1, end: 60 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 61, end: 120 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 121, end: 180 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 181, end: 240 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 241, end: 300 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 301, end: 360 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 361, end: 420 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 421, end: 480 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 481, end: 540 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 541, end: 600 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 601, end: 660 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 661, end: 720 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 721, end: 780 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 781, end: 840 }
+          - { market: eth, symbol: 'ETH/USDT:USDT', seed: 620001, start: 841, end: 900 }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare runtime
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then python3 -m venv "$CI_VENV"; fi
+          "$CI_VENV/bin/pip" install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: precision-cache-${{ matrix.market }}
+          path: ${{ runner.temp }}/precision-${{ matrix.market }}/.cache/universal-trading-bot
+      - name: Run deterministic fixed-cost batch
+        run: |
+          set -euo pipefail
+          mkdir -p batch
+          HOME="${{ runner.temp }}/precision-${{ matrix.market }}" "$CI_VENV/bin/python" scripts/optimize_one_year_strategy.py \
+            --symbol "${{ matrix.symbol }}" --timeframe 5m --trials 900 --seed "${{ matrix.seed }}" \
+            --volume-min 3.0 --volume-max 25.0 --start-trial "${{ matrix.start }}" --end-trial "${{ matrix.end }}" \
+            --output "batch/${{ matrix.market }}-${{ matrix.start }}-${{ matrix.end }}.json" \
+            2>&1 | tee "batch/${{ matrix.market }}-${{ matrix.start }}-${{ matrix.end }}.log"
+      - name: Verify fixed assumptions
+        run: |
+          python3 - "batch/${{ matrix.market }}-${{ matrix.start }}-${{ matrix.end }}.json" <<'PY'
+          import json,sys
+          a=json.load(open(sys.argv[1]))["execution_assumptions"]
+          assert a["initial_capital_usdt"]==1000.0
+          assert a["fee_percent_per_side"]==0.02 and a["slippage_percent_per_side"]==0.01
+          assert a["entry_multiplier_range"]==[5.0,15.0] and a["exchange_leverage"]==50
+          assert a["max_entries_range"]==[1,3] and a["volume_break_multiplier_range"]==[3.0,25.0]
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: precision-${{ matrix.market }}-${{ matrix.start }}
+          path: batch/${{ matrix.market }}-${{ matrix.start }}-${{ matrix.end }}.*
+          if-no-files-found: ignore
+          retention-days: 14
+
+  finalize:
+    name: Aggregate 300 600 and 900 milestones
+    needs: batches
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'precision-*-*', merge-multiple: true, path: stage/all }
+      - name: Archive baseline and aggregate milestones
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)-run-${{ github.run_id }}"
+          mkdir -p "reports/baseline/$stamp" reports/precision
+          cp reports/latest-strategy-optimization-{btc,eth}.{json,md} "reports/baseline/$stamp/"
+          for market in btc eth; do
+            symbol="BTC/USDT:USDT"; [[ "$market" == eth ]] && symbol="ETH/USDT:USDT"
+            for milestone in 300 600 900; do
+              work="stage/$market-$milestone"; mkdir -p "$work"
+              for f in stage/all/$market-*.json; do
+                name="${f##*/}"; start="${name#${market}-}"; start="${start%%-*}"
+                if (( start <= milestone )); then cp "$f" "$work/"; fi
+              done
+              python3 scripts/aggregate_strategy_optimization.py --input-dir "$work" --symbol "$symbol" --timeframe 5m --trials "$milestone" --output "reports/precision/$market-$milestone-run-${{ github.run_id }}.json"
+            done
+          done
+      - name: Verify and summarize
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for p in sorted(Path("reports/precision").glob("*-run-*.json")):
+              d=json.loads(p.read_text()); a=d["execution_assumptions"]; b=d["best"]; r=b["result"]; q=b["parameters"]
+              assert d["trials_executed"] in (300,600,900)
+              assert a["fee_percent_per_side"]==0.02 and a["slippage_percent_per_side"]==0.01
+              assert a["volume_break_multiplier_range"]==[3.0,25.0]
+              rows.append((d["symbol"],d["trials_executed"],r["pnl"],r["return_percent"],r["win_rate"],r["profit_factor"],r["max_drawdown_percent"],r["trades"],q["volume_break_multiplier"],q["entry_multiplier"],q["max_pyramiding"]))
+          out=["# BTC·ETH fixed-cost precision optimization","","Fee 0.02%/side and slippage 0.01%/side are fixed.","","|Market|Trials|PnL|Return %|Win %|PF|MDD %|Trades|Volume x|Entry x|Entries|","|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+          out += ["|%s|%d|%.4f|%.4f|%.4f|%s|%.4f|%d|%.2f|%.1f|%d|"%x for x in rows]
+          out += ["","> Research only. Not automatically applied to PAPER or LIVE.",""]
+          Path("reports/precision/latest-summary.md").write_text("\n".join(out),encoding="utf-8")
+          PY
+      - name: Publish versioned reports safely
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/baseline reports/precision
+          git commit -m "ci: publish BTC ETH precision optimization ${{ github.run_id }} [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main; git rebase origin/main
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
