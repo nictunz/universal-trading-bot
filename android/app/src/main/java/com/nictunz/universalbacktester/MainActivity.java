@@ -56,6 +56,7 @@ public class MainActivity extends android.app.Activity {
 
     private AutoCompleteTextView symbolInput;
     private AutoCompleteTextView timeframeInput;
+    private AutoCompleteTextView riskProfileInput;
     private EditText startInput;
     private EditText endInput;
     private EditText hostInput;
@@ -168,6 +169,23 @@ public class MainActivity extends android.app.Activity {
         quickRow.addView(smallButton("5년", v -> setQuickRange(1826)), smallButtonParams());
         quickRow.addView(smallButton("10년", v -> setQuickRange(3653)), smallButtonParams());
         backtestCard.addView(quickRow, marginTop(10));
+
+        riskProfileInput = autocomplete(new String[]{"공격형", "중간형", "안전형"}, "공격형");
+        riskProfileInput.setOnItemClickListener((parent, view, position, id) ->
+                applyRiskProfile(parent.getItemAtPosition(position).toString()));
+        backtestCard.addView(labeled("백테스트 위험 프로필", riskProfileInput), marginTop(12));
+
+        LinearLayout profileRow = new LinearLayout(this);
+        profileRow.setOrientation(LinearLayout.HORIZONTAL);
+        profileRow.setGravity(Gravity.CENTER_VERTICAL);
+        profileRow.addView(smallButton("공격형 · 3개월", v -> applyRiskProfile("공격형")), smallButtonParams());
+        profileRow.addView(smallButton("중간형 · 6개월", v -> applyRiskProfile("중간형")), smallButtonParams());
+        profileRow.addView(smallButton("안전형 · 1년", v -> applyRiskProfile("안전형")), smallButtonParams());
+        backtestCard.addView(profileRow, marginTop(8));
+        backtestCard.addView(text(
+                "프로필 선택 시 권장 기간이 자동 입력됩니다. 공격형=15배/최대 3회, 중간형=10배/최대 2회, 안전형=5배/최대 1회. 날짜는 이후 직접 변경할 수 있습니다.",
+                11, MUTED, false
+        ), marginTop(7));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
@@ -341,9 +359,26 @@ public class MainActivity extends android.app.Activity {
         startInput.setText(formatDate(start));
     }
 
+    private void applyRiskProfile(String profile) {
+        String normalized = profile == null ? "공격형" : profile.trim();
+        int days;
+        if ("안전형".equals(normalized)) {
+            days = 365;
+        } else if ("중간형".equals(normalized)) {
+            days = 183;
+        } else {
+            normalized = "공격형";
+            days = 92;
+        }
+        riskProfileInput.setText(normalized, false);
+        setQuickRange(days);
+        toast(normalized + " 권장 기간과 진입 설정을 적용했습니다.");
+    }
+
     private void runBacktest() {
         String symbol = symbolInput.getText().toString().trim();
         String timeframe = timeframeInput.getText().toString().trim();
+        String riskProfile = riskProfileInput.getText().toString().trim();
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
         Calendar startCal = parseDate(start);
@@ -365,7 +400,7 @@ public class MainActivity extends android.app.Activity {
         lastSummary = null;
         enableUpload(false);
         enableResultActions(false);
-        logText.setText("로컬 캐시 생성 및 백테스트 시작...\n");
+        logText.setText("로컬 캐시 생성 및 백테스트 시작...\n프로필: " + riskProfile + "\n");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         File output = new File(getFilesDir(), "UniversalTradingBotCache");
@@ -383,7 +418,8 @@ public class MainActivity extends android.app.Activity {
                         hostInput.getText().toString(),
                         userInput.getText().toString(),
                         remoteInput.getText().toString(),
-                        privateKeyPath
+                        privateKeyPath,
+                        riskProfile
                 ).toString();
                 JSONObject obj = new JSONObject(jsonText);
                 JSONObject summary = obj.getJSONObject("summary");
