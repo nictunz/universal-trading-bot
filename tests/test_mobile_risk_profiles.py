@@ -1,4 +1,9 @@
-from android.app.src.main.python.mobile_bridge import (\n    FIXED_BACKTEST,\n    OPTIMIZED_STRATEGY_FIELDS,\n    RISK_PROFILES,\n    _profile_candidates,\n)
+from android.app.src.main.python.mobile_bridge import (
+    FIXED_BACKTEST,
+    OPTIMIZED_STRATEGY_FIELDS,
+    RISK_PROFILES,
+    _profile_candidates,
+)
 
 
 def test_mobile_risk_profiles_use_mdd_and_search_ranges():
