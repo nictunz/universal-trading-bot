@@ -178,12 +178,12 @@ public class MainActivity extends android.app.Activity {
         LinearLayout profileRow = new LinearLayout(this);
         profileRow.setOrientation(LinearLayout.HORIZONTAL);
         profileRow.setGravity(Gravity.CENTER_VERTICAL);
-        profileRow.addView(smallButton("공격형 · 3개월", v -> applyRiskProfile("공격형")), smallButtonParams());
-        profileRow.addView(smallButton("중간형 · 6개월", v -> applyRiskProfile("중간형")), smallButtonParams());
-        profileRow.addView(smallButton("안전형 · 1년", v -> applyRiskProfile("안전형")), smallButtonParams());
+        profileRow.addView(smallButton("공격형", v -> applyRiskProfile("공격형")), smallButtonParams());
+        profileRow.addView(smallButton("중간형", v -> applyRiskProfile("중간형")), smallButtonParams());
+        profileRow.addView(smallButton("안전형", v -> applyRiskProfile("안전형")), smallButtonParams());
         backtestCard.addView(profileRow, marginTop(8));
         backtestCard.addView(text(
-                "프로필 선택 시 권장 기간이 자동 입력됩니다. 공격형=15배/최대 3회, 중간형=10배/최대 2회, 안전형=5배/최대 1회. 날짜는 이후 직접 변경할 수 있습니다.",
+                "기간은 위에서 직접 선택합니다. 공격형=MDD 40%·1~25배·1~2회, 중간형=MDD 25%·1~15배·1~2회, 안전형=MDD 15%·1~8배·1회 범위에서 최적값을 찾습니다.",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -361,18 +361,11 @@ public class MainActivity extends android.app.Activity {
 
     private void applyRiskProfile(String profile) {
         String normalized = profile == null ? "공격형" : profile.trim();
-        int days;
-        if ("안전형".equals(normalized)) {
-            days = 365;
-        } else if ("중간형".equals(normalized)) {
-            days = 183;
-        } else {
+        if (!"공격형".equals(normalized) && !"중간형".equals(normalized) && !"안전형".equals(normalized)) {
             normalized = "공격형";
-            days = 92;
         }
         riskProfileInput.setText(normalized, false);
-        setQuickRange(days);
-        toast(normalized + " 권장 기간과 진입 설정을 적용했습니다.");
+        toast(normalized + " MDD 제한과 진입 탐색 범위를 적용했습니다. 기간은 변경하지 않습니다.");
     }
 
     private void runBacktest() {
