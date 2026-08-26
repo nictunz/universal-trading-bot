@@ -1,4 +1,4 @@
-from android.app.src.main.python.mobile_bridge import FIXED_BACKTEST, RISK_PROFILES
+from android.app.src.main.python.mobile_bridge import FIXED_BACKTEST, RISK_PROFILES, _profile_candidates
 
 
 def test_mobile_risk_profiles_use_mdd_and_search_ranges():
@@ -33,3 +33,20 @@ def test_mobile_profile_costs_are_fixed():
         "backtest_fee_percent": 0.02,
         "backtest_slippage_percent": 0.01,
     }
+
+
+def test_mobile_trials_are_deterministic_unique_and_incremental():
+    first_50 = _profile_candidates("공격형", 50, "same-run")
+    first_100 = _profile_candidates("공격형", 100, "same-run")
+    assert first_100[:50] == first_50
+    assert len({str(sorted(row.items())) for row in first_100}) == 100
+    assert all(1 <= row["entry_multiplier"] <= 25 for row in first_100)
+    assert all(row["max_pyramiding"] in (1, 2) for row in first_100)
+    assert all(3.0 <= row["volume_break_multiplier"] <= 25.0 for row in first_100)
+
+
+def test_trial_ranges_follow_selected_profile():
+    safe = _profile_candidates("안전형", 300, "safe-run")
+    assert len(safe) == 300
+    assert all(1 <= row["entry_multiplier"] <= 8 for row in safe)
+    assert all(row["max_pyramiding"] == 1 for row in safe)
