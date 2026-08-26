@@ -110,6 +110,7 @@ def main() -> None:
             "summary": {
                 "windows": len(rows),
                 "target_10x_hits": sum(x >= TARGET_RETURN for x in returns),
+                "target_10x_hit_rate": sum(x >= TARGET_RETURN for x in returns) / len(rows),
                 "median_return_percent": float(pd.Series(returns).median()),
                 "worst_return_percent": min(returns),
                 "best_return_percent": max(returns),
@@ -122,22 +123,43 @@ def main() -> None:
         })
         print(f"{number}/{len(candidates)} rolling candidates complete", flush=True)
 
-    evaluated.sort(key=lambda x: (
+    # Goal profile: maximize repeatable +900% quarters first. Candidates which
+    # reach account-exhaustion drawdown or have too little activity are not eligible.
+    eligible = [
+        x for x in evaluated
+        if x["summary"]["worst_max_drawdown_percent"] < 100.0
+        and x["summary"]["median_trades"] >= 10
+    ]
+    if not eligible:
+        raise SystemExit("no goal-profile candidate survived liquidation/activity guardrails")
+    goal_ranked = sorted(eligible, key=lambda x: (
         x["summary"]["target_10x_hits"],
         x["summary"]["median_return_percent"],
         x["summary"]["worst_return_percent"],
+        x["summary"]["median_profit_factor"],
+        -x["summary"]["worst_max_drawdown_percent"],
+    ), reverse=True)
+    robust_ranked = sorted(eligible, key=lambda x: (
+        x["summary"]["median_return_percent"],
+        x["summary"]["worst_return_percent"],
+        x["summary"]["target_10x_hits"],
         -x["summary"]["worst_max_drawdown_percent"],
     ), reverse=True)
     output = {
         "symbol": args.symbol,
         "timeframe": args.timeframe,
         "method": "rolling 3-month windows advanced by one month",
+        "selection_profile": "TARGET_10X",
+        "selection_priority": ["target_10x_hits", "median_return_percent", "worst_return_percent", "median_profit_factor", "lower_worst_mdd"],
+        "guardrails": {"worst_mdd_below_percent": 100.0, "minimum_median_trades": 10},
         "target_return_percent": TARGET_RETURN,
         "candidate_source_reports": args.report,
         "candidate_count": len(evaluated),
         "fixed_assumptions": assumptions[0],
         "warning": "Research only. Not automatically applied to PAPER or LIVE.",
-        "best_robust_candidate": evaluated[0],
+        "best_goal_candidate": goal_ranked[0],
+        "best_robust_candidate": robust_ranked[0],
+        "candidates_goal_ranked": goal_ranked,
         "candidates": evaluated,
     }
     path = Path(args.output)
