@@ -79,7 +79,7 @@ jobs:
           assert a["exchange_leverage"] == 50
           assert a["max_entries_range"] == [1,3]
           assert d["candidate_count"] > 0
-          assert d["best_robust_candidate"]["summary"]["windows"] >= 8
+          assert d["best_goal_candidate"]["summary"]["windows"] >= 8
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -111,14 +111,14 @@ jobs:
           lines=[
             "# BTC·ETH 3개월 롤링 검증","",
             "- 목표: 각 3개월 구간 수익률 +900% 이상(기말 자산 10배)",
-            "- 방식: 3개월 창을 1개월씩 이동",
+            "- 방식: 3개월 창을 1개월씩 이동\n            - 선택 프로필: 목표형 — +900% 달성 횟수를 최우선, 동률이면 중앙/최악 수익률 순",
             "- 비용: 수수료 편도 0.02%, 슬리피지 편도 0.01% 고정",
             "- PAPER/LIVE 자동 적용 없음","",
             "|시장|후보 수|구간 수|10배 달성|중앙 수익률|최악 수익률|최고 수익률|중앙 PF|최악 MDD|중앙 거래 수|",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
           ]
           for p in sorted(root.glob("*-rolling-3m.json")):
-              d=json.loads(p.read_text()); s=d["best_robust_candidate"]["summary"]
+              d=json.loads(p.read_text()); s=d["best_goal_candidate"]["summary"]
               market=d["symbol"].split("/")[0]
               lines.append(
                 f"|{market}|{d['candidate_count']}|{s['windows']}|{s['target_10x_hits']}|"
