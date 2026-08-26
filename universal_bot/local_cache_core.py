@@ -151,6 +151,44 @@ def _sync_with_retry(
         f"앱을 다시 실행하면 저장된 캐시 다음부터 이어받습니다."
     ) from last_error
 
+def _checkpoint_path(
+    output_dir: Path,
+    symbol: str,
+    timeframe: str,
+    start_text: str,
+    end_text: str,
+) -> Path:
+    identity = f"{symbol}|{timeframe}|{start_text}|{end_text}".encode("utf-8")
+    digest = hashlib.sha256(identity).hexdigest()[:16]
+    return output_dir / "Checkpoints" / f"{symbol_slug(symbol)}-{timeframe}-{digest}.json"
+
+
+def _load_checkpoint(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "stage": "NEW", "completed_chunks": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != 1 or not isinstance(payload.get("completed_chunks"), list):
+            raise ValueError("unsupported checkpoint")
+        return payload
+    except Exception:
+        damaged = path.with_suffix(path.suffix + f".damaged-{int(time.time())}")
+        path.replace(damaged)
+        return {"version": 1, "stage": "NEW", "completed_chunks": []}
+
+
+def _save_checkpoint(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _chunk_key(exchange: str, start: datetime, end: datetime) -> str:
+    return f"{exchange}|{start.isoformat()}|{end.isoformat()}"
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -200,7 +238,26 @@ def build_cache_and_backtest(
     log(f"심볼: {symbol}")
     log(f"타임프레임: {timeframe}")
     log(f"기간: {start_text} ~ {end_text} ({range_days}일)")
+    checkpoint_path = _checkpoint_path(output_dir, symbol, timeframe, start_text, end_text)
+    checkpoint = _load_checkpoint(checkpoint_path)
+    checkpoint.update({
+        "version": 1,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "requested_start": start_text,
+        "requested_end": end_text,
+        "database": str(db),
+    })
+    completed_chunks = set(str(x) for x in checkpoint.get("completed_chunks", []))
+    checkpoint["stage"] = "CACHE_SYNC"
+    checkpoint["last_error"] = None
+    _save_checkpoint(checkpoint_path, checkpoint)
+
     log(f"캐시: {db}")
+    if completed_chunks:
+        log(f"체크포인트 재개: 완료된 거래소/월 구간 {len(completed_chunks)}개를 검증 후 건너뜁니다.")
+    else:
+        log(f"체크포인트 생성: {checkpoint_path}")
     if upload_eligible:
         log("서버 업로드 보호: 1년 범위 확인됨 - 완료 후 업로드 가능")
     else:
@@ -217,17 +274,47 @@ def build_cache_and_backtest(
                 asset_class="crypto",
                 exchange=exchange,
             )
+            key = _chunk_key(exchange, chunk_start, chunk_end)
             log(f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} 확인/다운로드")
-            inserted, df = _sync_with_retry(manager, req, log)
-            if df.empty:
-                raise RuntimeError(f"{exchange} 데이터 없음: {chunk_start.date()}..{chunk_end.date()}")
-            _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
-            mode = manager.last_fetch_status.get(exchange, {}).get("mode", "CACHE")
-            log(
-                f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} "
-                f"bars={len(df)} inserted={inserted} mode={mode}"
-            )
+            try:
+                if key in completed_chunks:
+                    df = manager.read(req)
+                    if df.empty:
+                        raise ValueError("체크포인트 구간의 캐시가 비어 있음")
+                    _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
+                    inserted = 0
+                    mode = "CHECKPOINT"
+                    log(
+                        f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} "
+                        f"체크포인트 확인 완료 - 다운로드 건너뜀"
+                    )
+                else:
+                    inserted, df = _sync_with_retry(manager, req, log)
+                    if df.empty:
+                        raise RuntimeError(f"{exchange} 데이터 없음: {chunk_start.date()}..{chunk_end.date()}")
+                    _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
+                    mode = manager.last_fetch_status.get(exchange, {}).get("mode", "CACHE")
+                    completed_chunks.add(key)
+                    checkpoint["completed_chunks"] = sorted(completed_chunks)
+                    checkpoint["last_completed_chunk"] = key
+                    checkpoint["last_error"] = None
+                    _save_checkpoint(checkpoint_path, checkpoint)
+                log(
+                    f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} "
+                    f"bars={len(df)} inserted={inserted} mode={mode}"
+                )
+            except Exception as exc:
+                checkpoint["stage"] = "CACHE_SYNC_FAILED"
+                checkpoint["failed_chunk"] = key
+                checkpoint["last_error"] = f"{type(exc).__name__}: {exc}"
+                checkpoint["completed_chunks"] = sorted(completed_chunks)
+                _save_checkpoint(checkpoint_path, checkpoint)
+                raise
 
+    checkpoint["stage"] = "BACKTEST"
+    checkpoint["completed_chunks"] = sorted(completed_chunks)
+    checkpoint["last_error"] = None
+    _save_checkpoint(checkpoint_path, checkpoint)
     log("\n===== CACHE ONLY BACKTEST =====")
     result = run_cached_symbol_backtest(
         symbol=symbol,
@@ -261,6 +348,12 @@ def build_cache_and_backtest(
     })
     result_path = output_dir / result_name
     result_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    checkpoint["stage"] = "COMPLETE"
+    checkpoint["result"] = str(result_path)
+    checkpoint["completed_chunks"] = sorted(completed_chunks)
+    checkpoint["last_error"] = None
+    _save_checkpoint(checkpoint_path, checkpoint)
+    summary["checkpoint"] = str(checkpoint_path)
     log(json.dumps(summary, ensure_ascii=False, indent=2))
     log("BACKTEST COMPLETE")
     return db, result_path, summary
