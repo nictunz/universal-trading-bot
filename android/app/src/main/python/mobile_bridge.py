@@ -14,6 +14,31 @@ from universal_bot.local_cache_core import (
 )
 
 
+RISK_PROFILES = {
+    "공격형": {
+        "order_percent_of_equity": 1500.0,
+        "max_pyramiding": 3,
+        "leverage": 50,
+        "backtest_fee_percent": 0.02,
+        "backtest_slippage_percent": 0.01,
+    },
+    "중간형": {
+        "order_percent_of_equity": 1000.0,
+        "max_pyramiding": 2,
+        "leverage": 50,
+        "backtest_fee_percent": 0.02,
+        "backtest_slippage_percent": 0.01,
+    },
+    "안전형": {
+        "order_percent_of_equity": 500.0,
+        "max_pyramiding": 1,
+        "leverage": 50,
+        "backtest_fee_percent": 0.02,
+        "backtest_slippage_percent": 0.01,
+    },
+}
+
+
 def _ssh_bridge():
     from java import jclass
 
@@ -41,6 +66,7 @@ def run_backtest(
     username: str = "",
     remote_dir: str = "",
     key_path: str = "",
+    risk_profile: str = "공격형",
 ) -> str:
     logs: list[str] = []
     overrides: dict = {}
@@ -58,6 +84,18 @@ def run_backtest(
             logs.append(
                 f"서버 전략 설정 동기화 실패 - 현재 앱 기본값 사용: {type(exc).__name__}: {exc}"
             )
+    selected_profile = risk_profile.strip() if risk_profile else "공격형"
+    if selected_profile not in RISK_PROFILES:
+        selected_profile = "공격형"
+    profile_overrides = dict(RISK_PROFILES[selected_profile])
+    overrides.update(profile_overrides)
+    logs.append(
+        f"위험 프로필 적용: {selected_profile} · "
+        f"진입 {profile_overrides['order_percent_of_equity'] / 100:.0f}배 · "
+        f"최대 {profile_overrides['max_pyramiding']}회 · 레버리지 50배"
+    )
+    logs.append("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
+
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
         timeframe.strip(),
@@ -67,6 +105,9 @@ def run_backtest(
         logs.append,
         strategy_overrides=overrides,
     )
+    summary["risk_profile"] = selected_profile
+    summary["risk_profile_overrides"] = profile_overrides
+    summary["auto_period_hint_days"] = {"공격형": 92, "중간형": 183, "안전형": 365}[selected_profile]
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
