@@ -110,11 +110,11 @@ def _optimize_risk_profile(
                 checkpoint = loaded
                 log(f"위험 프로필 체크포인트 재개: {len(checkpoint.get('completed', {}))}개 조합 완료")
             else:
-                stale = checkpoint_path.with_suffix(checkpoint_path.suffix + ".stale")
+                stale = checkpoint_path.with_suffix(checkpoint_path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
                 checkpoint_path.replace(stale)
                 log(f"전략 설정이 변경되어 이전 체크포인트 보존: {stale.name}")
         except Exception:
-            damaged = checkpoint_path.with_suffix(checkpoint_path.suffix + ".damaged")
+            damaged = checkpoint_path.with_suffix(checkpoint_path.suffix + datetime.now(timezone.utc).strftime(".damaged-%Y%m%dT%H%M%SZ"))
             checkpoint_path.replace(damaged)
             log(f"손상된 위험 프로필 체크포인트 보존: {damaged.name}")
 
