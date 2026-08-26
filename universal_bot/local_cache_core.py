@@ -316,16 +316,22 @@ def build_cache_and_backtest(
     checkpoint["last_error"] = None
     _save_checkpoint(checkpoint_path, checkpoint)
     log("\n===== CACHE ONLY BACKTEST =====")
-    result = run_cached_symbol_backtest(
-        symbol=symbol,
-        asset_class="crypto",
-        exchange="bitget",
-        timeframe=timeframe,
-        start=start_text,
-        end=end_text,
-        database_path=db,
-        overrides=dict(strategy_overrides or {}),
-    )
+    try:
+        result = run_cached_symbol_backtest(
+            symbol=symbol,
+            asset_class="crypto",
+            exchange="bitget",
+            timeframe=timeframe,
+            start=start_text,
+            end=end_text,
+            database_path=db,
+            overrides=dict(strategy_overrides or {}),
+        )
+    except Exception as exc:
+        checkpoint["stage"] = "BACKTEST_FAILED"
+        checkpoint["last_error"] = f"{type(exc).__name__}: {exc}"
+        _save_checkpoint(checkpoint_path, checkpoint)
+        raise
 
     keys = (
         "symbol", "bars", "four_exchange_volume", "volume_source_bars", "volume_source_status",
@@ -347,13 +353,13 @@ def build_cache_and_backtest(
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     result_path = output_dir / result_name
-    result_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    summary["checkpoint"] = str(checkpoint_path)
     checkpoint["stage"] = "COMPLETE"
     checkpoint["result"] = str(result_path)
     checkpoint["completed_chunks"] = sorted(completed_chunks)
     checkpoint["last_error"] = None
     _save_checkpoint(checkpoint_path, checkpoint)
-    summary["checkpoint"] = str(checkpoint_path)
+    result_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     log(json.dumps(summary, ensure_ascii=False, indent=2))
     log("BACKTEST COMPLETE")
     return db, result_path, summary
