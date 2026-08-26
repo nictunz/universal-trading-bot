@@ -1,0 +1,145 @@
+name: rolling-three-month-validation
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [precision-btc-eth-optimization]
+    types: [completed]
+
+concurrency:
+  group: rolling-three-month-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  CI_VENV: /home/kpj3669/.cache/universal-trading-bot-ci-venv
+
+jobs:
+  validate:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    name: ${{ matrix.market }} rolling 3-month validation
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { market: btc, symbol: 'BTC/USDT:USDT' }
+          - { market: eth, symbol: 'ETH/USDT:USDT' }
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: main }
+      - name: Prepare runtime and validate cache
+        run: |
+          set -euo pipefail
+          if [[ ! -x "$CI_VENV/bin/python" ]]; then python3 -m venv "$CI_VENV"; fi
+          "$CI_VENV/bin/pip" install -e .
+          "$CI_VENV/bin/python" - "${{ matrix.symbol }}" <<'PY'
+          import sqlite3,sys
+          from universal_bot.fast_backtest import default_cache_path
+          p=default_cache_path(sys.argv[1],"5m")
+          if not p.is_file() or p.stat().st_size == 0:
+              raise SystemExit(f"cache missing: {p}")
+          con=sqlite3.connect(f"file:{p}?mode=ro",uri=True)
+          result=con.execute("PRAGMA quick_check").fetchone()[0]
+          con.close()
+          if result != "ok": raise SystemExit(f"cache integrity failed: {result}")
+          print("CACHE_OK",p)
+          PY
+      - name: Validate top candidates over rolling 3-month windows
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find reports/precision -maxdepth 1 -type f -name "${{ matrix.market }}-*-run-*.json" | sort)
+          if (( ${#reports[@]} < 3 )); then
+            echo "Expected 300, 600 and 900 precision reports" >&2
+            exit 1
+          fi
+          args=()
+          for report in "${reports[@]}"; do args+=(--report "$report"); done
+          mkdir -p rolling
+          "$CI_VENV/bin/python" scripts/validate_rolling_three_month_strategy.py \
+            --symbol "${{ matrix.symbol }}" --timeframe 5m --top-per-report 5 \
+            "${args[@]}" --output "rolling/${{ matrix.market }}-rolling-3m.json"
+      - name: Strictly verify fixed costs and rolling output
+        run: |
+          python3 - "rolling/${{ matrix.market }}-rolling-3m.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          a=d["fixed_assumptions"]
+          assert a["initial_capital_usdt"] == 1000.0
+          assert a["fee_percent_per_side"] == 0.02
+          assert a["slippage_percent_per_side"] == 0.01
+          assert a["volume_break_multiplier_range"] == [3.0,25.0]
+          assert a["entry_multiplier_range"] == [5.0,15.0]
+          assert a["exchange_leverage"] == 50
+          assert a["max_entries_range"] == [1,3]
+          assert d["candidate_count"] > 0
+          assert d["best_robust_candidate"]["summary"]["windows"] >= 8
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rolling-3m-${{ matrix.market }}
+          path: rolling/${{ matrix.market }}-rolling-3m.json
+          retention-days: 30
+
+  publish:
+    name: Publish rolling 3-month validation
+    needs: validate
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: main }
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'rolling-3m-*', merge-multiple: true, path: stage }
+      - name: Create versioned reports
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)-run-${{ github.run_id }}"
+          out="reports/rolling-3m/$stamp"
+          mkdir -p "$out"
+          cp stage/*-rolling-3m.json "$out/"
+          python3 - "$out" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          lines=[
+            "# BTC·ETH 3개월 롤링 검증","",
+            "- 목표: 각 3개월 구간 수익률 +900% 이상(기말 자산 10배)",
+            "- 방식: 3개월 창을 1개월씩 이동",
+            "- 비용: 수수료 편도 0.02%, 슬리피지 편도 0.01% 고정",
+            "- PAPER/LIVE 자동 적용 없음","",
+            "|시장|후보 수|구간 수|10배 달성|중앙 수익률|최악 수익률|최고 수익률|중앙 PF|최악 MDD|중앙 거래 수|",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+          ]
+          for p in sorted(root.glob("*-rolling-3m.json")):
+              d=json.loads(p.read_text()); s=d["best_robust_candidate"]["summary"]
+              market=d["symbol"].split("/")[0]
+              lines.append(
+                f"|{market}|{d['candidate_count']}|{s['windows']}|{s['target_10x_hits']}|"
+                f"{s['median_return_percent']:.2f}%|{s['worst_return_percent']:.2f}%|"
+                f"{s['best_return_percent']:.2f}%|{s['median_profit_factor']:.3f}|"
+                f"{s['worst_max_drawdown_percent']:.2f}%|{s['median_trades']:.1f}|"
+              )
+          lines += ["","> 10배 목표 달성 여부뿐 아니라 최악 구간과 반복성을 함께 판단해야 합니다.",""]
+          (root/"summary-ko.md").write_text("\n".join(lines),encoding="utf-8")
+          PY
+      - name: Publish safely without overwriting prior reports
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/rolling-3m
+          git commit -m "ci: publish rolling three-month validation ${{ github.run_id }} [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
