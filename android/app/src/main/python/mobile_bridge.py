@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from universal_bot.fast_backtest import run_cached_symbol_backtest
 from universal_bot.local_cache_core import (
     DEFAULT_REMOTE_DIR,
     DEFAULT_SERVER,
@@ -16,27 +19,186 @@ from universal_bot.local_cache_core import (
 
 RISK_PROFILES = {
     "공격형": {
-        "order_percent_of_equity": 1500.0,
-        "max_pyramiding": 3,
-        "leverage": 50,
-        "backtest_fee_percent": 0.02,
-        "backtest_slippage_percent": 0.01,
+        "mdd_limit_percent": 40.0,
+        "entry_multiplier_min": 1,
+        "entry_multiplier_max": 25,
+        "max_entries_values": [1, 2],
     },
     "중간형": {
-        "order_percent_of_equity": 1000.0,
-        "max_pyramiding": 2,
-        "leverage": 50,
-        "backtest_fee_percent": 0.02,
-        "backtest_slippage_percent": 0.01,
+        "mdd_limit_percent": 25.0,
+        "entry_multiplier_min": 1,
+        "entry_multiplier_max": 15,
+        "max_entries_values": [1, 2],
     },
     "안전형": {
-        "order_percent_of_equity": 500.0,
-        "max_pyramiding": 1,
-        "leverage": 50,
-        "backtest_fee_percent": 0.02,
-        "backtest_slippage_percent": 0.01,
+        "mdd_limit_percent": 15.0,
+        "entry_multiplier_min": 1,
+        "entry_multiplier_max": 8,
+        "max_entries_values": [1],
     },
 }
+
+FIXED_BACKTEST = {
+    "leverage": 50,
+    "backtest_fee_percent": 0.02,
+    "backtest_slippage_percent": 0.01,
+}
+
+
+def _risk_checkpoint_path(
+    output_dir: Path,
+    symbol: str,
+    timeframe: str,
+    start_text: str,
+    end_text: str,
+    profile: str,
+) -> Path:
+    raw = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile}".encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    return output_dir / "Checkpoints" / f"risk-{digest}.json"
+
+
+def _save_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _compact_risk_result(result: dict) -> dict:
+    keys = (
+        "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
+        "estimated_costs", "return_percent", "max_drawdown_percent",
+        "fee_percent_per_side", "slippage_percent_per_side",
+    )
+    return {key: result.get(key) for key in keys}
+
+
+def _optimize_risk_profile(
+    symbol: str,
+    timeframe: str,
+    start_text: str,
+    end_text: str,
+    db: Path,
+    output_dir: Path,
+    base_overrides: dict,
+    profile_name: str,
+    log,
+) -> tuple[dict, dict]:
+    profile = RISK_PROFILES[profile_name]
+    checkpoint_path = _risk_checkpoint_path(
+        output_dir, symbol, timeframe, start_text, end_text, profile_name
+    )
+    checkpoint = {
+        "version": 1,
+        "profile": profile_name,
+        "constraints": profile,
+        "completed": {},
+    }
+    if checkpoint_path.is_file():
+        try:
+            loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if loaded.get("version") == 1 and loaded.get("profile") == profile_name:
+                checkpoint = loaded
+                log(f"위험 프로필 체크포인트 재개: {len(checkpoint.get('completed', {}))}개 조합 완료")
+        except Exception:
+            damaged = checkpoint_path.with_suffix(checkpoint_path.suffix + ".damaged")
+            checkpoint_path.replace(damaged)
+            log(f"손상된 위험 프로필 체크포인트 보존: {damaged.name}")
+
+    completed = checkpoint.setdefault("completed", {})
+    combinations = [
+        (entry, entries)
+        for entry in range(profile["entry_multiplier_min"], profile["entry_multiplier_max"] + 1)
+        for entries in profile["max_entries_values"]
+    ]
+    for position, (entry, entries) in enumerate(combinations, 1):
+        key = f"{entry}x-{entries}"
+        if key in completed:
+            continue
+        overrides = dict(base_overrides)
+        overrides.update(FIXED_BACKTEST)
+        overrides["order_percent_of_equity"] = float(entry * 100)
+        overrides["max_pyramiding"] = int(entries)
+        try:
+            result = run_cached_symbol_backtest(
+                symbol=symbol,
+                asset_class="crypto",
+                exchange="bitget",
+                timeframe=timeframe,
+                start=start_text,
+                end=end_text,
+                overrides=overrides,
+                database_path=db,
+            )
+            if float(result.get("fee_percent_per_side", -1)) != 0.02:
+                raise RuntimeError("수수료 고정값 불일치")
+            if float(result.get("slippage_percent_per_side", -1)) != 0.01:
+                raise RuntimeError("슬리피지 고정값 불일치")
+            completed[key] = {
+                "entry_multiplier": entry,
+                "max_entries": entries,
+                "result": _compact_risk_result(result),
+            }
+            checkpoint["last_completed"] = key
+            checkpoint["last_error"] = None
+            _save_json_atomic(checkpoint_path, checkpoint)
+            log(
+                f"프로필 탐색 {position}/{len(combinations)} · {entry}배/{entries}회 · "
+                f"수익률 {float(result.get('return_percent') or 0):.2f}% · "
+                f"MDD {float(result.get('max_drawdown_percent') or 0):.2f}%"
+            )
+        except Exception as exc:
+            checkpoint["last_error"] = f"{key}: {type(exc).__name__}: {exc}"
+            _save_json_atomic(checkpoint_path, checkpoint)
+            raise
+
+    viable = [
+        row for row in completed.values()
+        if int(row["result"].get("trades") or 0) > 0
+        and float(row["result"].get("max_drawdown_percent") or 0) <= profile["mdd_limit_percent"]
+    ]
+    if not viable:
+        raise RuntimeError(
+            f"{profile_name} MDD {profile['mdd_limit_percent']:.0f}% 이하 후보가 없습니다."
+        )
+    viable.sort(
+        key=lambda row: (
+            float(row["result"].get("pnl") or 0),
+            float(row["result"].get("profit_factor") or 0),
+            -float(row["result"].get("max_drawdown_percent") or 0),
+        ),
+        reverse=True,
+    )
+    best = viable[0]
+    best_overrides = dict(base_overrides)
+    best_overrides.update(FIXED_BACKTEST)
+    best_overrides["order_percent_of_equity"] = float(best["entry_multiplier"] * 100)
+    best_overrides["max_pyramiding"] = int(best["max_entries"])
+    full_result = run_cached_symbol_backtest(
+        symbol=symbol,
+        asset_class="crypto",
+        exchange="bitget",
+        timeframe=timeframe,
+        start=start_text,
+        end=end_text,
+        overrides=best_overrides,
+        database_path=db,
+    )
+    checkpoint["stage"] = "COMPLETE"
+    checkpoint["best"] = best
+    _save_json_atomic(checkpoint_path, checkpoint)
+    selection = {
+        "profile": profile_name,
+        "constraints": profile,
+        "entry_multiplier": best["entry_multiplier"],
+        "max_entries": best["max_entries"],
+        "checkpoint": str(checkpoint_path),
+        "tested_combinations": len(combinations),
+        "viable_combinations": len(viable),
+    }
+    return full_result, selection
+
 
 
 def _ssh_bridge():
@@ -87,13 +249,16 @@ def run_backtest(
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
-    profile_overrides = dict(RISK_PROFILES[selected_profile])
-    overrides.update(profile_overrides)
+    overrides.update(FIXED_BACKTEST)
+    overrides["order_percent_of_equity"] = 100.0
+    overrides["max_pyramiding"] = 1
+    profile = RISK_PROFILES[selected_profile]
     logs.append(
-        f"위험 프로필 적용: {selected_profile} · "
-        f"진입 {profile_overrides['order_percent_of_equity'] / 100:.0f}배 · "
-        f"최대 {profile_overrides['max_pyramiding']}회 · 레버리지 50배"
+        f"위험 프로필: {selected_profile} · MDD {profile['mdd_limit_percent']:.0f}% 이하 · "
+        f"진입 {profile['entry_multiplier_min']}~{profile['entry_multiplier_max']}배 · "
+        f"최대 진입 {profile['max_entries_values']}"
     )
+    logs.append("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     logs.append("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
 
     db, result, summary = build_cache_and_backtest(
@@ -105,9 +270,25 @@ def run_backtest(
         logs.append,
         strategy_overrides=overrides,
     )
+    optimized_result, risk_selection = _optimize_risk_profile(
+        symbol.strip(),
+        timeframe.strip(),
+        start_text.strip(),
+        end_text.strip(),
+        Path(db),
+        Path(output_dir),
+        overrides,
+        selected_profile,
+        logs.append,
+    )
+    for key in (
+        "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
+        "estimated_costs", "return_percent", "max_drawdown_percent",
+        "trades_log", "equity_curve", "data_start", "data_end",
+    ):
+        summary[key] = optimized_result.get(key)
     summary["risk_profile"] = selected_profile
-    summary["risk_profile_overrides"] = profile_overrides
-    summary["auto_period_hint_days"] = {"공격형": 92, "중간형": 183, "안전형": 365}[selected_profile]
+    summary["risk_profile_selection"] = risk_selection
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
