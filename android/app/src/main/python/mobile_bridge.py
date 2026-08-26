@@ -89,18 +89,30 @@ def _optimize_risk_profile(
     checkpoint_path = _risk_checkpoint_path(
         output_dir, symbol, timeframe, start_text, end_text, profile_name
     )
+    strategy_fingerprint = hashlib.sha256(
+        json.dumps(base_overrides, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
     checkpoint = {
         "version": 1,
         "profile": profile_name,
         "constraints": profile,
+        "strategy_fingerprint": strategy_fingerprint,
         "completed": {},
     }
     if checkpoint_path.is_file():
         try:
             loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-            if loaded.get("version") == 1 and loaded.get("profile") == profile_name:
+            if (
+                loaded.get("version") == 1
+                and loaded.get("profile") == profile_name
+                and loaded.get("strategy_fingerprint") == strategy_fingerprint
+            ):
                 checkpoint = loaded
                 log(f"위험 프로필 체크포인트 재개: {len(checkpoint.get('completed', {}))}개 조합 완료")
+            else:
+                stale = checkpoint_path.with_suffix(checkpoint_path.suffix + ".stale")
+                checkpoint_path.replace(stale)
+                log(f"전략 설정이 변경되어 이전 체크포인트 보존: {stale.name}")
         except Exception:
             damaged = checkpoint_path.with_suffix(checkpoint_path.suffix + ".damaged")
             checkpoint_path.replace(damaged)
