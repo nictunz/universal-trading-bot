@@ -471,7 +471,7 @@ def upload_result(
     start_text = str(meta.get("requested_start", ""))
     end_text = str(meta.get("requested_end", ""))
     if not start_text or not end_text or not server_upload_eligible(start_text, end_text):
-        raise RuntimeError("서버 업로드 차단: 1년 범위(360~370일)로 완료된 캐시만 업로드할 수 있습니다.")
+        raise RuntimeError("서버 업로드 차단: 1일~10년 범위로 완료·검증된 캐시만 업로드할 수 있습니다.")
     if not bool(meta.get("server_upload_eligible", False)):
         raise RuntimeError("서버 업로드 차단: 결과 파일이 서버 업로드용으로 검증되지 않았습니다.")
 
