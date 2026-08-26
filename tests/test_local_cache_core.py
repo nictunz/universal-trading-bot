@@ -15,8 +15,8 @@ def test_one_year_cache_is_upload_eligible():
     assert result == "latest-btc-one-year-backtest.json"
 
 
-def test_short_cache_cannot_overwrite_one_year_cache():
-    assert server_upload_eligible("2026-08-22", "2026-08-24") is False
+def test_short_cache_is_uploadable_without_overwriting_one_year_cache():
+    assert server_upload_eligible("2026-08-22", "2026-08-24") is True
     db, result = cache_file_names("ETH/USDT:USDT", "5m", "2026-08-22", "2026-08-24")
     assert db == "eth-20260822-20260824-5m.db"
     assert result == "latest-eth-20260822-20260824-backtest.json"
