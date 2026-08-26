@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +75,69 @@ def _compact_risk_result(result: dict) -> dict:
     return {key: result.get(key) for key in keys}
 
 
+def _profile_candidates(
+    profile_name: str,
+    trials: int,
+    seed_material: str,
+) -> list[dict]:
+    profile = RISK_PROFILES[profile_name]
+    seed = int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    while len(candidates) < trials:
+        one_min = round(rng.uniform(0.05, 0.55), 2)
+        one_max = round(rng.uniform(max(one_min + 0.15, 0.4), 2.5), 2)
+        tp_min = round(rng.uniform(0.10, 0.80), 2)
+        tp_max = round(rng.uniform(max(tp_min + 0.10, 0.5), 3.0), 2)
+        sl_min = round(rng.uniform(0.15, 1.20), 2)
+        sl_max = round(rng.uniform(max(sl_min + 0.15, 0.8), 4.0), 2)
+        os_max = round(rng.uniform(18, 42), 1)
+        os_min = round(rng.uniform(0, max(1, os_max - 8)), 1)
+        ob_min = round(rng.uniform(58, 82), 1)
+        ob_max = round(rng.uniform(min(99, ob_min + 8), 100), 1)
+        entry = rng.randint(profile["entry_multiplier_min"], profile["entry_multiplier_max"])
+        params = {
+            **FIXED_BACKTEST,
+            "entry_multiplier": entry,
+            "order_percent_of_equity": float(entry * 100),
+            "max_pyramiding": rng.choice(profile["max_entries_values"]),
+            "volume_lookback": rng.randint(20, 160),
+            "volume_break_multiplier": round(rng.uniform(3.0, 25.0), 2),
+            "min_one_bar_vol": one_min,
+            "max_one_bar_vol": one_max,
+            "volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288, 432]),
+            "tp_vol_multiplier": round(rng.uniform(0.15, 2.5), 2),
+            "sl_vol_multiplier": round(rng.uniform(0.20, 3.5), 2),
+            "min_tp_percent": tp_min,
+            "max_tp_percent": tp_max,
+            "min_sl_percent": sl_min,
+            "max_sl_percent": sl_max,
+            "use_nbar_volatility_block": rng.random() < 0.75,
+            "nbar_volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288]),
+            "max_nbar_volatility": round(rng.uniform(0.8, 10.0), 2),
+            "use_adx_filter": rng.random() < 0.65,
+            "adx_length": rng.randint(5, 30),
+            "adx_min": round(rng.uniform(5, 35), 1),
+            "adx_max": round(rng.uniform(45, 100), 1),
+            "use_rsi_filter": True,
+            "rsi_length": rng.randint(3, 24),
+            "rsi_oversold_min": os_min,
+            "rsi_oversold_max": os_max,
+            "rsi_overbought_min": ob_min,
+            "rsi_overbought_max": ob_max,
+            "cooldown_bars": rng.randint(0, 36),
+            "reentry_bars": rng.randint(0, 24),
+            "block_weekend": rng.random() < 0.15,
+            "excluded_hours": rng.choice(["", "00", "00,13,15,16,17,18,23", "13,15,16,17,18,23"]),
+        }
+        identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
+        if identity not in seen:
+            seen.add(identity)
+            candidates.append(params)
+    return candidates
+
+
 def _optimize_risk_profile(
     symbol: str,
     timeframe: str,
@@ -83,6 +147,7 @@ def _optimize_risk_profile(
     output_dir: Path,
     base_overrides: dict,
     profile_name: str,
+    trials: int,
     log,
 ) -> tuple[dict, dict]:
     profile = RISK_PROFILES[profile_name]
@@ -119,19 +184,19 @@ def _optimize_risk_profile(
             log(f"손상된 위험 프로필 체크포인트 보존: {damaged.name}")
 
     completed = checkpoint.setdefault("completed", {})
-    combinations = [
-        (entry, entries)
-        for entry in range(profile["entry_multiplier_min"], profile["entry_multiplier_max"] + 1)
-        for entries in profile["max_entries_values"]
-    ]
-    for position, (entry, entries) in enumerate(combinations, 1):
-        key = f"{entry}x-{entries}"
+    seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}"
+    combinations = _profile_candidates(profile_name, trials, seed_material)
+    checkpoint["requested_trials"] = trials
+    for position, params in enumerate(combinations, 1):
+        param_identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
+        key = f"trial-{position:03d}-{hashlib.sha256(param_identity.encode('utf-8')).hexdigest()[:10]}"
         if key in completed:
             continue
         overrides = dict(base_overrides)
-        overrides.update(FIXED_BACKTEST)
-        overrides["order_percent_of_equity"] = float(entry * 100)
-        overrides["max_pyramiding"] = int(entries)
+        engine_params = {k: v for k, v in params.items() if k != "entry_multiplier"}
+        overrides.update(engine_params)
+        entry = int(params["entry_multiplier"])
+        entries = int(params["max_pyramiding"])
         try:
             result = run_cached_symbol_backtest(
                 symbol=symbol,
@@ -150,6 +215,7 @@ def _optimize_risk_profile(
             completed[key] = {
                 "entry_multiplier": entry,
                 "max_entries": entries,
+                "parameters": params,
                 "result": _compact_risk_result(result),
             }
             checkpoint["last_completed"] = key
@@ -184,9 +250,11 @@ def _optimize_risk_profile(
     )
     best = viable[0]
     best_overrides = dict(base_overrides)
-    best_overrides.update(FIXED_BACKTEST)
-    best_overrides["order_percent_of_equity"] = float(best["entry_multiplier"] * 100)
-    best_overrides["max_pyramiding"] = int(best["max_entries"])
+    best_engine_params = {
+        key: value for key, value in best["parameters"].items()
+        if key != "entry_multiplier"
+    }
+    best_overrides.update(best_engine_params)
     full_result = run_cached_symbol_backtest(
         symbol=symbol,
         asset_class="crypto",
@@ -206,8 +274,10 @@ def _optimize_risk_profile(
         "entry_multiplier": best["entry_multiplier"],
         "max_entries": best["max_entries"],
         "checkpoint": str(checkpoint_path),
+        "requested_trials": trials,
         "tested_combinations": len(combinations),
         "viable_combinations": len(viable),
+        "parameters": best["parameters"],
     }
     return full_result, selection
 
@@ -241,6 +311,7 @@ def run_backtest(
     remote_dir: str = "",
     key_path: str = "",
     risk_profile: str = "공격형",
+    optimization_trials: int = 50,
 ) -> str:
     logs: list[str] = []
     overrides: dict = {}
@@ -259,6 +330,9 @@ def run_backtest(
                 f"서버 전략 설정 동기화 실패 - 현재 앱 기본값 사용: {type(exc).__name__}: {exc}"
             )
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
+    optimization_trials = int(optimization_trials)
+    if optimization_trials < 1 or optimization_trials > 300:
+        raise ValueError("최적화 조합 수는 1~300이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
     overrides.update(FIXED_BACKTEST)
@@ -291,6 +365,7 @@ def run_backtest(
         Path(output_dir),
         overrides,
         selected_profile,
+        optimization_trials,
         logs.append,
     )
     for key in (
