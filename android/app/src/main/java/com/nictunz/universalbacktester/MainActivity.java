@@ -263,13 +263,13 @@ public class MainActivity extends android.app.Activity {
         inspectCacheButton.setOnClickListener(v -> inspectServerCache(inspectCacheButton));
         serverCard.addView(inspectCacheButton, marginTop(8));
 
-        uploadButton = actionButton("⬆ 1년 결과 서버 업로드", SUCCESS);
+        uploadButton = actionButton("⬆ 완료된 결과 서버 업로드 (최대 10년)", SUCCESS);
         uploadButton.setEnabled(false);
         uploadButton.setAlpha(0.45f);
         uploadButton.setOnClickListener(v -> uploadLast());
         serverCard.addView(uploadButton, marginTop(8));
 
-        TextView protection = text("안전장치: 360~370일로 완성된 캐시만 서버 업로드가 활성화됩니다.", 11, MUTED, false);
+        TextView protection = text("안전장치: 1일~10년 범위에서 완성·검증된 캐시만 서버 업로드가 활성화됩니다.", 11, MUTED, false);
         serverCard.addView(protection, marginTop(8));
 
         LinearLayout logCard = panel();
