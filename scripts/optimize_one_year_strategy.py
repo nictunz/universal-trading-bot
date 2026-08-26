@@ -23,7 +23,7 @@ FIXED = {
 }
 
 
-def sample(rng: random.Random) -> dict[str, Any]:
+def sample(rng: random.Random, volume_min: float = 1.2, volume_max: float = 15.0) -> dict[str, Any]:
     one_min = round(rng.uniform(0.05, 0.55), 2)
     one_max = round(rng.uniform(max(one_min + 0.15, 0.4), 2.5), 2)
     tp_min = round(rng.uniform(0.10, 0.80), 2)
@@ -41,7 +41,7 @@ def sample(rng: random.Random) -> dict[str, Any]:
         "order_percent_of_equity": entry_multiplier * 100.0,
         "max_pyramiding": rng.randint(1, 3),
         "volume_lookback": rng.randint(20, 160),
-        "volume_break_multiplier": round(rng.uniform(1.2, 15.0), 2),
+        "volume_break_multiplier": round(rng.uniform(volume_min, volume_max), 2),
         "min_one_bar_vol": one_min,
         "max_one_bar_vol": one_max,
         "volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288, 432]),
@@ -99,14 +99,18 @@ def main() -> None:
     p.add_argument("--start-trial", type=int, default=1)
     p.add_argument("--end-trial", type=int, default=0, help="inclusive; 0 means --trials")
     p.add_argument("--replay-trials", default="")
+    p.add_argument("--volume-min", type=float, default=1.2)
+    p.add_argument("--volume-max", type=float, default=15.0)
     p.add_argument("--output", default="reports/latest-strategy-optimization.json")
     args = p.parse_args()
+    if args.volume_min < 0 or args.volume_max <= args.volume_min:
+        raise SystemExit("invalid volume multiplier range")
     cache = default_cache_path(args.symbol, args.timeframe)
     if not cache.is_file():
         raise SystemExit(f"cache missing: {cache}")
 
     rng = random.Random(args.seed)
-    candidates = [sample(rng) for _ in range(max(1, args.trials))]
+    candidates = [sample(rng, args.volume_min, args.volume_max) for _ in range(max(1, args.trials))]
     replay = {int(x.strip()) for x in args.replay_trials.split(",") if x.strip()}
     end_trial = args.end_trial if args.end_trial > 0 else args.trials
     selected = [
@@ -121,6 +125,10 @@ def main() -> None:
                 args.symbol, "crypto", "bitget", args.timeframe,
                 overrides=engine_params, database_path=cache,
             )
+            fee = float(result.get("fee_percent_per_side") or -1)
+            slippage = float(result.get("slippage_percent_per_side") or -1)
+            if abs(fee - FIXED["backtest_fee_percent"]) > 1e-12 or abs(slippage - FIXED["backtest_slippage_percent"]) > 1e-12:
+                raise RuntimeError(f"fixed cost mismatch: fee={fee} slippage={slippage}")
             ranked.append({"trial": i, "score": score(result), "parameters": params, "result": compact(result)})
             ranked.sort(key=lambda x: x["score"], reverse=True)
             ranked = ranked[:20]
@@ -159,6 +167,7 @@ def main() -> None:
             "maximum_total_notional_multiplier": 45.0,
             "fee_percent_per_side": 0.02,
             "slippage_percent_per_side": 0.01,
+            "volume_break_multiplier_range": [args.volume_min, args.volume_max],
         },
         "objective": "net pnl; reject fewer than 30 trades or MDD >= 100%; drawdown/PF tie-break",
         "warning": "Research only. Results are not automatically applied to PAPER or LIVE.",
