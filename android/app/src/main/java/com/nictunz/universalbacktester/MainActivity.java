@@ -57,6 +57,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView symbolInput;
     private AutoCompleteTextView timeframeInput;
     private AutoCompleteTextView riskProfileInput;
+    private AutoCompleteTextView trialCountInput;
     private EditText startInput;
     private EditText endInput;
     private EditText hostInput;
@@ -186,6 +187,15 @@ public class MainActivity extends android.app.Activity {
                 "기간은 위에서 직접 선택합니다. 공격형=MDD 40%·1~25배·1~2회, 중간형=MDD 25%·1~15배·1~2회, 안전형=MDD 15%·1~8배·1회 범위에서 최적값을 찾습니다.",
                 11, MUTED, false
         ), marginTop(7));
+
+        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300"}, "50");
+        backtestCard.addView(labeled("최적화 조합 수 (1~300 직접 입력 가능)", trialCountInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "빠른 조합 수",
+                trialCountInput,
+                new String[]{"50회", "100회", "200회", "300회"},
+                new String[]{"50", "100", "200", "300"}
+        ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
@@ -372,6 +382,17 @@ public class MainActivity extends android.app.Activity {
         String symbol = symbolInput.getText().toString().trim();
         String timeframe = timeframeInput.getText().toString().trim();
         String riskProfile = riskProfileInput.getText().toString().trim();
+        int optimizationTrials;
+        try {
+            optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
+        } catch (Exception ignored) {
+            toast("조합 수는 1~300 사이 숫자로 입력하세요.");
+            return;
+        }
+        if (optimizationTrials < 1 || optimizationTrials > 300) {
+            toast("조합 수는 1~300 사이로 입력하세요.");
+            return;
+        }
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
         Calendar startCal = parseDate(start);
@@ -393,7 +414,8 @@ public class MainActivity extends android.app.Activity {
         lastSummary = null;
         enableUpload(false);
         enableResultActions(false);
-        logText.setText("로컬 캐시 생성 및 백테스트 시작...\n프로필: " + riskProfile + "\n");
+        logText.setText("로컬 캐시 생성 및 백테스트 시작...\n프로필: " + riskProfile
+                + " · 조합: " + optimizationTrials + "회\n");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         File output = new File(getFilesDir(), "UniversalTradingBotCache");
@@ -412,7 +434,8 @@ public class MainActivity extends android.app.Activity {
                         userInput.getText().toString(),
                         remoteInput.getText().toString(),
                         privateKeyPath,
-                        riskProfile
+                        riskProfile,
+                        optimizationTrials
                 ).toString();
                 JSONObject obj = new JSONObject(jsonText);
                 JSONObject summary = obj.getJSONObject("summary");
