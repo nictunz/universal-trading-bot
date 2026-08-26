@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-25T10:56:37Z
-- Source commit: 864b2c3e05ca38b7b395cba34ddf563f8ac025ed
+- Generated UTC: 2026-08-26T07:23:25Z
+- Source commit: 6600315d39d57fc479900d859da39f945a652c7c
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -11,22 +11,28 @@
 
 - Runtime deploy: success
 - Service: success
-- HTTP: failure
+- HTTP: success
 - Socket: success
 
 ## Service
 ```text
-{"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":[],"live_halted":[]}
+{"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=33654.1s max=90s","RuntimeError: mobile relay is stale: age=33654.5s max=90s"],"live_halted":[]}
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    55131
+PID:    75789
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
 ```text
-http://127.0.0.1:8000/health 200 {"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":[],"live_halted":[]}
+http://127.0.0.1:8000/health 200 {"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=33654.1s max=90s","RuntimeError: mobile relay is stale: age=33654.5s max=90s"],"live_halted":[]}
+http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","timeframe":"5m","timestamp":"2026-08-25T21:55:00+00:00","position":{"side":"LONG","size":0.18973147936164209,"entry":79059.1,"tp":80407.92852775884,"sl":77710.27147224118,"entries":1},"signal":null,"signal_reason":"NO_SIGNAL","values":{"strategy":"Volume Strategy FINAL Universal v15","version":"v15","volume_ratio":0.685592935583835,"volume_break":false,"one_bar_volatility":0.0633749852061257,"one_bar_min":0.1,"one_bar_max":1,"one_bar_ok":false,"nbar_range":2.7051792828685186,"nbar_bars":150,"nbar_block_range":3.9664567536306428,"nbar_block_bars":200,"nbar_max_allowed":5,"nbar_ok":true,"nbar_blocked":false
+http://127.0.0.1:8000/ 200 <!doctype html>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Universal Trading Bot</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f14;color:#eef2f7;margin:0;padding:14px}.wrap{max-width:1480px;margin:auto}.top{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.bar,.card{background:#17202c;border:1px solid #334155;border-radius:14px;padding:14px;margin-bottom:12px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.muted{color:#9daabd}.metric{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #2b3747;paddin
 ```
 
 ## Socket
