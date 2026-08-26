@@ -1,4 +1,4 @@
-from android.app.src.main.python.mobile_bridge import FIXED_BACKTEST, RISK_PROFILES, _profile_candidates
+from android.app.src.main.python.mobile_bridge import (\n    FIXED_BACKTEST,\n    OPTIMIZED_STRATEGY_FIELDS,\n    RISK_PROFILES,\n    _profile_candidates,\n)
 
 
 def test_mobile_risk_profiles_use_mdd_and_search_ranges():
@@ -29,6 +29,7 @@ def test_mobile_risk_profiles_use_mdd_and_search_ranges():
 
 def test_mobile_profile_costs_are_fixed():
     assert FIXED_BACKTEST == {
+        "initial_capital": 1000.0,
         "leverage": 50,
         "backtest_fee_percent": 0.02,
         "backtest_slippage_percent": 0.01,
@@ -50,3 +51,13 @@ def test_trial_ranges_follow_selected_profile():
     assert len(safe) == 300
     assert all(1 <= row["entry_multiplier"] <= 8 for row in safe)
     assert all(row["max_pyramiding"] == 1 for row in safe)
+
+
+def test_every_effective_v15_strategy_field_is_sampled():
+    candidate = _profile_candidates("중간형", 1, "coverage")[0]
+    assert not (candidate["allow_long"] is False and candidate["allow_short"] is False)
+    assert set(OPTIMIZED_STRATEGY_FIELDS).issubset(candidate)
+    assert candidate["initial_capital"] == 1000.0
+    assert candidate["leverage"] == 50
+    assert candidate["backtest_fee_percent"] == 0.02
+    assert candidate["backtest_slippage_percent"] == 0.01
