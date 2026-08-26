@@ -40,10 +40,47 @@ RISK_PROFILES = {
 }
 
 FIXED_BACKTEST = {
+    "initial_capital": 1000.0,
     "leverage": 50,
     "backtest_fee_percent": 0.02,
     "backtest_slippage_percent": 0.01,
 }
+
+
+OPTIMIZED_STRATEGY_FIELDS = (
+    "allow_long",
+    "allow_short",
+    "order_percent_of_equity",
+    "max_pyramiding",
+    "volume_lookback",
+    "volume_break_multiplier",
+    "min_one_bar_vol",
+    "max_one_bar_vol",
+    "volatility_bars",
+    "tp_vol_multiplier",
+    "sl_vol_multiplier",
+    "min_tp_percent",
+    "max_tp_percent",
+    "min_sl_percent",
+    "max_sl_percent",
+    "use_nbar_volatility_block",
+    "nbar_volatility_bars",
+    "max_nbar_volatility",
+    "use_adx_filter",
+    "adx_length",
+    "adx_min",
+    "adx_max",
+    "use_rsi_filter",
+    "rsi_length",
+    "rsi_oversold_min",
+    "rsi_oversold_max",
+    "rsi_overbought_min",
+    "rsi_overbought_max",
+    "cooldown_bars",
+    "reentry_bars",
+    "block_weekend",
+    "excluded_hours",
+)
 
 
 def _risk_checkpoint_path(
@@ -97,8 +134,11 @@ def _profile_candidates(
         ob_min = round(rng.uniform(58, 82), 1)
         ob_max = round(rng.uniform(min(99, ob_min + 8), 100), 1)
         entry = rng.randint(profile["entry_multiplier_min"], profile["entry_multiplier_max"])
+        allow_long, allow_short = rng.choice([(True, True), (True, False), (False, True)])
         params = {
             **FIXED_BACKTEST,
+            "allow_long": allow_long,
+            "allow_short": allow_short,
             "entry_multiplier": entry,
             "order_percent_of_equity": float(entry * 100),
             "max_pyramiding": rng.choice(profile["max_entries_values"]),
@@ -120,7 +160,7 @@ def _profile_candidates(
             "adx_length": rng.randint(5, 30),
             "adx_min": round(rng.uniform(5, 35), 1),
             "adx_max": round(rng.uniform(45, 100), 1),
-            "use_rsi_filter": True,
+            "use_rsi_filter": rng.random() < 0.85,
             "rsi_length": rng.randint(3, 24),
             "rsi_oversold_min": os_min,
             "rsi_oversold_max": os_max,
@@ -131,6 +171,9 @@ def _profile_candidates(
             "block_weekend": rng.random() < 0.15,
             "excluded_hours": rng.choice(["", "00", "00,13,15,16,17,18,23", "13,15,16,17,18,23"]),
         }
+        missing = [field for field in OPTIMIZED_STRATEGY_FIELDS if field not in params]
+        if missing:
+            raise RuntimeError(f"최적화 파라미터 누락: {missing}")
         identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
         if identity not in seen:
             seen.add(identity)
@@ -275,6 +318,8 @@ def _optimize_risk_profile(
         "max_entries": best["max_entries"],
         "checkpoint": str(checkpoint_path),
         "requested_trials": trials,
+        "optimized_strategy_fields": list(OPTIMIZED_STRATEGY_FIELDS),
+        "fixed_values": dict(FIXED_BACKTEST),
         "tested_combinations": len(combinations),
         "viable_combinations": len(viable),
         "parameters": best["parameters"],
