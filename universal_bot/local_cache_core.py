@@ -19,8 +19,10 @@ EXCHANGES = ("binance", "bitget", "okx", "bybit")
 DEFAULT_SERVER = "34.132.172.40"
 DEFAULT_USER = "kpj3669"
 DEFAULT_REMOTE_DIR = "/home/kpj3669/.cache/universal-trading-bot"
-MIN_SERVER_UPLOAD_DAYS = 360
-MAX_SERVER_UPLOAD_DAYS = 370
+MIN_SERVER_UPLOAD_DAYS = 1
+MAX_SERVER_UPLOAD_DAYS = 3660
+ONE_YEAR_MIN_DAYS = 360
+ONE_YEAR_MAX_DAYS = 370
 MAX_BACKTEST_DAYS = 3660
 COMMON_SYMBOLS = (
     "BTC/USDT:USDT",
@@ -69,9 +71,14 @@ def server_upload_eligible(start_text: str, end_text: str) -> bool:
     return MIN_SERVER_UPLOAD_DAYS <= days <= MAX_SERVER_UPLOAD_DAYS
 
 
+def one_year_cache_range(start_text: str, end_text: str) -> bool:
+    days = inclusive_days(start_text, end_text)
+    return ONE_YEAR_MIN_DAYS <= days <= ONE_YEAR_MAX_DAYS
+
+
 def cache_file_names(symbol: str, timeframe: str, start_text: str, end_text: str) -> tuple[str, str]:
     slug = symbol_slug(symbol)
-    if server_upload_eligible(start_text, end_text):
+    if one_year_cache_range(start_text, end_text):
         return f"{slug}-1y-{timeframe}.db", f"latest-{slug}-one-year-backtest.json"
     start_tag = start_text.replace("-", "")
     end_tag = end_text.replace("-", "")
@@ -259,7 +266,7 @@ def build_cache_and_backtest(
     else:
         log(f"체크포인트 생성: {checkpoint_path}")
     if upload_eligible:
-        log("서버 업로드 보호: 1년 범위 확인됨 - 완료 후 업로드 가능")
+        log("서버 업로드 보호: 1일~10년 범위 확인됨 - 완료 후 업로드 가능")
     else:
         log("서버 업로드 보호: 테스트/비1년 범위 - 서버 업로드 자동 잠금")
 
@@ -413,7 +420,7 @@ def upload_to_server(
     start_text = str(result_meta.get("requested_start", ""))
     end_text = str(result_meta.get("requested_end", ""))
     if not start_text or not end_text or not server_upload_eligible(start_text, end_text):
-        raise RuntimeError("서버 업로드 차단: 1년 범위(360~370일)로 완료된 캐시만 서버에 업로드할 수 있습니다.")
+        raise RuntimeError("서버 업로드 차단: 1일~10년 범위로 완료·검증된 캐시만 서버에 업로드할 수 있습니다.")
     if not bool(result_meta.get("server_upload_eligible", False)):
         raise RuntimeError("서버 업로드 차단: 결과 파일이 서버 업로드용으로 검증되지 않았습니다.")
 
