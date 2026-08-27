@@ -232,7 +232,7 @@ def _optimize_risk_profile(
     checkpoint["requested_trials"] = trials
     for position, params in enumerate(combinations, 1):
         param_identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
-        key = f"trial-{position:03d}-{hashlib.sha256(param_identity.encode('utf-8')).hexdigest()[:10]}"
+        key = f"trial-{position:04d}-{hashlib.sha256(param_identity.encode('utf-8')).hexdigest()[:10]}"
         if key in completed:
             continue
         overrides = dict(base_overrides)
@@ -376,8 +376,8 @@ def run_backtest(
             )
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
     optimization_trials = int(optimization_trials)
-    if optimization_trials < 1 or optimization_trials > 300:
-        raise ValueError("최적화 조합 수는 1~300이어야 합니다.")
+    if optimization_trials < 1 or optimization_trials > 1000:
+        raise ValueError("최적화 조합 수는 1~1000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
     overrides.update(FIXED_BACKTEST)
