@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,43 @@ from universal_bot.local_cache_core import (
     build_cache_and_backtest,
     server_upload_eligible,
 )
+
+
+
+_CONTROL = threading.Condition()
+_CONTROL_PAUSED = False
+_CONTROL_STOP = False
+
+
+def reset_optimization_control() -> None:
+    global _CONTROL_PAUSED, _CONTROL_STOP
+    with _CONTROL:
+        _CONTROL_PAUSED = False
+        _CONTROL_STOP = False
+        _CONTROL.notify_all()
+
+
+def set_optimization_paused(paused: bool) -> None:
+    global _CONTROL_PAUSED
+    with _CONTROL:
+        _CONTROL_PAUSED = bool(paused)
+        _CONTROL.notify_all()
+
+
+def request_optimization_stop() -> None:
+    global _CONTROL_STOP, _CONTROL_PAUSED
+    with _CONTROL:
+        _CONTROL_STOP = True
+        _CONTROL_PAUSED = False
+        _CONTROL.notify_all()
+
+
+def _wait_for_optimization_control() -> None:
+    with _CONTROL:
+        while _CONTROL_PAUSED and not _CONTROL_STOP:
+            _CONTROL.wait(timeout=1.0)
+        if _CONTROL_STOP:
+            raise RuntimeError("사용자가 백테스트를 중지했습니다. 완료된 체크포인트는 보존됩니다.")
 
 
 RISK_PROFILES = {
@@ -231,6 +269,7 @@ def _optimize_risk_profile(
     combinations = _profile_candidates(profile_name, trials, seed_material)
     checkpoint["requested_trials"] = trials
     for position, params in enumerate(combinations, 1):
+        _wait_for_optimization_control()
         param_identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
         key = f"trial-{position:04d}-{hashlib.sha256(param_identity.encode('utf-8')).hexdigest()[:10]}"
         if key in completed:
@@ -400,6 +439,7 @@ def run_backtest(
         Path(output_dir),
         logs.append,
         strategy_overrides=overrides,
+        control_check=_wait_for_optimization_control,
     )
     optimized_result, risk_selection = _optimize_risk_profile(
         symbol.strip(),
