@@ -43,12 +43,12 @@ def test_mobile_profile_costs_are_fixed():
 
 def test_mobile_trials_are_deterministic_unique_and_incremental():
     first_50 = _profile_candidates("공격형", 50, "same-run")
-    first_100 = _profile_candidates("공격형", 100, "same-run")
-    assert first_100[:50] == first_50
-    assert len({str(sorted(row.items())) for row in first_100}) == 100
-    assert all(1 <= row["entry_multiplier"] <= 25 for row in first_100)
-    assert all(row["max_pyramiding"] in (1, 2) for row in first_100)
-    assert all(3.0 <= row["volume_break_multiplier"] <= 25.0 for row in first_100)
+    first_1000 = _profile_candidates("공격형", 1000, "same-run")
+    assert first_1000[:50] == first_50
+    assert len({str(sorted(row.items())) for row in first_1000}) == 1000
+    assert all(1 <= row["entry_multiplier"] <= 25 for row in first_1000)
+    assert all(row["max_pyramiding"] in (1, 2) for row in first_1000)
+    assert all(3.0 <= row["volume_break_multiplier"] <= 25.0 for row in first_1000)
 
 
 def test_trial_ranges_follow_selected_profile():
