@@ -37,6 +37,16 @@
             android:screenOrientation="unspecified" />
 
         <service
+            android:name=".BacktestForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started long-running local historical data validation and strategy optimization with pause, resume, stop, and checkpoint recovery" />
+        </service>
+
+        <service
             android:name=".MobileMarketRelayService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
