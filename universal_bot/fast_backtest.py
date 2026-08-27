@@ -66,6 +66,7 @@ def run_cached_symbol_backtest(
     end: str | None = None,
     overrides: dict[str, Any] | None = None,
     database_path: str | Path | None = None,
+    include_details: bool = True,
 ) -> dict[str, Any]:
     """Run a backtest without any network calls.
 
@@ -125,7 +126,7 @@ def run_cached_symbol_backtest(
         raise ValueError("insufficient common four-exchange cached volume history")
 
     result = run_backtest(df, settings, normalized_volume_ratio=normalized)
-    return {
+    payload = {
         "strategy": "Volume Strategy FINAL Universal v15",
         "symbol": symbol,
         "asset_class": "crypto",
@@ -153,6 +154,8 @@ def run_cached_symbol_backtest(
         "slippage_percent_per_side": settings.backtest_slippage_percent,
         "return_percent": result.return_percent,
         "max_drawdown_percent": result.max_drawdown_percent,
-        "trades_log": result.trades_log,
-        "equity_curve": result.equity_curve,
     }
+    if include_details:
+        payload["trades_log"] = result.trades_log
+        payload["equity_curve"] = result.equity_curve
+    return payload
