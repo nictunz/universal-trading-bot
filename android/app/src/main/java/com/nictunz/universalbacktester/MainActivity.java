@@ -188,13 +188,13 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
-        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300"}, "50");
-        backtestCard.addView(labeled("최적화 조합 수 (1~300 직접 입력 가능)", trialCountInput), marginTop(12));
+        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300", "500", "750", "1000"}, "50");
+        backtestCard.addView(labeled("최적화 조합 수 (1~1000 직접 입력 가능)", trialCountInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
                 "빠른 조합 수",
                 trialCountInput,
-                new String[]{"50회", "100회", "200회", "300회"},
-                new String[]{"50", "100", "200", "300"}
+                new String[]{"50회", "100회", "300회", "500회", "1000회"},
+                new String[]{"50", "100", "300", "500", "1000"}
         ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
@@ -230,6 +230,12 @@ public class MainActivity extends android.app.Activity {
         Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
         savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
         resultActions.addView(savedResultsButton, marginTop(8));
+        Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
+        shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
+        resultActions.addView(shareResultButton, marginTop(8));
+        Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
+        shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
+        resultActions.addView(shareCacheButton, marginTop(8));
         enableResultActions(false);
 
         LinearLayout serverCard = panel();
@@ -386,11 +392,11 @@ public class MainActivity extends android.app.Activity {
         try {
             optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
         } catch (Exception ignored) {
-            toast("조합 수는 1~300 사이 숫자로 입력하세요.");
+            toast("조합 수는 1~1000 사이 숫자로 입력하세요.");
             return;
         }
-        if (optimizationTrials < 1 || optimizationTrials > 300) {
-            toast("조합 수는 1~300 사이로 입력하세요.");
+        if (optimizationTrials < 1 || optimizationTrials > 1000) {
+            toast("조합 수는 1~1000 사이로 입력하세요.");
             return;
         }
         String start = startInput.getText().toString().trim();
@@ -466,6 +472,34 @@ public class MainActivity extends android.app.Activity {
                 });
             }
         });
+    }
+
+    private void shareBacktestFile(String path, String mimeType, String chooserTitle) {
+        if (path == null || path.trim().isEmpty()) {
+            toast("먼저 백테스트를 완료하거나 저장된 결과를 불러오세요.");
+            return;
+        }
+        File file = new File(path);
+        if (!file.isFile()) {
+            toast("공유할 파일을 찾을 수 없습니다.");
+            return;
+        }
+        try {
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this,
+                    getPackageName() + ".fileprovider",
+                    file
+            );
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType(mimeType);
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.putExtra(Intent.EXTRA_SUBJECT, file.getName());
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(intent, chooserTitle));
+        } catch (Exception e) {
+            logText.append("\nFILE SHARE ERROR\n" + stackMessage(e) + "\n");
+            toast("파일 공유 실패 - 실행 로그를 확인하세요.");
+        }
     }
 
     private void loadPhoneKey() {
