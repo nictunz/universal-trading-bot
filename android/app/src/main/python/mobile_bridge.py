@@ -404,7 +404,7 @@ def run_backtest(
 
     def log(message: object) -> None:
         line = str(message)
-        log(line)
+        logs.append(line)
         with progress_path.open("a", encoding="utf-8") as stream:
             stream.write(line + "\n")
 
