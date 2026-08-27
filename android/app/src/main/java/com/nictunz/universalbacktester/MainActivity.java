@@ -6,9 +6,11 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -67,6 +69,9 @@ public class MainActivity extends android.app.Activity {
     private Button uploadButton;
     private Button sshTestButton;
     private Button keyButton;
+    private Button pauseBacktestButton;
+    private Button resumeBacktestButton;
+    private Button stopBacktestButton;
     private TextView statusText;
     private TextView logText;
     private TextView publicKeyText;
@@ -84,6 +89,15 @@ public class MainActivity extends android.app.Activity {
     private String lastResultPath = "";
     private String privateKeyPath = "";
     private boolean lastUploadEligible = false;
+    private String appliedServiceResultPath = "";
+
+    private final Runnable backtestStatusPoller = new Runnable() {
+        @Override
+        public void run() {
+            refreshBackgroundBacktestStatus();
+            main.postDelayed(this, 1500);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -94,6 +108,19 @@ public class MainActivity extends android.app.Activity {
         setContentView(buildUi());
         loadPhoneKey();
         loadSavedResults(true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        main.removeCallbacks(backtestStatusPoller);
+        main.post(backtestStatusPoller);
+    }
+
+    @Override
+    protected void onPause() {
+        main.removeCallbacks(backtestStatusPoller);
+        super.onPause();
     }
 
     @Override
@@ -200,9 +227,20 @@ public class MainActivity extends android.app.Activity {
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
 
-        runButton = actionButton("▶ 캐시 생성 + 백테스트", PRIMARY);
+        runButton = actionButton("▶ 백그라운드 캐시 생성 + 백테스트", PRIMARY);
         runButton.setOnClickListener(v -> runBacktest());
         backtestCard.addView(runButton, marginTop(12));
+
+        LinearLayout controlRow = new LinearLayout(this);
+        controlRow.setOrientation(LinearLayout.HORIZONTAL);
+        pauseBacktestButton = smallButton("⏸ 일시중지", v -> controlBacktest(BacktestForegroundService.ACTION_PAUSE));
+        resumeBacktestButton = smallButton("▶ 재개", v -> controlBacktest(BacktestForegroundService.ACTION_RESUME));
+        stopBacktestButton = smallButton("■ 중지", v -> controlBacktest(BacktestForegroundService.ACTION_STOP));
+        controlRow.addView(pauseBacktestButton, smallButtonParams());
+        controlRow.addView(resumeBacktestButton, smallButtonParams());
+        controlRow.addView(stopBacktestButton, smallButtonParams());
+        backtestCard.addView(controlRow, marginTop(8));
+        setBacktestControlState("IDLE");
         Button strategyLabButton = actionButton("⚙ 서버와 동일한 전략 수치 조정 / 백테스트", Color.rgb(30, 41, 59));
         strategyLabButton.setOnClickListener(v -> {
             Intent intent = new Intent(this, ServerDashboardActivity.class);
@@ -413,65 +451,118 @@ public class MainActivity extends android.app.Activity {
             return;
         }
 
-        setBusy(true, "백테스트 실행 중...");
+        Intent intent = new Intent(this, BacktestForegroundService.class);
+        intent.setAction(BacktestForegroundService.ACTION_START);
+        intent.putExtra("symbol", symbol);
+        intent.putExtra("timeframe", timeframe);
+        intent.putExtra("start", start);
+        intent.putExtra("end", end);
+        intent.putExtra("host", hostInput.getText().toString().trim());
+        intent.putExtra("username", userInput.getText().toString().trim());
+        intent.putExtra("remote_dir", remoteInput.getText().toString().trim());
+        intent.putExtra("key_path", privateKeyPath);
+        intent.putExtra("risk_profile", riskProfile);
+        intent.putExtra("optimization_trials", optimizationTrials);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
         lastDbPath = "";
         lastResultPath = "";
         lastUploadEligible = false;
         lastSummary = null;
         enableUpload(false);
         enableResultActions(false);
-        logText.setText("로컬 캐시 생성 및 백테스트 시작...\n프로필: " + riskProfile
-                + " · 조합: " + optimizationTrials + "회\n");
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        logText.setText("백그라운드 백테스트 시작\n프로필: " + riskProfile
+                + " · 조합: " + optimizationTrials + "회\n"
+                + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
+        setBusy(true, "백그라운드 실행 중");
+        setBacktestControlState("RUNNING");
+        toast("백그라운드 백테스트를 시작했습니다.");
+    }
 
-        File output = new File(getFilesDir(), "UniversalTradingBotCache");
+    private void controlBacktest(String action) {
+        Intent intent = new Intent(this, BacktestForegroundService.class);
+        intent.setAction(action);
+        startService(intent);
+        if (BacktestForegroundService.ACTION_PAUSE.equals(action)) {
+            setBacktestControlState("PAUSED");
+            toast("완료된 지점에서 일시중지합니다.");
+        } else if (BacktestForegroundService.ACTION_RESUME.equals(action)) {
+            setBacktestControlState("RUNNING");
+            toast("백테스트를 재개합니다.");
+        } else {
+            setBacktestControlState("STOPPING");
+            toast("중지 중입니다. 체크포인트는 보존됩니다.");
+        }
+    }
+
+    private void refreshBackgroundBacktestStatus() {
+        SharedPreferences p = getSharedPreferences("universal_bot", MODE_PRIVATE);
+        String state = p.getString("backtest_status", "IDLE");
+        setBacktestControlState(state);
+        if ("RUNNING".equals(state)) {
+            setBusy(true, "백그라운드 실행 중");
+        } else if ("PAUSED".equals(state)) {
+            setBusy(true, "일시중지됨");
+        } else if ("STOPPING".equals(state)) {
+            setBusy(true, "중지 중...");
+        } else {
+            setBusy(false, "COMPLETE".equals(state) ? "백테스트 완료" :
+                    ("ERROR".equals(state) ? "백테스트 오류" :
+                            ("STOPPED".equals(state) ? "중지됨 · 재실행 시 이어받기" : "준비됨")));
+        }
+        if ("ERROR".equals(state)) {
+            String error = p.getString("backtest_error", "");
+            if (!error.isEmpty() && !logText.getText().toString().contains(error)) {
+                logText.append("\nBACKGROUND ERROR\n" + error + "\n");
+            }
+        }
+        if ("COMPLETE".equals(state)) {
+            String path = p.getString("backtest_result", "");
+            String logs = p.getString("backtest_log", "");
+            if (!logs.isEmpty() && !logText.getText().toString().equals(logs)) {
+                logText.setText(logs);
+            }
+            if (!path.isEmpty() && !path.equals(appliedServiceResultPath)) {
+                appliedServiceResultPath = path;
+                loadCompletedServiceResult(path);
+            }
+        }
+    }
+
+    private void loadCompletedServiceResult(String path) {
         executor.execute(() -> {
             try {
-                Python py = Python.getInstance();
-                PyObject bridge = py.getModule("mobile_bridge");
-                String jsonText = bridge.callAttr(
-                        "run_backtest",
-                        symbol,
-                        timeframe,
-                        start,
-                        end,
-                        output.getAbsolutePath(),
-                        hostInput.getText().toString(),
-                        userInput.getText().toString(),
-                        remoteInput.getText().toString(),
-                        privateKeyPath,
-                        riskProfile,
-                        optimizationTrials
-                ).toString();
-                JSONObject obj = new JSONObject(jsonText);
-                JSONObject summary = obj.getJSONObject("summary");
-                JSONArray logs = obj.getJSONArray("logs");
-                lastDbPath = obj.getString("db");
-                lastResultPath = obj.getString("result");
-                lastUploadEligible = summary.optBoolean("server_upload_eligible", false);
-                lastSummary = summary;
-                StringBuilder sb = new StringBuilder();
-                for (int i = 0; i < logs.length(); i++) sb.append(logs.getString(i)).append('\n');
-
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject item = new JSONObject(bridge.callAttr("load_saved_result", path).toString());
+                JSONObject wrapper = new JSONObject();
+                wrapper.put("path", item.optString("result", path));
+                wrapper.put("db", item.optString("db", ""));
+                wrapper.put("summary", item.optJSONObject("summary"));
+                wrapper.put("label", "백그라운드 백테스트 완료");
                 main.post(() -> {
-                    updateMetrics(summary);
-                    logText.setText(sb.toString());
-                    statusText.setText(lastUploadEligible ? "완료 · 서버 업로드 가능" : "완료 · 로컬 캐시");
-                    enableUpload(lastUploadEligible);
-                    enableResultActions(true);
-                    setBusy(false, statusText.getText().toString());
-                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    toast("백테스트 완료");
+                    applySavedResult(wrapper, false);
+                    toast("백그라운드 백테스트가 완료됐습니다.");
                 });
             } catch (Exception e) {
-                main.post(() -> {
-                    logText.append("\nERROR\n" + stackMessage(e));
-                    setBusy(false, "오류 발생");
-                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    toast("백테스트 오류 - 로그를 확인하세요.");
-                });
+                main.post(() -> logText.append("\nRESULT LOAD ERROR\n" + stackMessage(e) + "\n"));
             }
         });
+    }
+
+    private void setBacktestControlState(String state) {
+        if (pauseBacktestButton == null) return;
+        boolean running = "RUNNING".equals(state);
+        boolean paused = "PAUSED".equals(state);
+        boolean active = running || paused || "STOPPING".equals(state);
+        pauseBacktestButton.setEnabled(running);
+        pauseBacktestButton.setAlpha(running ? 1f : 0.45f);
+        resumeBacktestButton.setEnabled(paused);
+        resumeBacktestButton.setAlpha(paused ? 1f : 0.45f);
+        stopBacktestButton.setEnabled(active);
+        stopBacktestButton.setAlpha(active ? 1f : 0.45f);
     }
 
     private void shareBacktestFile(String path, String mimeType, String chooserTitle) {
