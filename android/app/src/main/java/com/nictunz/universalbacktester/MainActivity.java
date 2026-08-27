@@ -273,6 +273,9 @@ public class MainActivity extends android.app.Activity {
         Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
         shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
         resultActions.addView(shareResultButton, marginTop(8));
+        Button shareOptimizationButton = actionButton("🏆 전체 최적화 순위 JSON 공유 (상위 10 포함)", Color.rgb(30, 41, 59));
+        shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
+        resultActions.addView(shareOptimizationButton, marginTop(8));
         Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
         shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
         resultActions.addView(shareCacheButton, marginTop(8));
@@ -585,6 +588,34 @@ public class MainActivity extends android.app.Activity {
         resumeBacktestButton.setAlpha(paused ? 1f : 0.45f);
         stopBacktestButton.setEnabled(active);
         stopBacktestButton.setAlpha(active ? 1f : 0.45f);
+    }
+
+    private void exportAndShareOptimizationResults() {
+        if (lastResultPath == null || lastResultPath.trim().isEmpty()) {
+            toast("먼저 완료된 최적화 결과를 불러오세요.");
+            return;
+        }
+        statusText.setText("전체 최적화 순위 생성 중");
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject exported = new JSONObject(
+                        bridge.callAttr("export_optimization_results", lastResultPath).toString()
+                );
+                String path = exported.getString("path");
+                int completed = exported.optInt("completed_trials", 0);
+                main.post(() -> {
+                    statusText.setText("전체 순위 " + completed + "개 생성 완료");
+                    shareBacktestFile(path, "application/json", "전체 최적화 순위 JSON 공유");
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    logText.append("\nOPTIMIZATION EXPORT ERROR\n" + stackMessage(e) + "\n");
+                    statusText.setText("전체 순위 내보내기 오류");
+                    toast("전체 순위 생성 실패 - 실행 로그를 확인하세요.");
+                });
+            }
+        });
     }
 
     private void shareBacktestFile(String path, String mimeType, String chooserTitle) {
