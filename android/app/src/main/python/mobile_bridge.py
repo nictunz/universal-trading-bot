@@ -527,6 +527,73 @@ def load_saved_result(result_path: str) -> str:
     return json.dumps({"result": str(path), "db": str(db), "summary": meta}, ensure_ascii=False)
 
 
+
+def export_optimization_results(result_path: str) -> str:
+    result_file = Path(result_path)
+    if not result_file.is_file():
+        raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
+    summary = json.loads(result_file.read_text(encoding="utf-8"))
+    selection = summary.get("risk_profile_selection") or {}
+    checkpoint_path = Path(str(selection.get("checkpoint") or ""))
+    if not checkpoint_path.is_file():
+        raise RuntimeError(f"최적화 체크포인트가 없습니다: {checkpoint_path}")
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    completed = checkpoint.get("completed") or {}
+    mdd_limit = float((selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
+    rankings: list[dict] = []
+    for trial_id, row in completed.items():
+        result = dict(row.get("result") or {})
+        trades = int(result.get("trades") or 0)
+        mdd = float(result.get("max_drawdown_percent") or 0)
+        rankings.append({
+            "trial_id": trial_id,
+            "eligible": trades > 0 and mdd <= mdd_limit,
+            "entry_multiplier": row.get("entry_multiplier"),
+            "max_entries": row.get("max_entries"),
+            "return_percent": result.get("return_percent"),
+            "pnl": result.get("pnl"),
+            "profit_factor": result.get("profit_factor"),
+            "max_drawdown_percent": result.get("max_drawdown_percent"),
+            "trades": result.get("trades"),
+            "wins": result.get("wins"),
+            "win_rate": result.get("win_rate"),
+            "estimated_costs": result.get("estimated_costs"),
+            "parameters": row.get("parameters") or {},
+            "result": result,
+        })
+    rankings.sort(key=lambda row: (
+        float(row.get("return_percent") or 0),
+        float(row.get("profit_factor") or 0),
+        -float(row.get("max_drawdown_percent") or 0),
+    ), reverse=True)
+    for rank, row in enumerate(rankings, 1):
+        row["overall_rank"] = rank
+    eligible = [row for row in rankings if row["eligible"]]
+    for rank, row in enumerate(eligible, 1):
+        row["eligible_rank"] = rank
+    payload = {
+        "schema_version": 1,
+        "source_result": str(result_file),
+        "source_checkpoint": str(checkpoint_path),
+        "symbol": summary.get("symbol"),
+        "timeframe": summary.get("timeframe"),
+        "requested_start": summary.get("requested_start"),
+        "requested_end": summary.get("requested_end"),
+        "risk_profile": summary.get("risk_profile"),
+        "fixed_values": selection.get("fixed_values"),
+        "constraints": selection.get("constraints"),
+        "ranking_rule": "return_percent desc, profit_factor desc, max_drawdown_percent asc",
+        "completed_trials": len(rankings),
+        "eligible_trials": len(eligible),
+        "top_10_overall": rankings[:10],
+        "top_10_eligible": eligible[:10],
+        "all_trials": rankings,
+    }
+    export_path = result_file.with_name(result_file.stem + "-optimization-ranking.json")
+    _save_json_atomic(export_path, payload)
+    return json.dumps({"path": str(export_path), "completed_trials": len(rankings), "eligible_trials": len(eligible)}, ensure_ascii=False)
+
+
 def ensure_ssh_key(app_files_dir: str) -> str:
     return str(_ssh_bridge().ensureKey(app_files_dir))
 
