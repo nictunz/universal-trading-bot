@@ -398,6 +398,17 @@ def run_backtest(
     optimization_trials: int = 50,
 ) -> str:
     logs: list[str] = []
+    progress_path = Path(output_dir) / "backtest-progress.log"
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path.write_text("", encoding="utf-8")
+
+    def log(message: object) -> None:
+        line = str(message)
+        log(line)
+        with progress_path.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+
+    log("백그라운드 작업 시작 · 실시간 진행 로그 연결됨")
     overrides: dict = {}
     if host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
         try:
@@ -410,7 +421,7 @@ def run_backtest(
             if isinstance(parsed, dict):
                 overrides = parsed
         except Exception as exc:
-            logs.append(
+            log(
                 f"서버 전략 설정 동기화 실패 - 현재 앱 기본값 사용: {type(exc).__name__}: {exc}"
             )
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
@@ -423,13 +434,13 @@ def run_backtest(
     overrides["order_percent_of_equity"] = 100.0
     overrides["max_pyramiding"] = 1
     profile = RISK_PROFILES[selected_profile]
-    logs.append(
+    log(
         f"위험 프로필: {selected_profile} · MDD {profile['mdd_limit_percent']:.0f}% 이하 · "
         f"진입 {profile['entry_multiplier_min']}~{profile['entry_multiplier_max']}배 · "
         f"최대 진입 {profile['max_entries_values']}"
     )
-    logs.append("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
-    logs.append("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
+    log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
+    log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
 
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
@@ -437,7 +448,7 @@ def run_backtest(
         start_text.strip(),
         end_text.strip(),
         Path(output_dir),
-        logs.append,
+        log,
         strategy_overrides=overrides,
         control_check=_wait_for_optimization_control,
     )
@@ -451,7 +462,7 @@ def run_backtest(
         overrides,
         selected_profile,
         optimization_trials,
-        logs.append,
+        log,
     )
     for key in (
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
