@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
 import random
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -289,6 +291,7 @@ def _optimize_risk_profile(
                 end=end_text,
                 overrides=overrides,
                 database_path=db,
+                include_details=False,
             )
             if float(result.get("fee_percent_per_side", -1)) != 0.02:
                 raise RuntimeError("수수료 고정값 불일치")
@@ -312,6 +315,17 @@ def _optimize_risk_profile(
             checkpoint["last_error"] = f"{key}: {type(exc).__name__}: {exc}"
             _save_json_atomic(checkpoint_path, checkpoint)
             raise
+        finally:
+            if "result" in locals():
+                del result
+            if "overrides" in locals():
+                del overrides
+            if "engine_params" in locals():
+                del engine_params
+            gc.collect()
+            time.sleep(1.5 if position % 10 == 0 else 0.20)
+            if position % 25 == 0:
+                log(f"안전 모드: {position}회 완료 · 메모리 정리 및 냉각 완료")
 
     viable = [
         row for row in completed.values()
@@ -452,6 +466,11 @@ def run_backtest(
         strategy_overrides=overrides,
         control_check=_wait_for_optimization_control,
     )
+    del result
+    summary.pop("equity_curve", None)
+    summary.pop("trades_log", None)
+    gc.collect()
+    log("휴대폰 안전 모드: 대형 기준 결과 메모리 해제 · trial별 자동 냉각 적용")
     optimized_result, risk_selection = _optimize_risk_profile(
         symbol.strip(),
         timeframe.strip(),
@@ -541,7 +560,15 @@ def export_optimization_results(result_path: str) -> str:
     completed = checkpoint.get("completed") or {}
     mdd_limit = float((selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
     rankings: list[dict] = []
+    seen_parameters: set[str] = set()
+    duplicate_trials = 0
     for trial_id, row in completed.items():
+        parameters = row.get("parameters") or {}
+        identity = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+        if identity in seen_parameters:
+            duplicate_trials += 1
+            continue
+        seen_parameters.add(identity)
         result = dict(row.get("result") or {})
         trades = int(result.get("trades") or 0)
         mdd = float(result.get("max_drawdown_percent") or 0)
@@ -558,7 +585,7 @@ def export_optimization_results(result_path: str) -> str:
             "wins": result.get("wins"),
             "win_rate": result.get("win_rate"),
             "estimated_costs": result.get("estimated_costs"),
-            "parameters": row.get("parameters") or {},
+            "parameters": parameters,
             "result": result,
         })
     rankings.sort(key=lambda row: (
@@ -584,6 +611,7 @@ def export_optimization_results(result_path: str) -> str:
         "constraints": selection.get("constraints"),
         "ranking_rule": "return_percent desc, profit_factor desc, max_drawdown_percent asc",
         "completed_trials": len(rankings),
+        "duplicate_trials_removed": duplicate_trials,
         "eligible_trials": len(eligible),
         "top_10_overall": rankings[:10],
         "top_10_eligible": eligible[:10],
@@ -591,7 +619,7 @@ def export_optimization_results(result_path: str) -> str:
     }
     export_path = result_file.with_name(result_file.stem + "-optimization-ranking.json")
     _save_json_atomic(export_path, payload)
-    return json.dumps({"path": str(export_path), "completed_trials": len(rankings), "eligible_trials": len(eligible)}, ensure_ascii=False)
+    return json.dumps({"path": str(export_path), "completed_trials": len(rankings), "duplicate_trials_removed": duplicate_trials, "eligible_trials": len(eligible)}, ensure_ascii=False)
 
 
 def ensure_ssh_key(app_files_dir: str) -> str:
