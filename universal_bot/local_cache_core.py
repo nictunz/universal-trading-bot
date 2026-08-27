@@ -222,6 +222,7 @@ def build_cache_and_backtest(
     output_dir: Path,
     log: Callable[[str], None],
     strategy_overrides: dict | None = None,
+    control_check: Callable[[], None] | None = None,
 ) -> tuple[Path, Path, dict]:
     os.environ["CRYPTO_VOLUME_PROVIDER"] = "none"
     os.environ["COINAPI_API_KEY"] = ""
@@ -273,6 +274,8 @@ def build_cache_and_backtest(
     for exchange in EXCHANGES:
         log(f"\n===== {exchange.upper()} =====")
         for chunk_start, chunk_end in month_chunks(start, end):
+            if control_check is not None:
+                control_check()
             req = DataRequest(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -323,6 +326,8 @@ def build_cache_and_backtest(
     checkpoint["last_error"] = None
     _save_checkpoint(checkpoint_path, checkpoint)
     log("\n===== CACHE ONLY BACKTEST =====")
+    if control_check is not None:
+        control_check()
     try:
         result = run_cached_symbol_backtest(
             symbol=symbol,
