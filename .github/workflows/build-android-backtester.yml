@@ -1,4 +1,4 @@
-# build-request: android-share-and-1000-trials-20260827
+# build-request: background-backtest-controls-20260827
 name: Build Android Backtester APK
 
 on:
