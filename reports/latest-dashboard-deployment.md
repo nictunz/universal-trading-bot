@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-08-26T08:31:59Z
-- Source commit: 3db3d70b0617a0431480f750533dd72f96c037f0
+- Generated UTC: 2026-08-27T09:30:02Z
+- Source commit: 1493bd8400d2acac01d2325459a4e0b6c034a390
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -16,17 +16,17 @@
 
 ## Service
 ```text
-{"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=37767.4s max=90s","RuntimeError: mobile relay is stale: age=37767.7s max=90s"],"live_halted":[]}
+{"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=127639.4s max=90s","RuntimeError: mobile relay is stale: age=127639.7s max=90s"],"live_halted":[]}
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    77897
+PID:    99370
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
 ```text
-http://127.0.0.1:8000/health 200 {"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=37767.4s max=90s","RuntimeError: mobile relay is stale: age=37767.7s max=90s"],"live_halted":[]}
+http://127.0.0.1:8000/health 200 {"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":2,"errors":["RuntimeError: mobile relay is stale: age=127650.2s max=90s","RuntimeError: mobile relay is stale: age=127650.4s max=90s"],"live_halted":[]}
 http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","timeframe":"5m","timestamp":"2026-08-25T21:55:00+00:00","position":{"side":"LONG","size":0.18973147936164209,"entry":79059.1,"tp":80407.92852775884,"sl":77710.27147224118,"entries":1},"signal":null,"signal_reason":"NO_SIGNAL","values":{"strategy":"Volume Strategy FINAL Universal v15","version":"v15","volume_ratio":0.685592935583835,"volume_break":false,"one_bar_volatility":0.0633749852061257,"one_bar_min":0.1,"one_bar_max":1,"one_bar_ok":false,"nbar_range":2.7051792828685186,"nbar_bars":150,"nbar_block_range":3.9664567536306428,"nbar_block_bars":200,"nbar_max_allowed":5,"nbar_ok":true,"nbar_blocked":false
 http://127.0.0.1:8000/ 200 <!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
