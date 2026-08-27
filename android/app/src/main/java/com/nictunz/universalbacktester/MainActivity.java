@@ -33,7 +33,9 @@ import com.chaquo.python.android.AndroidPlatform;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.text.SimpleDateFormat;
@@ -326,7 +328,7 @@ public class MainActivity extends android.app.Activity {
         statusText = text("준비됨", 12, ACCENT, true);
         statusRow.addView(statusText);
         logCard.addView(statusRow);
-        logText = text("앱은 로컬에서 실행됩니다. 장시간 백테스트 중에는 앱을 화면에 유지하는 것을 권장합니다.", 11, Color.rgb(219, 234, 254), false);
+        logText = text("앱은 로컬에서 실행됩니다. 백그라운드 실행 중에는 진행 로그가 자동으로 갱신됩니다.", 11, Color.rgb(219, 234, 254), false);
         logText.setTypeface(Typeface.MONOSPACE);
         logText.setTextIsSelectable(true);
         logText.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -513,6 +515,12 @@ public class MainActivity extends android.app.Activity {
                     ("ERROR".equals(state) ? "백테스트 오류" :
                             ("STOPPED".equals(state) ? "중지됨 · 재실행 시 이어받기" : "준비됨")));
         }
+        if ("RUNNING".equals(state) || "PAUSED".equals(state) || "STOPPING".equals(state)) {
+            String liveLog = readLiveBacktestLog();
+            if (!liveLog.isEmpty() && !logText.getText().toString().equals(liveLog)) {
+                logText.setText(liveLog);
+            }
+        }
         if ("ERROR".equals(state)) {
             String error = p.getString("backtest_error", "");
             if (!error.isEmpty() && !logText.getText().toString().contains(error)) {
@@ -530,6 +538,20 @@ public class MainActivity extends android.app.Activity {
                 loadCompletedServiceResult(path);
             }
         }
+    }
+
+    private String readLiveBacktestLog() {
+        File file = new File(new File(getFilesDir(), "UniversalTradingBotCache"), "backtest-progress.log");
+        if (!file.isFile()) return "";
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            String line;
+            while ((line = reader.readLine()) != null) out.append(line).append('\n');
+        } catch (Exception ignored) {
+            return "";
+        }
+        int limit = 50000;
+        return out.length() <= limit ? out.toString() : out.substring(out.length() - limit);
     }
 
     private void loadCompletedServiceResult(String path) {
