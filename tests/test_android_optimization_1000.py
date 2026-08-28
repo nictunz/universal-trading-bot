@@ -3,12 +3,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_android_allows_one_thousand_trials_and_preserves_prefix():
+def test_android_allows_five_thousand_trials_and_preserves_prefix():
     java = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
     bridge = (ROOT / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
-    assert "optimizationTrials > 1000" in java
-    assert "optimization_trials > 1000" in bridge
-    assert '"1000회"' in java
+    assert "optimizationTrials > 5000" in java
+    assert "optimization_trials > 5000" in bridge
+    assert '"5000회"' in java
+    assert '"3봉 분할형"' in java
     assert 'trial-{position:04d}' in bridge
     assert 'seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}"' in bridge
 
