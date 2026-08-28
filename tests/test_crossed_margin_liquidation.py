@@ -40,3 +40,13 @@ def test_mobile_optimizer_excludes_liquidated_trials_and_caps_total_exposure():
     assert "hit_liquidation or hit_tp or hit_sl" in engine
     assert "if hit_liquidation:" in engine
     assert "entry_notional + order_notional <= max_total_notional" in engine
+
+
+def test_android_compat_settings_include_every_liquidation_field():
+    from android.compat.config import Settings
+
+    settings = Settings()
+    assert settings.backtest_margin_mode == "crossed"
+    assert settings.backtest_maintenance_margin_percent == 0.5
+    assert settings.backtest_cross_liquidation_buffer_percent == 25.0
+    assert settings.backtest_max_total_multiplier == 15.0
