@@ -35,3 +35,13 @@ def test_activity_delegates_work_instead_of_owning_long_python_call():
     assert "BacktestForegroundService.ACTION_START" in run_method
     assert "startForegroundService" in run_method
     assert 'bridge.callAttr(\n                        "run_backtest"' not in run_method
+
+
+def test_saved_result_restore_is_bounded_and_excludes_heavy_arrays():
+    bridge = (ROOT / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
+    assert "def _compact_saved_summary" in bridge
+    assert '"trades_log"' in bridge
+    assert '"equity_curve"' in bridge
+    assert "def list_saved_results(output_dir: str, limit: int = 20)" in bridge
+    assert "[: max(1, min(int(limit), 50))]" in bridge
+    assert "include_details: bool = False" in bridge
