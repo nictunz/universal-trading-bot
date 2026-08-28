@@ -172,6 +172,11 @@ def run_cached_symbol_backtest(
         "slippage_percent_per_side": settings.backtest_slippage_percent,
         "return_percent": result.return_percent,
         "max_drawdown_percent": result.max_drawdown_percent,
+        "liquidations": result.liquidations,
+        "margin_mode": settings.backtest_margin_mode,
+        "maintenance_margin_percent": settings.backtest_maintenance_margin_percent,
+        "cross_liquidation_buffer_percent": settings.backtest_cross_liquidation_buffer_percent,
+        "max_total_multiplier": settings.backtest_max_total_multiplier,
     }
     if include_details:
         payload["trades_log"] = result.trades_log
