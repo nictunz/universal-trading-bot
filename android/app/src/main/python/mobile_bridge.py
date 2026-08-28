@@ -151,6 +151,31 @@ def _save_json_atomic(path: Path, payload: dict) -> None:
     os.replace(temp, path)
 
 
+def _append_checkpoint_journal(path: Path, fingerprint: str, key: str, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"strategy_fingerprint": fingerprint, "key": key, "row": row}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _load_checkpoint_journal(path: Path, fingerprint: str, completed: dict) -> int:
+    if not path.is_file():
+        return 0
+    loaded = 0
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+                if record.get("strategy_fingerprint") != fingerprint:
+                    continue
+                key = str(record["key"])
+                completed[key] = record["row"]
+                loaded += 1
+            except Exception:
+                continue
+    return loaded
+
+
 def _compact_risk_result(result: dict) -> dict:
     keys = (
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
@@ -246,6 +271,7 @@ def _optimize_risk_profile(
     checkpoint_path = _risk_checkpoint_path(
         output_dir, symbol, timeframe, start_text, end_text, profile_name
     )
+    journal_path = checkpoint_path.with_suffix(".journal.jsonl")
     strategy_fingerprint = hashlib.sha256(
         json.dumps(base_overrides, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -276,6 +302,9 @@ def _optimize_risk_profile(
             log(f"손상된 위험 프로필 체크포인트 보존: {damaged.name}")
 
     completed = checkpoint.setdefault("completed", {})
+    journal_rows = _load_checkpoint_journal(journal_path, strategy_fingerprint, completed)
+    if journal_rows:
+        log(f"증분 체크포인트 복구: {journal_rows}개 기록 · 총 {len(completed)}개 완료")
     seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}"
     combinations = _profile_candidates(profile_name, trials, seed_material)
     checkpoint["requested_trials"] = trials
@@ -314,7 +343,11 @@ def _optimize_risk_profile(
             }
             checkpoint["last_completed"] = key
             checkpoint["last_error"] = None
-            _save_json_atomic(checkpoint_path, checkpoint)
+            _append_checkpoint_journal(
+                journal_path, strategy_fingerprint, key, completed[key]
+            )
+            if position % 50 == 0 or position == len(combinations):
+                _save_json_atomic(checkpoint_path, checkpoint)
             log(
                 f"프로필 탐색 {position}/{len(combinations)} · {entry}배/{entries}회 · "
                 f"수익률 {float(result.get('return_percent') or 0):.2f}% · "
@@ -373,6 +406,7 @@ def _optimize_risk_profile(
     checkpoint["stage"] = "COMPLETE"
     checkpoint["best"] = best
     _save_json_atomic(checkpoint_path, checkpoint)
+    journal_path.unlink(missing_ok=True)
     selection = {
         "profile": profile_name,
         "constraints": profile,
