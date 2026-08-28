@@ -56,6 +56,29 @@ def _apply_execution_costs(trades: list[dict], settings: Settings) -> tuple[list
     return adjusted, total_cost, sum(float(t["pnl"]) for t in adjusted), wins, pf
 
 
+def crossed_liquidation_hit(
+    *,
+    side: str,
+    qty: float,
+    avg_entry: float,
+    worst_mark: float,
+    account_equity_before_open_pnl: float,
+    initial_capital: float,
+    maintenance_rate: float,
+    reserve_percent: float,
+) -> bool:
+    """Conservative crossed-margin liquidation check at an intrabar worst mark."""
+    open_pnl = (
+        (worst_mark - avg_entry) * qty
+        if side == "LONG"
+        else (avg_entry - worst_mark) * qty
+    )
+    account_equity = account_equity_before_open_pnl + open_pnl
+    maintenance = abs(worst_mark * qty) * max(0.0, maintenance_rate)
+    reserve = initial_capital * max(0.0, reserve_percent) / 100.0
+    return account_equity <= max(reserve, maintenance)
+
+
 def run_backtest(
     df: pd.DataFrame,
     settings: Settings,
@@ -179,18 +202,20 @@ def run_backtest(
             qty = abs(position_size)
             avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
             worst_mark = l if position_side == "LONG" else h
-            open_at_worst = (
-                (worst_mark - avg_entry) * qty
-                if position_side == "LONG"
-                else (avg_entry - worst_mark) * qty
-            )
-            account_equity_at_worst = initial_capital + realized_pnl + open_at_worst
-            maintenance = abs(worst_mark * qty) * maintenance_rate
             # Crossed margin: the whole account supports the position. A 25% equity
             # reserve makes a fully-used 15x position liquidate near a 5% adverse move.
             hit_liquidation = (
                 str(settings.backtest_margin_mode).lower() == "crossed"
-                and account_equity_at_worst <= max(cross_reserve, maintenance)
+                and crossed_liquidation_hit(
+                    side=position_side,
+                    qty=qty,
+                    avg_entry=avg_entry,
+                    worst_mark=worst_mark,
+                    account_equity_before_open_pnl=initial_capital + realized_pnl,
+                    initial_capital=initial_capital,
+                    maintenance_rate=maintenance_rate,
+                    reserve_percent=float(settings.backtest_cross_liquidation_buffer_percent),
+                )
             )
             hit_tp = (
                 (position_side == "LONG" and h >= position_tp)
