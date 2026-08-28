@@ -2,6 +2,8 @@ from android.app.src.main.python.mobile_bridge import (
     FIXED_BACKTEST,
     OPTIMIZED_STRATEGY_FIELDS,
     RISK_PROFILES,
+    _append_checkpoint_journal,
+    _load_checkpoint_journal,
     _profile_candidates,
 )
 
@@ -85,3 +87,14 @@ def test_three_candle_split_profile_is_unique_and_capped():
     assert all(1 <= row["max_pyramiding"] <= 5 for row in rows)
     assert all(row["first_entry_consecutive_candles"] == 3 for row in rows)
     assert all(row["entry_multiplier"] * row["max_pyramiding"] <= 15 for row in rows)
+
+
+def test_incremental_trial_journal_recovers_without_full_rewrite(tmp_path):
+    journal = tmp_path / "risk.journal.jsonl"
+    _append_checkpoint_journal(journal, "fingerprint-a", "trial-1", {"result": {"pnl": 1}})
+    _append_checkpoint_journal(journal, "fingerprint-a", "trial-2", {"result": {"pnl": 2}})
+    _append_checkpoint_journal(journal, "old-fingerprint", "stale", {"result": {"pnl": 99}})
+    completed = {}
+    loaded = _load_checkpoint_journal(journal, "fingerprint-a", completed)
+    assert loaded == 2
+    assert set(completed) == {"trial-1", "trial-2"}
