@@ -1,4 +1,4 @@
-# build-request: crossed-margin-self-hosted
+# build-request: crossed-margin-self-hosted-unzip
 name: Build Android Backtester APK
 
 on:
@@ -43,6 +43,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Install self-hosted build prerequisites
+        shell: bash
+        run: |
+          if ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unzip
+          fi
+          command -v unzip
 
       - uses: android-actions/setup-android@v3
 
