@@ -1,4 +1,4 @@
-# build-request: crossed-margin-compat-retry
+# build-request: crossed-margin-self-hosted
 name: Build Android Backtester APK
 
 on:
@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, trading-bot]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
