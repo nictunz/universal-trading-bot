@@ -19,6 +19,7 @@ class BacktestResult:
     estimated_costs: float
     return_percent: float
     max_drawdown_percent: float
+    liquidations: int
     trades_log: list[dict]
     equity_curve: list[dict]
 
@@ -62,7 +63,7 @@ def run_backtest(
 ) -> BacktestResult:
     """Fast deterministic v15 bar simulation."""
     if len(df) == 0:
-        return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0, [], [])
+        return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [])
 
     prepared = df.sort_index().loc[~df.index.duplicated(keep="last")].copy()
     total = len(prepared)
@@ -82,6 +83,8 @@ def run_backtest(
     rsi_s = rsi(close_s, settings.rsi_length)
 
     opens = prepared["open"].to_numpy(dtype=float, copy=False)
+    highs = high_s.to_numpy(dtype=float, copy=False)
+    lows = low_s.to_numpy(dtype=float, copy=False)
     closes = close_s.to_numpy(dtype=float, copy=False)
     volume_ratio = volume_ratio_s.to_numpy(dtype=float, copy=False)
     n_range = n_range_s.to_numpy(dtype=float, copy=False)
@@ -101,6 +104,11 @@ def run_backtest(
 
     initial_capital = float(settings.initial_capital)
     order_notional = initial_capital * float(settings.order_percent_of_equity) / 100.0
+    max_total_notional = initial_capital * float(settings.backtest_max_total_multiplier)
+    maintenance_rate = max(0.0, float(settings.backtest_maintenance_margin_percent)) / 100.0
+    cross_reserve = initial_capital * max(
+        0.0, float(settings.backtest_cross_liquidation_buffer_percent)
+    ) / 100.0
 
     position_side: str | None = None
     position_size = 0.0
@@ -114,6 +122,8 @@ def run_backtest(
     last_exit_bar: int | None = None
     bar_number = 0
     realized_pnl = 0.0
+    liquidations = 0
+    account_liquidated = False
     trade_log: list[dict] = []
     equity_curve: list[dict] = []
 
@@ -122,6 +132,8 @@ def run_backtest(
         bars_since_entry = None if last_entry_bar is None else bar_number - last_entry_bar
         bars_since_exit = None if last_exit_bar is None else bar_number - last_exit_bar
         o = opens[i]
+        h = highs[i]
+        l = lows[i]
         c = closes[i]
         vr = volume_ratio[i]
         nr = n_range[i]
@@ -164,12 +176,55 @@ def run_backtest(
             signal = "SHORT"
 
         if position_side is not None:
-            hit_tp = (position_side == "LONG" and c >= position_tp) or (position_side == "SHORT" and c <= position_tp)
-            hit_sl = (position_side == "LONG" and c <= position_sl) or (position_side == "SHORT" and c >= position_sl)
-            if hit_tp or hit_sl:
-                qty = abs(position_size)
-                avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
-                pnl = (c - avg_entry) * qty if position_side == "LONG" else (avg_entry - c) * qty
+            qty = abs(position_size)
+            avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
+            worst_mark = l if position_side == "LONG" else h
+            open_at_worst = (
+                (worst_mark - avg_entry) * qty
+                if position_side == "LONG"
+                else (avg_entry - worst_mark) * qty
+            )
+            account_equity_at_worst = initial_capital + realized_pnl + open_at_worst
+            maintenance = abs(worst_mark * qty) * maintenance_rate
+            # Crossed margin: the whole account supports the position. A 25% equity
+            # reserve makes a fully-used 15x position liquidate near a 5% adverse move.
+            hit_liquidation = (
+                str(settings.backtest_margin_mode).lower() == "crossed"
+                and account_equity_at_worst <= max(cross_reserve, maintenance)
+            )
+            hit_tp = (
+                (position_side == "LONG" and h >= position_tp)
+                or (position_side == "SHORT" and l <= position_tp)
+            )
+            hit_sl = (
+                (position_side == "LONG" and l <= position_sl)
+                or (position_side == "SHORT" and h >= position_sl)
+            )
+            if hit_liquidation or hit_tp or hit_sl:
+                # Intrabar order is deliberately conservative: liquidation first,
+                # then SL, then TP when more than one level is touched in one candle.
+                if hit_liquidation:
+                    reason = "LIQUIDATION"
+                    exit_price = worst_mark
+                    pnl = -(initial_capital + realized_pnl)
+                    liquidations += 1
+                    account_liquidated = True
+                elif hit_sl:
+                    reason = "SL"
+                    exit_price = position_sl
+                    pnl = (
+                        (exit_price - avg_entry) * qty
+                        if position_side == "LONG"
+                        else (avg_entry - exit_price) * qty
+                    )
+                else:
+                    reason = "TP"
+                    exit_price = position_tp
+                    pnl = (
+                        (exit_price - avg_entry) * qty
+                        if position_side == "LONG"
+                        else (avg_entry - exit_price) * qty
+                    )
                 realized_pnl += pnl
                 trade_log.append({
                     "trade": len(trade_log) + 1,
@@ -178,12 +233,15 @@ def run_backtest(
                     "exit_time": ts_iso,
                     "entry_price": initial_entry,
                     "avg_entry_price": avg_entry,
-                    "exit_price": c,
+                    "exit_price": exit_price,
                     "qty": qty,
                     "pnl": pnl,
                     "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0,
-                    "reason": "TP" if hit_tp else "SL",
+                    "reason": reason,
                     "bar": bar_number,
+                    "entries": entries,
+                    "total_exposure_multiplier": entry_notional / initial_capital if initial_capital else 0.0,
+                    "cross_margin": str(settings.backtest_margin_mode).lower() == "crossed",
                 })
                 position_side = None
                 position_size = 0.0
@@ -195,7 +253,19 @@ def run_backtest(
                 entries = 0
                 last_exit_bar = bar_number
 
-        can_pyramid = entries < settings.max_pyramiding
+        if account_liquidated:
+            equity_curve.append({
+                "bar": bar_number,
+                "timestamp": ts_iso,
+                "equity": 0.0,
+                "liquidated": True,
+            })
+            break
+
+        can_pyramid = (
+            entries < settings.max_pyramiding
+            and entry_notional + order_notional <= max_total_notional + 1e-9
+        )
         same_direction = position_side is None or position_side == signal
         if signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
             amount = order_notional / c if c > 0 else 0.0
@@ -255,6 +325,7 @@ def run_backtest(
         estimated_costs=estimated_costs,
         return_percent=net_pnl / initial_capital * 100 if initial_capital else 0.0,
         max_drawdown_percent=max_dd,
+        liquidations=liquidations,
         trades_log=adjusted_log,
         equity_curve=adjusted_curve,
     )
