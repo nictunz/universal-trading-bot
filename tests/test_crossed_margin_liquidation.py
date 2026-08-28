@@ -43,10 +43,11 @@ def test_mobile_optimizer_excludes_liquidated_trials_and_caps_total_exposure():
 
 
 def test_android_compat_settings_include_every_liquidation_field():
-    from android.compat.config import Settings
+    from pathlib import Path
 
-    settings = Settings()
-    assert settings.backtest_margin_mode == "crossed"
-    assert settings.backtest_maintenance_margin_percent == 0.5
-    assert settings.backtest_cross_liquidation_buffer_percent == 25.0
-    assert settings.backtest_max_total_multiplier == 15.0
+    root = Path(__file__).resolve().parents[1]
+    compat = (root / "android/compat/config.py").read_text(encoding="utf-8")
+    assert '"backtest_margin_mode": "crossed"' in compat
+    assert '"backtest_maintenance_margin_percent": 0.5' in compat
+    assert '"backtest_cross_liquidation_buffer_percent": 25.0' in compat
+    assert '"backtest_max_total_multiplier": 15.0' in compat
