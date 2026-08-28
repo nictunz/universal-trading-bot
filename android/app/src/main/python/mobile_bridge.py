@@ -77,6 +77,13 @@ RISK_PROFILES = {
         "entry_multiplier_max": 8,
         "max_entries_values": [1],
     },
+    "3봉 분할형": {
+        "mdd_limit_percent": 40.0,
+        "entry_multiplier_min": 1,
+        "entry_multiplier_max": 3,
+        "max_entries_values": [1, 2, 3, 4, 5],
+        "first_entry_consecutive_candles": 3,
+    },
 }
 
 FIXED_BACKTEST = {
@@ -90,6 +97,7 @@ FIXED_BACKTEST = {
 OPTIMIZED_STRATEGY_FIELDS = (
     "allow_long",
     "allow_short",
+    "first_entry_consecutive_candles",
     "order_percent_of_equity",
     "max_pyramiding",
     "volume_lookback",
@@ -179,6 +187,7 @@ def _profile_candidates(
             **FIXED_BACKTEST,
             "allow_long": allow_long,
             "allow_short": allow_short,
+            "first_entry_consecutive_candles": int(profile.get("first_entry_consecutive_candles", 1)),
             "entry_multiplier": entry,
             "order_percent_of_equity": float(entry * 100),
             "max_pyramiding": rng.choice(profile["max_entries_values"]),
@@ -440,8 +449,8 @@ def run_backtest(
             )
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
     optimization_trials = int(optimization_trials)
-    if optimization_trials < 1 or optimization_trials > 1000:
-        raise ValueError("최적화 조합 수는 1~1000이어야 합니다.")
+    if optimization_trials < 1 or optimization_trials > 5000:
+        raise ValueError("최적화 조합 수는 1~5000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
     overrides.update(FIXED_BACKTEST)
