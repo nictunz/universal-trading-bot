@@ -25,3 +25,37 @@ def test_v15_evaluates_without_tradingview():
     assert result.state.symbol == "TEST/USDT"
     assert "final_tp_percent" in result.state.values
     assert "final_sl_percent" in result.state.values
+
+
+def test_v15_requires_three_consecutive_candles_only_for_first_entry():
+    n = 400
+    idx = pd.date_range("2025-01-01", periods=n, freq="5min", tz="UTC")
+    df = pd.DataFrame({
+        "open": np.full(n, 100.0),
+        "high": np.full(n, 101.2),
+        "low": np.full(n, 98.8),
+        "close": np.full(n, 99.0),
+        "volume": np.full(n, 1000.0),
+    }, index=idx)
+    normalized = pd.Series(np.full(n, 10.0), index=idx)
+    settings = Settings(
+        use_start_date=False,
+        excluded_hours="",
+        use_adx_filter=False,
+        use_rsi_filter=False,
+        use_nbar_volatility_block=False,
+        min_one_bar_vol=0.0,
+        max_one_bar_vol=10.0,
+        volume_break_multiplier=3.0,
+        first_entry_consecutive_candles=3,
+        allow_long=True,
+        allow_short=False,
+    )
+    strategy = UniversalV15Strategy(settings)
+    first = strategy.evaluate(df, "TEST/USDT", "5m", Position(), normalized_volume_ratio=normalized)
+    assert first.signal.side == "LONG"
+    assert first.state.values["consecutive_bearish"] is True
+    df.iloc[-3, df.columns.get_loc("close")] = 101.0
+    blocked = strategy.evaluate(df, "TEST/USDT", "5m", Position(), normalized_volume_ratio=normalized)
+    assert blocked.signal.side is None
+    assert blocked.state.values["consecutive_bearish"] is False
