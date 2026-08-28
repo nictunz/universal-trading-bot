@@ -14,6 +14,11 @@ from universal_bot.paper import normalize_exchange_volume
 
 FOUR_EXCHANGES = ("binance", "bitget", "okx", "bybit")
 
+# One immutable prepared dataset is reused across optimization trials. This avoids
+# reopening SQLite and allocating five year-long DataFrames thousands of times.
+_PREPARED_CACHE_KEY: tuple | None = None
+_PREPARED_CACHE_VALUE: tuple | None = None
+
 
 def _dt(value: str | None, *, end_of_day: bool = False) -> datetime | None:
     if not value:
@@ -99,30 +104,43 @@ def run_cached_symbol_backtest(
         values.update({"start_date": start_dt, "use_start_date": True})
     settings = settings.model_copy(update=values)
 
-    manager = HistoricalDataManager(f"sqlite:///{path}", fallback_exchanges=[])
     req_start = start_dt or settings.start_date
-    base_request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", exchange.lower())
-    df = manager.read(base_request)
-    if df.empty:
-        raise ValueError(f"no cached {exchange} data for requested range")
-    _validate(df, timeframe, exchange.lower())
+    stat = path.stat()
+    prepared_key = (
+        str(path.resolve()), stat.st_size, stat.st_mtime_ns, symbol, timeframe,
+        req_start.isoformat() if req_start else None,
+        end_dt.isoformat() if end_dt else None,
+        exchange.lower(),
+    )
+    global _PREPARED_CACHE_KEY, _PREPARED_CACHE_VALUE
+    if _PREPARED_CACHE_KEY == prepared_key and _PREPARED_CACHE_VALUE is not None:
+        df, volumes, source_bars, source_status = _PREPARED_CACHE_VALUE
+    else:
+        manager = HistoricalDataManager(f"sqlite:///{path}", fallback_exchanges=[])
+        base_request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", exchange.lower())
+        df = manager.read(base_request)
+        if df.empty:
+            raise ValueError(f"no cached {exchange} data for requested range")
+        _validate(df, timeframe, exchange.lower())
 
-    volumes: dict[str, pd.Series] = {}
-    source_bars: dict[str, int] = {}
-    source_status: dict[str, dict[str, str]] = {}
-    for ex in FOUR_EXCHANGES:
-        request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", ex)
-        source = manager.read(request)
-        if source.empty:
-            raise ValueError(f"fast cache incomplete: missing {ex} data")
-        _validate(source, timeframe, ex)
-        source_bars[ex] = len(source)
-        volumes[ex] = source["volume"].astype(float)
-        source_status[ex] = {"mode": "CACHE_ONLY", "status": "OK"}
+        volumes = {}
+        source_bars = {}
+        source_status = {}
+        for ex in FOUR_EXCHANGES:
+            request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", ex)
+            source = manager.read(request)
+            if source.empty:
+                raise ValueError(f"fast cache incomplete: missing {ex} data")
+            _validate(source, timeframe, ex)
+            source_bars[ex] = len(source)
+            volumes[ex] = source["volume"].astype(float)
+            source_status[ex] = {"mode": "CACHE_ONLY", "status": "OK"}
+        _PREPARED_CACHE_KEY = prepared_key
+        _PREPARED_CACHE_VALUE = (df, volumes, source_bars, source_status)
 
     normalized = normalize_exchange_volume(volumes, settings.volume_lookback, required_sources=4)
-    common = normalized.reindex(df.index)
-    if int(common.notna().sum()) < max(settings.volume_lookback, 10):
+    common_count = int(normalized.reindex(df.index).notna().sum())
+    if common_count < max(settings.volume_lookback, 10):
         raise ValueError("insufficient common four-exchange cached volume history")
 
     result = run_backtest(df, settings, normalized_volume_ratio=normalized)
