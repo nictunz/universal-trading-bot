@@ -1,15 +1,15 @@
 # Latest light self-hosted verification
 
-- Generated UTC: 2026-08-28T08:58:51Z
-- Source commit: ff6cf34195def40a4ce90f7dda802a01b203585d
+- Generated UTC: 2026-08-28T09:09:41Z
+- Source commit: b179c8849bc540ca69b96eecfd009d5090697fa1
 - Runner: trading-bot-new
 
 | Check | Outcome |
 |---|---|
-| Compile | success |
-| Pytest | success |
-| Dashboard HTTP smoke | failure |
-| Provider mapping | success |
+| Compile | skipped |
+| Pytest | skipped |
+| Dashboard HTTP smoke | skipped |
+| Provider mapping | skipped |
 
 ## Pytest
 ```text
