@@ -46,7 +46,7 @@ class UniversalV15Strategy:
                  bars_since_entry: int | None = None, bars_since_exit: int | None = None,
                  normalized_volume_ratio: pd.Series | None = None,
                  precomputed: dict[str, float] | None = None) -> V15Result:
-        required = max(self.s.volume_lookback, self.s.volatility_bars, self.s.nbar_volatility_bars, self.s.adx_length * 2, self.s.rsi_length + 2)
+        required = max(self.s.volume_lookback, self.s.volatility_bars, self.s.nbar_volatility_bars, self.s.adx_length * 2, self.s.rsi_length + 2, self.s.first_entry_consecutive_candles)
         if len(df) < required:
             return self._not_ready(symbol, timeframe, "NOT_ENOUGH_DATA", df)
         required_columns = {"open", "high", "low", "close", "volume"}
@@ -117,8 +117,20 @@ class UniversalV15Strategy:
         base_entry = volume_break and one_bar_ok and nbar_ok and adx_ok and time_ok and cooldown_ok
         bearish = last_close < last_open
         bullish = last_close > last_open
-        long_signal = base_entry and self.s.allow_long and bearish and rsi_long_ok
-        short_signal = base_entry and self.s.allow_short and bullish and rsi_short_ok
+        first_entry_bars = max(1, int(self.s.first_entry_consecutive_candles))
+        if position is None or position.flat:
+            recent = df.iloc[-first_entry_bars:]
+            consecutive_bearish = bool((recent["close"].astype(float) < recent["open"].astype(float)).all())
+            consecutive_bullish = bool((recent["close"].astype(float) > recent["open"].astype(float)).all())
+            long_candle_ok = consecutive_bearish
+            short_candle_ok = consecutive_bullish
+        else:
+            consecutive_bearish = bearish
+            consecutive_bullish = bullish
+            long_candle_ok = bearish
+            short_candle_ok = bullish
+        long_signal = base_entry and self.s.allow_long and long_candle_ok and rsi_long_ok
+        short_signal = base_entry and self.s.allow_short and short_candle_ok and rsi_short_ok
         side = "LONG" if long_signal else "SHORT" if short_signal else None
         reason = "LONG_SIGNAL" if long_signal else "SHORT_SIGNAL" if short_signal else "NO_SIGNAL"
         position = position or Position()
@@ -132,7 +144,11 @@ class UniversalV15Strategy:
             "adx_min": self.s.adx_min, "adx_max": self.s.adx_max, "adx_ok": adx_ok, "rsi": rsi_value, "rsi_oversold": oversold,
             "rsi_overbought": overbought, "rsi_long_ok": rsi_long_ok, "rsi_short_ok": rsi_short_ok, "time_ok": time_ok,
             "cooldown_ok": cooldown_ok, "bars_since_entry": bars_since_entry, "bars_since_exit": bars_since_exit, "base_entry_condition": base_entry,
-            "bearish_candle": bearish, "bullish_candle": bullish, "raw_tp_percent": raw_tp, "raw_sl_percent": raw_sl,
+            "bearish_candle": bearish, "bullish_candle": bullish,
+            "first_entry_consecutive_candles": first_entry_bars,
+            "consecutive_bearish": consecutive_bearish, "consecutive_bullish": consecutive_bullish,
+            "long_candle_ok": long_candle_ok, "short_candle_ok": short_candle_ok,
+            "raw_tp_percent": raw_tp, "raw_sl_percent": raw_sl,
             "final_tp_percent": final_tp, "final_sl_percent": final_sl, "entry_price": last_close, "position_side_allowed": position_side_allowed,
             "pyramid_allowed": pyramid_allowed, "max_pyramiding": self.s.max_pyramiding,
         }
