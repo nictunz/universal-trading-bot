@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     rsi_overbought_max: float = 90.0
     allow_long: bool = True
     allow_short: bool = True
-    # First entry + one add-on entry = two total entries.
+    # First entry may require N consecutive same-direction 5-minute candles.
+    # 1 preserves the original single-candle reversal behavior.
+    first_entry_consecutive_candles: int = 1
+    # Maximum entries per position; profile optimization may override this.
+
     max_pyramiding: int = 2
     cooldown_bars: int = 6
     reentry_bars: int = 6
