@@ -1,4 +1,4 @@
-# build-request: background-controls-publish-20260827
+# build-request: crossed-margin-compat-retry
 name: Build Android Backtester APK
 
 on:
