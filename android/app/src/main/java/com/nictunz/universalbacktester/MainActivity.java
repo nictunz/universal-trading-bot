@@ -200,7 +200,7 @@ public class MainActivity extends android.app.Activity {
         quickRow.addView(smallButton("10년", v -> setQuickRange(3653)), smallButtonParams());
         backtestCard.addView(quickRow, marginTop(10));
 
-        riskProfileInput = autocomplete(new String[]{"공격형", "중간형", "안전형"}, "공격형");
+        riskProfileInput = autocomplete(new String[]{"공격형", "중간형", "안전형", "3봉 분할형"}, "공격형");
         riskProfileInput.setOnItemClickListener((parent, view, position, id) ->
                 applyRiskProfile(parent.getItemAtPosition(position).toString()));
         backtestCard.addView(labeled("백테스트 위험 프로필", riskProfileInput), marginTop(12));
@@ -211,19 +211,20 @@ public class MainActivity extends android.app.Activity {
         profileRow.addView(smallButton("공격형", v -> applyRiskProfile("공격형")), smallButtonParams());
         profileRow.addView(smallButton("중간형", v -> applyRiskProfile("중간형")), smallButtonParams());
         profileRow.addView(smallButton("안전형", v -> applyRiskProfile("안전형")), smallButtonParams());
+        profileRow.addView(smallButton("3봉 분할", v -> applyRiskProfile("3봉 분할형")), smallButtonParams());
         backtestCard.addView(profileRow, marginTop(8));
         backtestCard.addView(text(
-                "기간은 위에서 직접 선택합니다. 공격형=MDD 40%·1~25배·1~2회, 중간형=MDD 25%·1~15배·1~2회, 안전형=MDD 15%·1~8배·1회 범위에서 최적값을 찾습니다.",
+                "기간은 직접 선택합니다. 3봉 분할형=첫 진입 3연속 하락/상승봉 역추세·회당 1~3배·최대 1~5회(총 15배)이며, 나머지 전략 수치를 함께 최적화합니다.",
                 11, MUTED, false
         ), marginTop(7));
 
-        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300", "500", "750", "1000"}, "50");
-        backtestCard.addView(labeled("최적화 조합 수 (1~1000 직접 입력 가능)", trialCountInput), marginTop(12));
+        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300", "500", "750", "1000", "2000", "3000", "5000"}, "50");
+        backtestCard.addView(labeled("최적화 조합 수 (1~5000 직접 입력 가능)", trialCountInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
                 "빠른 조합 수",
                 trialCountInput,
-                new String[]{"50회", "100회", "300회", "500회", "1000회"},
-                new String[]{"50", "100", "300", "500", "1000"}
+                new String[]{"100회", "500회", "1000회", "3000회", "5000회"},
+                new String[]{"100", "500", "1000", "3000", "5000"}
         ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
@@ -420,7 +421,7 @@ public class MainActivity extends android.app.Activity {
 
     private void applyRiskProfile(String profile) {
         String normalized = profile == null ? "공격형" : profile.trim();
-        if (!"공격형".equals(normalized) && !"중간형".equals(normalized) && !"안전형".equals(normalized)) {
+        if (!"공격형".equals(normalized) && !"중간형".equals(normalized) && !"안전형".equals(normalized) && !"3봉 분할형".equals(normalized)) {
             normalized = "공격형";
         }
         riskProfileInput.setText(normalized, false);
@@ -435,11 +436,11 @@ public class MainActivity extends android.app.Activity {
         try {
             optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
         } catch (Exception ignored) {
-            toast("조합 수는 1~1000 사이 숫자로 입력하세요.");
+            toast("조합 수는 1~5000 사이 숫자로 입력하세요.");
             return;
         }
-        if (optimizationTrials < 1 || optimizationTrials > 1000) {
-            toast("조합 수는 1~1000 사이로 입력하세요.");
+        if (optimizationTrials < 1 || optimizationTrials > 5000) {
+            toast("조합 수는 1~5000 사이로 입력하세요.");
             return;
         }
         String start = startInput.getText().toString().trim();
