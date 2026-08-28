@@ -23,6 +23,15 @@ def test_mobile_risk_profiles_use_mdd_and_search_ranges():
         "max_entries_values": [1, 2],
     }
 
+    split = RISK_PROFILES["3봉 분할형"]
+    assert split == {
+        "mdd_limit_percent": 40.0,
+        "entry_multiplier_min": 1,
+        "entry_multiplier_max": 3,
+        "max_entries_values": [1, 2, 3, 4, 5],
+        "first_entry_consecutive_candles": 3,
+    }
+
     safe = RISK_PROFILES["안전형"]
     assert safe == {
         "mdd_limit_percent": 15.0,
@@ -66,3 +75,13 @@ def test_every_effective_v15_strategy_field_is_sampled():
     assert candidate["leverage"] == 50
     assert candidate["backtest_fee_percent"] == 0.02
     assert candidate["backtest_slippage_percent"] == 0.01
+
+
+def test_three_candle_split_profile_is_unique_and_capped():
+    rows = _profile_candidates("3봉 분할형", 5000, "split-5000")
+    assert len(rows) == 5000
+    assert len({str(sorted(row.items())) for row in rows}) == 5000
+    assert all(1 <= row["entry_multiplier"] <= 3 for row in rows)
+    assert all(1 <= row["max_pyramiding"] <= 5 for row in rows)
+    assert all(row["first_entry_consecutive_candles"] == 3 for row in rows)
+    assert all(row["entry_multiplier"] * row["max_pyramiding"] <= 15 for row in rows)
