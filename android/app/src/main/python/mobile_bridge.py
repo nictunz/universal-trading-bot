@@ -551,34 +551,61 @@ def run_backtest(
     )
 
 
-def list_saved_results(output_dir: str) -> str:
+_HEAVY_SAVED_RESULT_FIELDS = {
+    "trades_log",
+    "equity_curve",
+    "all_trials",
+    "optimization_results",
+}
+
+
+def _compact_saved_summary(meta: dict) -> dict:
+    """Keep activity startup IPC small even when years of trades are stored."""
+    return {
+        key: value
+        for key, value in meta.items()
+        if key not in _HEAVY_SAVED_RESULT_FIELDS
+    }
+
+
+def list_saved_results(output_dir: str, limit: int = 20) -> str:
     history_dir = Path(output_dir) / "BacktestResults"
     items: list[dict] = []
     candidates = list(history_dir.glob("*-backtest.json")) if history_dir.is_dir() else []
     candidates.extend(Path(output_dir).glob("*backtest.json"))
-    for path in sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True):
+    # Android only needs recent entries for the picker. Reading and returning every
+    # multi-year result here can exceed the app heap before the screen is displayed.
+    recent = sorted(
+        set(candidates), key=lambda p: p.stat().st_mtime, reverse=True
+    )[: max(1, min(int(limit), 50))]
+    for path in recent:
         try:
             meta = json.loads(path.read_text(encoding="utf-8"))
             db = Path(str(meta.get("database", "")))
             if not db.is_file():
                 continue
+            summary = _compact_saved_summary(meta)
             items.append(
                 {
                     "path": str(path),
                     "db": str(db),
-                    "summary": meta,
+                    "summary": summary,
+                    "details_available": any(
+                        key in meta for key in ("trades_log", "equity_curve")
+                    ),
                     "label": (
                         f"{meta.get('symbol', '-')} · {meta.get('requested_start', '-')}~"
                         f"{meta.get('requested_end', '-')} · {meta.get('created_at', '-')}"
                     ),
                 }
             )
+            del meta
         except Exception:
             continue
     return json.dumps({"items": items}, ensure_ascii=False)
 
 
-def load_saved_result(result_path: str) -> str:
+def load_saved_result(result_path: str, include_details: bool = False) -> str:
     path = Path(result_path)
     if not path.is_file():
         raise RuntimeError(f"저장된 결과 파일이 없습니다: {result_path}")
@@ -586,7 +613,18 @@ def load_saved_result(result_path: str) -> str:
     db = Path(str(meta.get("database", "")))
     if not db.is_file():
         raise RuntimeError(f"연결된 캐시 DB가 없습니다: {db}")
-    return json.dumps({"result": str(path), "db": str(db), "summary": meta}, ensure_ascii=False)
+    summary = meta if include_details else _compact_saved_summary(meta)
+    return json.dumps(
+        {
+            "result": str(path),
+            "db": str(db),
+            "summary": summary,
+            "details_available": any(
+                key in meta for key in ("trades_log", "equity_curve")
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 
