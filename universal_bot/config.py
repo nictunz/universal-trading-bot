@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     initial_capital: float = 1_000_000.0
     backtest_fee_percent: float = 0.06
     backtest_slippage_percent: float = 0.02
+    # Backtest-only liquidation model. LIVE/PAPER routing is not changed by these fields.
+    backtest_margin_mode: str = "crossed"
+    backtest_maintenance_margin_percent: float = 0.5
+    backtest_cross_liquidation_buffer_percent: float = 25.0
+    backtest_max_total_multiplier: float = 15.0
     crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False
