@@ -1,4 +1,4 @@
-# build-request: crossed-margin-self-hosted-unzip
+# build-request: crossed-margin-self-hosted-python-unzip
 name: Build Android Backtester APK
 
 on:
@@ -44,14 +44,38 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install self-hosted build prerequisites
+      - name: Prepare self-hosted unzip compatibility
         shell: bash
         run: |
           if ! command -v unzip >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y unzip
+            mkdir -p "$RUNNER_TEMP/android-tools-bin"
+            UNZIP_WRAPPER="$RUNNER_TEMP/android-tools-bin/unzip"
+            python - "$UNZIP_WRAPPER" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          target = Path(sys.argv[1])
+          target.write_text("""#!/usr/bin/env python3
+          import sys
+          import zipfile
+
+          args = sys.argv[1:]
+          destination = "."
+          if "-d" in args:
+              index = args.index("-d")
+              destination = args[index + 1]
+              del args[index:index + 2]
+          archives = [arg for arg in args if not arg.startswith("-")]
+          if not archives:
+              raise SystemExit("unzip wrapper: archive path is required")
+          with zipfile.ZipFile(archives[0]) as bundle:
+              bundle.extractall(destination)
+          """, encoding="utf-8")
+          target.chmod(0o755)
+          PY
+            echo "$RUNNER_TEMP/android-tools-bin" >> "$GITHUB_PATH"
           fi
-          command -v unzip
 
       - uses: android-actions/setup-android@v3
 
