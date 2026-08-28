@@ -91,6 +91,10 @@ FIXED_BACKTEST = {
     "leverage": 50,
     "backtest_fee_percent": 0.02,
     "backtest_slippage_percent": 0.01,
+    "backtest_margin_mode": "crossed",
+    "backtest_maintenance_margin_percent": 0.5,
+    "backtest_cross_liquidation_buffer_percent": 25.0,
+    "backtest_max_total_multiplier": 15.0,
 }
 
 
@@ -181,6 +185,8 @@ def _compact_risk_result(result: dict) -> dict:
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
         "estimated_costs", "return_percent", "max_drawdown_percent",
         "fee_percent_per_side", "slippage_percent_per_side",
+        "liquidations", "margin_mode", "maintenance_margin_percent",
+        "cross_liquidation_buffer_percent", "max_total_multiplier",
     )
     return {key: result.get(key) for key in keys}
 
@@ -372,6 +378,7 @@ def _optimize_risk_profile(
     viable = [
         row for row in completed.values()
         if int(row["result"].get("trades") or 0) > 0
+        and int(row["result"].get("liquidations") or 0) == 0
         and float(row["result"].get("max_drawdown_percent") or 0) <= profile["mdd_limit_percent"]
     ]
     if not viable:
@@ -530,6 +537,8 @@ def run_backtest(
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
         "estimated_costs", "return_percent", "max_drawdown_percent",
         "trades_log", "equity_curve", "data_start", "data_end",
+        "liquidations", "margin_mode", "maintenance_margin_percent",
+        "cross_liquidation_buffer_percent", "max_total_multiplier",
     ):
         summary[key] = optimized_result.get(key)
     summary["risk_profile"] = selected_profile
@@ -653,9 +662,10 @@ def export_optimization_results(result_path: str) -> str:
         result = dict(row.get("result") or {})
         trades = int(result.get("trades") or 0)
         mdd = float(result.get("max_drawdown_percent") or 0)
+        liquidations = int(result.get("liquidations") or 0)
         rankings.append({
             "trial_id": trial_id,
-            "eligible": trades > 0 and mdd <= mdd_limit,
+            "eligible": trades > 0 and liquidations == 0 and mdd <= mdd_limit,
             "entry_multiplier": row.get("entry_multiplier"),
             "max_entries": row.get("max_entries"),
             "return_percent": result.get("return_percent"),
@@ -666,6 +676,7 @@ def export_optimization_results(result_path: str) -> str:
             "wins": result.get("wins"),
             "win_rate": result.get("win_rate"),
             "estimated_costs": result.get("estimated_costs"),
+            "liquidations": liquidations,
             "parameters": parameters,
             "result": result,
         })
