@@ -39,6 +39,7 @@ _DEFAULTS = {
     "rsi_overbought_max": 90.0,
     "allow_long": True,
     "allow_short": True,
+    "first_entry_consecutive_candles": 1,
     "max_pyramiding": 2,
     "cooldown_bars": 6,
     "reentry_bars": 6,
