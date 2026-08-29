@@ -1,4 +1,4 @@
-# build-request: phone-triggered-resilient-build
+# build-request: phone-heavy-server-trading-priority
 name: Build Android Backtester APK
 
 on:
@@ -23,7 +23,7 @@ on:
 
 concurrency:
   group: android-backtester-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -117,7 +117,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          gradle -p android :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
+          nice -n 15 gradle -p android :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
 
       - name: Upload build log
         if: always()
@@ -196,7 +196,7 @@ jobs:
         if: env.UPDATE_RELEASE_READY == 'true'
         shell: bash
         run: |
-          gradle -p android :app:assembleRelease --stacktrace
+          nice -n 15 gradle -p android :app:assembleRelease --stacktrace
           cp android/app/build/outputs/apk/release/app-release.apk UniversalTradingBacktester-Android.apk
           test -s UniversalTradingBacktester-Android.apk
           ls -lh UniversalTradingBacktester-Android.apk
