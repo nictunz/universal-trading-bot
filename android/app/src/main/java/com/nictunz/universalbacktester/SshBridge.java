@@ -240,14 +240,12 @@ public final class SshBridge {
             String remoteDir,
             String keyPath
     ) throws Exception {
-        File db = new File(dbPath);
         File result = new File(resultPath);
-        if (!db.isFile()) throw new IllegalArgumentException("DB 파일이 없습니다: " + dbPath);
         if (!result.isFile()) throw new IllegalArgumentException("결과 파일이 없습니다: " + resultPath);
 
         JSONObject resultMeta = new JSONObject(readText(result));
         if (!resultMeta.optBoolean("server_upload_eligible", false)) {
-            throw new IllegalStateException("서버 업로드 차단: 1년 범위로 검증된 결과만 업로드할 수 있습니다.");
+            throw new IllegalStateException("서버 업로드 차단: 완료·검증된 요약 결과만 업로드할 수 있습니다.");
         }
 
         JSONArray logs = new JSONArray();
@@ -258,24 +256,25 @@ public final class SshBridge {
             ChannelSftp sftp = (ChannelSftp) session.openChannel("sftp");
             sftp.connect(15000);
             try {
-                uploadAtomic(sftp, db, remoteDir, logs);
                 uploadAtomic(sftp, result, remoteDir, logs);
 
                 JSONObject manifest = new JSONObject();
-                manifest.put("database", db.getName());
+                manifest.put("upload_mode", "summary_only");
                 manifest.put("result", result.getName());
+                manifest.put("symbol", resultMeta.optString("symbol", ""));
+                manifest.put("timeframe", resultMeta.optString("timeframe", ""));
                 manifest.put("requested_start", resultMeta.optString("requested_start", ""));
                 manifest.put("requested_end", resultMeta.optString("requested_end", ""));
                 manifest.put("range_days", resultMeta.optInt("range_days", 0));
-                manifest.put("database_sha256", sha256(db));
+                manifest.put("result_sha256", sha256(result));
                 manifest.put("uploaded_at", utcNow());
 
-                String manifestName = stripExtension(db.getName()) + ".upload-manifest.json";
+                String manifestName = stripExtension(result.getName()) + ".upload-manifest.json";
                 String remoteManifest = joinRemote(remoteDir, manifestName);
                 byte[] bytes = (manifest.toString(2) + "\n").getBytes(StandardCharsets.UTF_8);
                 sftp.put(new ByteArrayInputStream(bytes), remoteManifest);
                 logs.put("완료: " + remoteManifest);
-                logs.put("서버 캐시 업로드 완료. 대시보드의 빠른 재백테스트에서 바로 사용할 수 있습니다.");
+                logs.put("서버 요약 업로드 완료. 원본 캐시와 전체 순위는 휴대폰에 보존됩니다.");
             } finally {
                 sftp.disconnect();
             }
