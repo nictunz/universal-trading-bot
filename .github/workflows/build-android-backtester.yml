@@ -1,4 +1,4 @@
-# build-request: phone-heavy-server-trading-priority
+# build-request: single-pass-signed-phone-build
 name: Build Android Backtester APK
 
 on:
@@ -113,11 +113,11 @@ jobs:
           find android/app/src/main/python/universal_bot -type d -name '__pycache__' -prune -exec rm -rf {} + || true
           echo 'Android compatibility modules applied'
 
-      - name: Build debug APK
+      - name: Build unsigned release APK
         shell: bash
         run: |
           set -o pipefail
-          nice -n 15 gradle -p android :app:assembleDebug --stacktrace 2>&1 | tee android-build.log
+          nice -n 15 gradle -p android :app:assembleRelease --stacktrace 2>&1 | tee android-build.log
 
       - name: Upload build log
         if: always()
@@ -154,18 +154,18 @@ jobs:
           git commit -m 'ci: publish Android build failure [skip ci]' || exit 0
           git push origin HEAD:main
 
-      - name: Prepare debug artifact
+      - name: Prepare unsigned build artifact
         shell: bash
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk UniversalTradingBacktester-Android-debug.apk
-          ls -lh UniversalTradingBacktester-Android-debug.apk
+          cp android/app/build/outputs/apk/release/app-release-unsigned.apk UniversalTradingBacktester-Android-unsigned.apk
+          ls -lh UniversalTradingBacktester-Android-unsigned.apk
 
-      - name: Upload debug APK
+      - name: Upload unsigned APK
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: UniversalTradingBacktester-Android-debug
-          path: UniversalTradingBacktester-Android-debug.apk
+          name: UniversalTradingBacktester-Android-unsigned
+          path: UniversalTradingBacktester-Android-unsigned.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -192,12 +192,22 @@ jobs:
           echo "ANDROID_KEY_PASSWORD=${KEY_PASSWORD_SECRET:-$STORE_PASSWORD}" >> "$GITHUB_ENV"
           echo 'UPDATE_RELEASE_READY=true' >> "$GITHUB_ENV"
 
-      - name: Build stable signed update APK
+      - name: Sign stable update APK
         if: env.UPDATE_RELEASE_READY == 'true'
         shell: bash
         run: |
-          nice -n 15 gradle -p android :app:assembleRelease --stacktrace
-          cp android/app/build/outputs/apk/release/app-release.apk UniversalTradingBacktester-Android.apk
+          set -euo pipefail
+          UNSIGNED=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -s "$UNSIGNED"
+          "$APKSIGNER" sign \
+            --ks "$ANDROID_KEYSTORE_PATH" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out UniversalTradingBacktester-Android.apk \
+            "$UNSIGNED"
+          "$APKSIGNER" verify --verbose UniversalTradingBacktester-Android.apk
           test -s UniversalTradingBacktester-Android.apk
           ls -lh UniversalTradingBacktester-Android.apk
 
