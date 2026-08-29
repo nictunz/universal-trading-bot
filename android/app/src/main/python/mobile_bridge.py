@@ -767,11 +767,29 @@ def upload_result(
         end_text,
     )[1]
     canonical_result = result_file.parent.parent / canonical_name
-    canonical_result.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # The phone keeps the large SQLite cache and full trade/equity details.
+    # The low-cost trading server receives only an auditable compact summary.
+    server_summary = {
+        key: value
+        for key, value in meta.items()
+        if key not in _HEAVY_SAVED_RESULT_FIELDS
+    }
+    server_summary["upload_mode"] = "summary_only"
+    server_summary["source_result_sha256"] = hashlib.sha256(
+        result_file.read_bytes()
+    ).hexdigest()
+    selection = dict(server_summary.get("risk_profile_selection") or {})
+    selection.pop("checkpoint", None)
+    if selection:
+        server_summary["risk_profile_selection"] = selection
+    canonical_result.write_text(
+        json.dumps(server_summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     return str(
         _ssh_bridge().uploadFiles(
-            db_path,
+            "",
             str(canonical_result),
             host.strip(),
             username.strip(),
