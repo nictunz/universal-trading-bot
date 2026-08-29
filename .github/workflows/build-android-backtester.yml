@@ -1,4 +1,4 @@
-# build-request: crossed-margin-self-hosted-python-unzip
+# build-request: phone-triggered-resilient-build
 name: Build Android Backtester APK
 
 on:
@@ -23,7 +23,7 @@ on:
 
 concurrency:
   group: android-backtester-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -31,7 +31,7 @@ permissions:
 jobs:
   build:
     runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 90
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
