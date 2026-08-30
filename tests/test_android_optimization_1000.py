@@ -52,3 +52,15 @@ def test_all_strategy_performance_fields_are_optimized_or_fixed():
         "backtest_slippage_percent": "0.01",
     }.items():
         assert f'"{field}": {value}' in bridge
+
+
+def test_android_stop_is_checked_inside_active_backtest_trial():
+    backtest = (ROOT / "universal_bot/backtest.py").read_text(encoding="utf-8")
+    fast = (ROOT / "universal_bot/fast_backtest.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
+    cache = (ROOT / "universal_bot/local_cache_core.py").read_text(encoding="utf-8")
+    assert "(i - start_idx) % 256 == 0" in backtest
+    assert "control_check()" in backtest
+    assert "control_check=control_check" in fast
+    assert bridge.count("control_check=_wait_for_optimization_control") >= 5
+    assert "control_check=control_check" in cache
