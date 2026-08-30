@@ -293,7 +293,11 @@ def _optimize_risk_profile(
     )
     journal_path = checkpoint_path.with_suffix(".journal.jsonl")
     strategy_fingerprint = hashlib.sha256(
-        json.dumps(base_overrides, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(
+            {"base_overrides": base_overrides, "candidate_schema": "coarse-buckets-v2"},
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
     checkpoint = {
         "version": 2,
