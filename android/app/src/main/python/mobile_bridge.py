@@ -51,11 +51,21 @@ def request_optimization_stop() -> None:
         _CONTROL.notify_all()
 
 
+def _native_stop_requested() -> bool:
+    """Read the Java flag without waiting for a second Python call to acquire the GIL."""
+    try:
+        from java import jclass
+        service = jclass("com.nictunz.universalbacktester.BacktestForegroundService")
+        return bool(service.isStopRequested())
+    except Exception:
+        return False
+
+
 def _wait_for_optimization_control() -> None:
     with _CONTROL:
-        while _CONTROL_PAUSED and not _CONTROL_STOP:
+        while _CONTROL_PAUSED and not _CONTROL_STOP and not _native_stop_requested():
             _CONTROL.wait(timeout=1.0)
-        if _CONTROL_STOP:
+        if _CONTROL_STOP or _native_stop_requested():
             raise RuntimeError("사용자가 백테스트를 중지했습니다. 완료된 체크포인트는 보존됩니다.")
 
 
