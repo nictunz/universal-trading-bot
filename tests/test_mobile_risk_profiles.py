@@ -103,3 +103,18 @@ def test_incremental_trial_journal_recovers_without_full_rewrite(tmp_path):
     loaded = _load_checkpoint_journal(journal, "fingerprint-a", completed)
     assert loaded == 2
     assert set(completed) == {"trial-1", "trial-2"}
+
+
+def test_android_exposes_fixed_and_compound_sizing_controls():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    activity = (root / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
+    service = (root / "android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java").read_text(encoding="utf-8")
+    bridge = (root / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
+    assert 'new String[]{"복리식", "고정식"}' in activity
+    assert 'intent.putExtra("compounding_enabled", compoundingEnabled)' in activity
+    assert '"sizing_mode", "compounding_enabled"' in activity
+    assert 'request.optBoolean("compounding_enabled", true)' in service
+    assert 'compounding_enabled: bool = True' in bridge
+    assert 'overrides["backtest_compounding_enabled"] = bool(compounding_enabled)' in bridge

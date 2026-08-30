@@ -125,7 +125,8 @@ public class BacktestForegroundService extends Service {
                     request.optString("remote_dir"),
                     request.optString("key_path"),
                     request.optString("risk_profile", "공격형"),
-                    request.optInt("optimization_trials", 50)
+                    request.optInt("optimization_trials", 50),
+                    request.optBoolean("compounding_enabled", true)
             ).toString();
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
@@ -173,6 +174,7 @@ public class BacktestForegroundService extends Service {
         request.put("key_path", intent.getStringExtra("key_path"));
         request.put("risk_profile", intent.getStringExtra("risk_profile"));
         request.put("optimization_trials", intent.getIntExtra("optimization_trials", 50));
+        request.put("compounding_enabled", intent.getBooleanExtra("compounding_enabled", true));
         return request;
     }
 

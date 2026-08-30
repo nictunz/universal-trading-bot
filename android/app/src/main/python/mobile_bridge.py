@@ -423,7 +423,12 @@ def _optimize_risk_profile(
         "checkpoint": str(checkpoint_path),
         "requested_trials": trials,
         "optimized_strategy_fields": list(OPTIMIZED_STRATEGY_FIELDS),
-        "fixed_values": dict(FIXED_BACKTEST),
+        "fixed_values": {
+            **FIXED_BACKTEST,
+            "backtest_compounding_enabled": bool(
+                base_overrides.get("backtest_compounding_enabled", True)
+            ),
+        },
         "tested_combinations": len(combinations),
         "viable_combinations": len(viable),
         "parameters": best["parameters"],
@@ -461,6 +466,7 @@ def run_backtest(
     key_path: str = "",
     risk_profile: str = "공격형",
     optimization_trials: int = 50,
+    compounding_enabled: bool = True,
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -496,6 +502,7 @@ def run_backtest(
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
     overrides.update(FIXED_BACKTEST)
+    overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
     overrides["order_percent_of_equity"] = 100.0
     overrides["max_pyramiding"] = 1
     profile = RISK_PROFILES[selected_profile]
@@ -506,7 +513,10 @@ def run_backtest(
     )
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
-    log("복리식: 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
+    if bool(compounding_enabled):
+        log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
+    else:
+        log("계산 방식: 고정식 · 최초자본 1,000 USDT 기준으로 주문 규모와 최대 총노출 유지")
     log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
 
     db, result, summary = build_cache_and_backtest(
@@ -542,6 +552,7 @@ def run_backtest(
         "trades_log", "equity_curve", "data_start", "data_end",
         "liquidations", "margin_mode", "maintenance_margin_percent",
         "cross_liquidation_buffer_percent", "max_total_multiplier",
+        "compounding_enabled", "sizing_mode",
     ):
         summary[key] = optimized_result.get(key)
     summary["risk_profile"] = selected_profile

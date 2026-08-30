@@ -61,6 +61,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView symbolInput;
     private AutoCompleteTextView timeframeInput;
     private AutoCompleteTextView riskProfileInput;
+    private AutoCompleteTextView sizingModeInput;
     private AutoCompleteTextView trialCountInput;
     private EditText startInput;
     private EditText endInput;
@@ -215,6 +216,19 @@ public class MainActivity extends android.app.Activity {
         backtestCard.addView(profileRow, marginTop(8));
         backtestCard.addView(text(
                 "기간은 직접 선택합니다. 3봉 분할형=첫 진입 3연속 하락/상승봉 역추세·회당 1~3배·최대 1~5회(총 15배)이며, 나머지 전략 수치를 함께 최적화합니다.",
+                11, MUTED, false
+        ), marginTop(7));
+
+        sizingModeInput = autocomplete(new String[]{"복리식", "고정식"}, "복리식");
+        backtestCard.addView(labeled("자산 계산 방식", sizingModeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "계산 방식 선택",
+                sizingModeInput,
+                new String[]{"복리식", "고정식"},
+                new String[]{"복리식", "고정식"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=최초 1,000 USDT 기준을 계속 사용",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -432,6 +446,9 @@ public class MainActivity extends android.app.Activity {
         String symbol = symbolInput.getText().toString().trim();
         String timeframe = timeframeInput.getText().toString().trim();
         String riskProfile = riskProfileInput.getText().toString().trim();
+        String sizingMode = sizingModeInput.getText().toString().trim();
+        boolean compoundingEnabled = !"고정식".equals(sizingMode);
+        sizingMode = compoundingEnabled ? "복리식" : "고정식";
         int optimizationTrials;
         try {
             optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
@@ -469,6 +486,7 @@ public class MainActivity extends android.app.Activity {
         intent.putExtra("key_path", privateKeyPath);
         intent.putExtra("risk_profile", riskProfile);
         intent.putExtra("optimization_trials", optimizationTrials);
+        intent.putExtra("compounding_enabled", compoundingEnabled);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
@@ -481,6 +499,7 @@ public class MainActivity extends android.app.Activity {
         enableUpload(false);
         enableResultActions(false);
         logText.setText("백그라운드 백테스트 시작\n프로필: " + riskProfile
+                + " · 계산: " + sizingMode
                 + " · 조합: " + optimizationTrials + "회\n"
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
@@ -890,6 +909,13 @@ public class MainActivity extends android.app.Activity {
         String savedTimeframe = summary.optString("timeframe", "");
         if (!savedSymbol.isEmpty()) symbolInput.setText(savedSymbol, false);
         if (!savedTimeframe.isEmpty()) timeframeInput.setText(savedTimeframe, false);
+        String savedSizingMode = summary.optString("sizing_mode", "");
+        if (!savedSizingMode.isEmpty()) {
+            sizingModeInput.setText(
+                    "compound_current_equity".equals(savedSizingMode) ? "복리식" : "고정식",
+                    false
+            );
+        }
         String savedStart = summary.optString("requested_start", "");
         String savedEnd = summary.optString("requested_end", "");
         if (!savedStart.isEmpty()) startInput.setText(savedStart);
@@ -910,7 +936,8 @@ public class MainActivity extends android.app.Activity {
         String[] keys = {
                 "symbol", "bars", "trades", "wins", "win_rate", "profit_factor",
                 "gross_pnl", "estimated_costs", "pnl", "return_percent",
-                "max_drawdown_percent", "data_start", "data_end", "cache_sha256"
+                "max_drawdown_percent", "sizing_mode", "compounding_enabled",
+                "data_start", "data_end", "cache_sha256"
         };
         StringBuilder sb = new StringBuilder();
         for (String key : keys) {
