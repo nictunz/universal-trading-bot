@@ -11,7 +11,11 @@ def test_android_allows_five_thousand_trials_and_preserves_prefix():
     assert '"5000회"' in java
     assert '"3봉 분할형"' in java
     assert 'trial-{position:04d}' in bridge
-    assert 'seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}"' in bridge
+    assert 'seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|coarse-buckets-v2"' in bridge
+    assert "broad_trials = min(1000, optimization_trials)" in bridge
+    assert "refine_trials = min(5000, max(1, int(trials)))" in bridge
+    assert '"top_candidates": ranked[:30]' in bridge
+    assert 'candidates = list(refined.get("top_candidates") or [])[:30]' in bridge
 
 
 def test_android_shares_result_and_cache_through_file_provider():
