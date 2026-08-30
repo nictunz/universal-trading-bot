@@ -62,6 +62,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView timeframeInput;
     private AutoCompleteTextView riskProfileInput;
     private AutoCompleteTextView sizingModeInput;
+    private AutoCompleteTextView optimizationStageInput;
     private AutoCompleteTextView trialCountInput;
     private EditText startInput;
     private EditText endInput;
@@ -229,6 +230,22 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(8));
         backtestCard.addView(text(
                 "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=최초 1,000 USDT 기준을 계속 사용",
+                11, MUTED, false
+        ), marginTop(7));
+
+        optimizationStageInput = autocomplete(
+                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"},
+                "1차 전체 탐색"
+        );
+        backtestCard.addView(labeled("자동 최적화 단계", optimizationStageInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "단계 선택",
+                optimizationStageInput,
+                new String[]{"1차 탐색", "정밀 탐색", "3개월 롤링", "전체 자동"},
+                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "후속 단계는 앞 단계 체크포인트를 자동 재사용합니다. 전체 자동은 1차→정밀→롤링→최종 선정을 순서대로 실행합니다.",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -449,6 +466,12 @@ public class MainActivity extends android.app.Activity {
         String sizingMode = sizingModeInput.getText().toString().trim();
         boolean compoundingEnabled = !"고정식".equals(sizingMode);
         sizingMode = compoundingEnabled ? "복리식" : "고정식";
+        String stageLabel = optimizationStageInput.getText().toString().trim();
+        String optimizationStage;
+        if ("상위 후보 정밀 탐색".equals(stageLabel)) optimizationStage = "refine";
+        else if ("3개월 롤링 + 최종 선정".equals(stageLabel)) optimizationStage = "rolling";
+        else if ("전체 자동 실행".equals(stageLabel)) optimizationStage = "auto";
+        else optimizationStage = "broad";
         int optimizationTrials;
         try {
             optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
@@ -487,6 +510,7 @@ public class MainActivity extends android.app.Activity {
         intent.putExtra("risk_profile", riskProfile);
         intent.putExtra("optimization_trials", optimizationTrials);
         intent.putExtra("compounding_enabled", compoundingEnabled);
+        intent.putExtra("optimization_stage", optimizationStage);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
@@ -500,6 +524,7 @@ public class MainActivity extends android.app.Activity {
         enableResultActions(false);
         logText.setText("백그라운드 백테스트 시작\n프로필: " + riskProfile
                 + " · 계산: " + sizingMode
+                + " · 단계: " + stageLabel
                 + " · 조합: " + optimizationTrials + "회\n"
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
@@ -937,6 +962,7 @@ public class MainActivity extends android.app.Activity {
                 "symbol", "bars", "trades", "wins", "win_rate", "profit_factor",
                 "gross_pnl", "estimated_costs", "pnl", "return_percent",
                 "max_drawdown_percent", "sizing_mode", "compounding_enabled",
+                "optimization_pipeline", "rolling_final_selection", "rolling_report_path",
                 "data_start", "data_end", "cache_sha256"
         };
         StringBuilder sb = new StringBuilder();

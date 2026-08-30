@@ -118,3 +118,20 @@ def test_android_exposes_fixed_and_compound_sizing_controls():
     assert 'request.optBoolean("compounding_enabled", true)' in service
     assert 'compounding_enabled: bool = True' in bridge
     assert 'overrides["backtest_compounding_enabled"] = bool(compounding_enabled)' in bridge
+
+
+def test_android_exposes_staged_and_fully_automatic_optimization():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    activity = (root / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
+    service = (root / "android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java").read_text(encoding="utf-8")
+    bridge = (root / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
+    for label in ("1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"):
+        assert label in activity
+    assert 'intent.putExtra("optimization_stage", optimizationStage)' in activity
+    assert 'request.optString("optimization_stage", "broad")' in service
+    assert "def _refine_top_candidates(" in bridge
+    assert "def _rolling_validate_candidates(" in bridge
+    assert '"target_900_hits"' in bridge
+    assert '"paper_live_applied": False' in bridge
