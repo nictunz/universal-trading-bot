@@ -354,6 +354,7 @@ def _optimize_risk_profile(
                 end=end_text,
                 overrides=overrides,
                 database_path=db,
+                control_check=_wait_for_optimization_control,
                 include_details=False,
             )
             if float(result.get("fee_percent_per_side", -1)) != 0.02:
@@ -428,6 +429,7 @@ def _optimize_risk_profile(
         end=end_text,
         overrides=best_overrides,
         database_path=db,
+    control_check=_wait_for_optimization_control,
     )
     checkpoint["stage"] = "COMPLETE"
     checkpoint["best"] = best
@@ -593,6 +595,7 @@ def _refine_top_candidates(
             end=end_text,
             overrides=overrides,
             database_path=db,
+            control_check=_wait_for_optimization_control,
             include_details=False,
         )
         completed[key] = {
@@ -706,6 +709,7 @@ def _rolling_validate_candidates(
                 end=window_end,
                 overrides=overrides,
                 database_path=db,
+                control_check=_wait_for_optimization_control,
                 include_details=False,
             )
             completed[key] = {
