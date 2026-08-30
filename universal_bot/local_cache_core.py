@@ -338,6 +338,7 @@ def build_cache_and_backtest(
             end=end_text,
             database_path=db,
             overrides=dict(strategy_overrides or {}),
+            control_check=control_check,
         )
     except Exception as exc:
         checkpoint["stage"] = "BACKTEST_FAILED"
