@@ -64,3 +64,7 @@ def test_android_stop_is_checked_inside_active_backtest_trial():
     assert "control_check=control_check" in fast
     assert bridge.count("control_check=_wait_for_optimization_control") >= 5
     assert "control_check=control_check" in cache
+    service = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java").read_text(encoding="utf-8")
+    assert "static volatile boolean stopRequested" in service
+    assert "isStopRequested()" in service
+    assert "_native_stop_requested()" in bridge
