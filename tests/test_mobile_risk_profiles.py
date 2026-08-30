@@ -53,6 +53,7 @@ def test_mobile_profile_costs_are_fixed():
         "backtest_maintenance_margin_percent": 0.5,
         "backtest_cross_liquidation_buffer_percent": 25.0,
         "backtest_max_total_multiplier": 15.0,
+        "backtest_compounding_enabled": True,
     }
 
 
