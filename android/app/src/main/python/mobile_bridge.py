@@ -203,17 +203,29 @@ def _profile_candidates(
     rng = random.Random(seed)
     candidates: list[dict] = []
     seen: set[str] = set()
+    # Stage 1 deliberately uses wide, human-readable buckets. Fine decimal
+    # exploration is reserved for stage 2 around the strongest broad regions.
     while len(candidates) < trials:
-        one_min = round(rng.uniform(0.05, 0.55), 2)
-        one_max = round(rng.uniform(max(one_min + 0.15, 0.4), 2.5), 2)
-        tp_min = round(rng.uniform(0.10, 0.80), 2)
-        tp_max = round(rng.uniform(max(tp_min + 0.10, 0.5), 3.0), 2)
-        sl_min = round(rng.uniform(0.15, 1.20), 2)
-        sl_max = round(rng.uniform(max(sl_min + 0.15, 0.8), 4.0), 2)
-        os_max = round(rng.uniform(18, 42), 1)
-        os_min = round(rng.uniform(0, max(1, os_max - 8)), 1)
-        ob_min = round(rng.uniform(58, 82), 1)
-        ob_max = round(rng.uniform(min(99, ob_min + 8), 100), 1)
+        one_min = rng.choice([0.05, 0.15, 0.30, 0.45, 0.55])
+        one_max = rng.choice([0.40, 0.75, 1.25, 1.75, 2.50])
+        if one_max <= one_min:
+            one_max = 0.75
+        tp_min = rng.choice([0.10, 0.25, 0.40, 0.60, 0.80])
+        tp_max = rng.choice([0.50, 1.00, 1.50, 2.00, 3.00])
+        if tp_max <= tp_min:
+            tp_max = 1.00
+        sl_min = rng.choice([0.15, 0.35, 0.60, 0.90, 1.20])
+        sl_max = rng.choice([0.80, 1.25, 2.00, 3.00, 4.00])
+        if sl_max <= sl_min:
+            sl_max = 1.25
+        os_max = rng.choice([20.0, 25.0, 30.0, 35.0, 40.0])
+        os_min = rng.choice([0.0, 5.0, 10.0, 15.0, 20.0])
+        if os_min >= os_max:
+            os_min = max(0.0, os_max - 10.0)
+        ob_min = rng.choice([60.0, 65.0, 70.0, 75.0, 80.0])
+        ob_max = rng.choice([80.0, 85.0, 90.0, 95.0, 100.0])
+        if ob_max <= ob_min:
+            ob_max = min(100.0, ob_min + 10.0)
         entry = rng.randint(profile["entry_multiplier_min"], profile["entry_multiplier_max"])
         allow_long, allow_short = rng.choice([(True, True), (True, False), (False, True)])
         params = {
@@ -224,32 +236,32 @@ def _profile_candidates(
             "entry_multiplier": entry,
             "order_percent_of_equity": float(entry * 100),
             "max_pyramiding": rng.choice(profile["max_entries_values"]),
-            "volume_lookback": rng.randint(20, 160),
-            "volume_break_multiplier": round(rng.uniform(3.0, 25.0), 2),
+            "volume_lookback": rng.choice([20, 40, 80, 120, 160]),
+            "volume_break_multiplier": rng.choice([3.0, 5.0, 10.0, 15.0, 20.0, 25.0]),
             "min_one_bar_vol": one_min,
             "max_one_bar_vol": one_max,
             "volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288, 432]),
-            "tp_vol_multiplier": round(rng.uniform(0.15, 2.5), 2),
-            "sl_vol_multiplier": round(rng.uniform(0.20, 3.5), 2),
+            "tp_vol_multiplier": rng.choice([0.15, 0.50, 1.00, 1.50, 2.00, 2.50]),
+            "sl_vol_multiplier": rng.choice([0.20, 0.75, 1.50, 2.25, 3.00, 3.50]),
             "min_tp_percent": tp_min,
             "max_tp_percent": tp_max,
             "min_sl_percent": sl_min,
             "max_sl_percent": sl_max,
             "use_nbar_volatility_block": rng.random() < 0.75,
             "nbar_volatility_bars": rng.choice([12, 24, 36, 48, 72, 96, 144, 200, 288]),
-            "max_nbar_volatility": round(rng.uniform(0.8, 10.0), 2),
+            "max_nbar_volatility": rng.choice([0.8, 2.0, 4.0, 6.0, 8.0, 10.0]),
             "use_adx_filter": rng.random() < 0.65,
-            "adx_length": rng.randint(5, 30),
-            "adx_min": round(rng.uniform(5, 35), 1),
-            "adx_max": round(rng.uniform(45, 100), 1),
+            "adx_length": rng.choice([5, 10, 14, 20, 25, 30]),
+            "adx_min": rng.choice([5.0, 10.0, 15.0, 20.0, 25.0, 35.0]),
+            "adx_max": rng.choice([45.0, 55.0, 65.0, 75.0, 85.0, 100.0]),
             "use_rsi_filter": rng.random() < 0.85,
-            "rsi_length": rng.randint(3, 24),
+            "rsi_length": rng.choice([3, 5, 7, 10, 14, 20, 24]),
             "rsi_oversold_min": os_min,
             "rsi_oversold_max": os_max,
             "rsi_overbought_min": ob_min,
             "rsi_overbought_max": ob_max,
-            "cooldown_bars": rng.randint(0, 36),
-            "reentry_bars": rng.randint(0, 24),
+            "cooldown_bars": rng.choice([0, 3, 6, 12, 24, 36]),
+            "reentry_bars": rng.choice([0, 3, 6, 12, 18, 24]),
             "block_weekend": rng.random() < 0.15,
             "excluded_hours": rng.choice(["", "00", "00,13,15,16,17,18,23", "13,15,16,17,18,23"]),
         }
@@ -284,7 +296,8 @@ def _optimize_risk_profile(
         json.dumps(base_overrides, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
     checkpoint = {
-        "version": 1,
+        "version": 2,
+        "candidate_schema": "coarse-buckets-v2",
         "profile": profile_name,
         "constraints": profile,
         "strategy_fingerprint": strategy_fingerprint,
@@ -294,7 +307,7 @@ def _optimize_risk_profile(
         try:
             loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             if (
-                loaded.get("version") == 1
+                loaded.get("version") == 2
                 and loaded.get("profile") == profile_name
                 and loaded.get("strategy_fingerprint") == strategy_fingerprint
             ):
@@ -313,7 +326,7 @@ def _optimize_risk_profile(
     journal_rows = _load_checkpoint_journal(journal_path, strategy_fingerprint, completed)
     if journal_rows:
         log(f"증분 체크포인트 복구: {journal_rows}개 기록 · 총 {len(completed)}개 완료")
-    seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}"
+    seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|coarse-buckets-v2"
     combinations = _profile_candidates(profile_name, trials, seed_material)
     checkpoint["requested_trials"] = trials
     for position, params in enumerate(combinations, 1):
@@ -530,7 +543,7 @@ def _refine_top_candidates(
     broad = json.loads(broad_checkpoint.read_text(encoding="utf-8"))
     mdd_limit = float((broad_selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
     top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)
-    refine_trials = min(1000, max(100, int(trials) // 5))
+    refine_trials = min(5000, max(1, int(trials)))
     fingerprint = hashlib.sha256(
         json.dumps(
             {
@@ -601,7 +614,7 @@ def _refine_top_candidates(
         "requested_trials": refine_trials,
         "completed_trials": len(completed),
         "eligible_trials": len(ranked),
-        "top_candidates": ranked[:20],
+        "top_candidates": ranked[:30],
     }
 
 
@@ -649,7 +662,7 @@ def _rolling_validate_candidates(
     windows = _three_month_windows(start_text, end_text)
     if not windows:
         raise RuntimeError("3개월 롤링 검증에는 최소 3개월의 기간이 필요합니다.")
-    candidates = list(refined.get("top_candidates") or [])[:10]
+    candidates = list(refined.get("top_candidates") or [])[:30]
     source = Path(str(refined["checkpoint"]))
     path = source.with_name(source.stem + "-rolling.json")
     fingerprint = hashlib.sha256(
@@ -881,6 +894,11 @@ def run_backtest(
     summary.pop("trades_log", None)
     gc.collect()
     log("휴대폰 안전 모드: 대형 기준 결과 메모리 해제 · trial별 자동 냉각 적용")
+    broad_trials = min(1000, optimization_trials)
+    log(
+        f"단계별 배분: 1차 큰 구간 {broad_trials}회 → "
+        f"상위 30개 주변 정밀 {optimization_trials}회 → 상위 30개 3개월 롤링"
+    )
     optimized_result, risk_selection = _optimize_risk_profile(
         symbol.strip(),
         timeframe.strip(),
@@ -890,7 +908,7 @@ def run_backtest(
         Path(output_dir),
         overrides,
         selected_profile,
-        optimization_trials,
+        broad_trials,
         log,
     )
     for key in (
