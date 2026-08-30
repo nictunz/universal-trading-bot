@@ -429,7 +429,7 @@ def _optimize_risk_profile(
         end=end_text,
         overrides=best_overrides,
         database_path=db,
-    control_check=_wait_for_optimization_control,
+        control_check=_wait_for_optimization_control,
     )
     checkpoint["stage"] = "COMPLETE"
     checkpoint["best"] = best
