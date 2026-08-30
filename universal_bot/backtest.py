@@ -79,6 +79,17 @@ def crossed_liquidation_hit(
     return account_equity <= max(reserve, maintenance)
 
 
+def backtest_sizing_equity(
+    initial_capital: float,
+    realized_net_pnl: float,
+    compounding_enabled: bool,
+) -> float:
+    """Capital base used for the next entry; fixed mode preserves legacy results."""
+    if not compounding_enabled:
+        return max(0.0, float(initial_capital))
+    return max(0.0, float(initial_capital) + float(realized_net_pnl))
+
+
 def run_backtest(
     df: pd.DataFrame,
     settings: Settings,
@@ -126,11 +137,11 @@ def run_backtest(
         start_date = start_date.astimezone(timezone.utc)
 
     initial_capital = float(settings.initial_capital)
-    order_notional = initial_capital * float(settings.order_percent_of_equity) / 100.0
-    max_total_notional = initial_capital * float(settings.backtest_max_total_multiplier)
+    compounding_enabled = bool(settings.backtest_compounding_enabled)
     maintenance_rate = max(0.0, float(settings.backtest_maintenance_margin_percent)) / 100.0
-    cross_reserve = initial_capital * max(
-        0.0, float(settings.backtest_cross_liquidation_buffer_percent)
+    execution_cost_rate = (
+        max(0.0, float(settings.backtest_fee_percent))
+        + max(0.0, float(settings.backtest_slippage_percent))
     ) / 100.0
 
     position_side: str | None = None
@@ -145,6 +156,8 @@ def run_backtest(
     last_exit_bar: int | None = None
     bar_number = 0
     realized_pnl = 0.0
+    realized_costs = 0.0
+    position_sizing_equity = initial_capital
     liquidations = 0
     account_liquidated = False
     trade_log: list[dict] = []
@@ -211,7 +224,7 @@ def run_backtest(
                     qty=qty,
                     avg_entry=avg_entry,
                     worst_mark=worst_mark,
-                    account_equity_before_open_pnl=initial_capital + realized_pnl,
+                    account_equity_before_open_pnl=initial_capital + realized_pnl - realized_costs,
                     initial_capital=initial_capital,
                     maintenance_rate=maintenance_rate,
                     reserve_percent=float(settings.backtest_cross_liquidation_buffer_percent),
@@ -251,6 +264,7 @@ def run_backtest(
                         else (avg_entry - exit_price) * qty
                     )
                 realized_pnl += pnl
+                realized_costs += qty * (abs(avg_entry) + abs(exit_price)) * execution_cost_rate
                 trade_log.append({
                     "trade": len(trade_log) + 1,
                     "side": position_side,
@@ -265,7 +279,9 @@ def run_backtest(
                     "reason": reason,
                     "bar": bar_number,
                     "entries": entries,
-                    "total_exposure_multiplier": entry_notional / initial_capital if initial_capital else 0.0,
+                    "total_exposure_multiplier": entry_notional / position_sizing_equity if position_sizing_equity else 0.0,
+                    "sizing_equity": position_sizing_equity,
+                    "compounding_enabled": compounding_enabled,
                     "cross_margin": str(settings.backtest_margin_mode).lower() == "crossed",
                 })
                 position_side = None
@@ -276,6 +292,7 @@ def run_backtest(
                 position_sl = math.nan
                 position_entry_time = None
                 entries = 0
+                position_sizing_equity = initial_capital
                 last_exit_bar = bar_number
 
         if account_liquidated:
@@ -287,8 +304,16 @@ def run_backtest(
             })
             break
 
+        sizing_equity = backtest_sizing_equity(
+            initial_capital,
+            realized_pnl - realized_costs,
+            compounding_enabled,
+        )
+        order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0
+        max_total_notional = sizing_equity * float(settings.backtest_max_total_multiplier)
         can_pyramid = (
-            entries < settings.max_pyramiding
+            sizing_equity > 0.0
+            and entries < settings.max_pyramiding
             and entry_notional + order_notional <= max_total_notional + 1e-9
         )
         same_direction = position_side is None or position_side == signal
@@ -298,6 +323,7 @@ def run_backtest(
                 signed = amount if signal == "LONG" else -amount
                 if position_side is None:
                     position_side = signal
+                    position_sizing_equity = sizing_equity
                     position_size = signed
                     initial_entry = c
                     entry_notional = amount * c

@@ -1,4 +1,4 @@
-from universal_bot.backtest import crossed_liquidation_hit
+from universal_bot.backtest import backtest_sizing_equity, crossed_liquidation_hit
 
 
 def test_crossed_margin_15x_liquidates_near_five_percent_adverse_move():
@@ -51,3 +51,21 @@ def test_android_compat_settings_include_every_liquidation_field():
     assert '"backtest_maintenance_margin_percent": 0.5' in compat
     assert '"backtest_cross_liquidation_buffer_percent": 25.0' in compat
     assert '"backtest_max_total_multiplier": 15.0' in compat
+
+
+def test_compound_sizing_uses_current_net_equity_and_fixed_mode_stays_legacy():
+    assert backtest_sizing_equity(1000.0, 250.0, True) == 1250.0
+    assert backtest_sizing_equity(1000.0, -400.0, True) == 600.0
+    assert backtest_sizing_equity(1000.0, 250.0, False) == 1000.0
+    assert backtest_sizing_equity(1000.0, -400.0, False) == 1000.0
+    assert backtest_sizing_equity(1000.0, -1000.0, True) == 0.0
+
+
+def test_mobile_optimizer_enables_backtest_only_compounding():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    bridge = (root / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
+    config = (root / "universal_bot/config.py").read_text(encoding="utf-8")
+    assert '"backtest_compounding_enabled": True' in bridge
+    assert "backtest_compounding_enabled: bool = False" in config

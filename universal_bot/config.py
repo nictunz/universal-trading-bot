@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     backtest_maintenance_margin_percent: float = 0.5
     backtest_cross_liquidation_buffer_percent: float = 25.0
     backtest_max_total_multiplier: float = 15.0
+    # Backtest only: size each new position from current net equity when enabled.
+    backtest_compounding_enabled: bool = False
     crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False

@@ -95,6 +95,7 @@ FIXED_BACKTEST = {
     "backtest_maintenance_margin_percent": 0.5,
     "backtest_cross_liquidation_buffer_percent": 25.0,
     "backtest_max_total_multiplier": 15.0,
+    "backtest_compounding_enabled": True,
 }
 
 
@@ -505,6 +506,7 @@ def run_backtest(
     )
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
+    log("복리식: 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
 
     db, result, summary = build_cache_and_backtest(

@@ -177,6 +177,8 @@ def run_cached_symbol_backtest(
         "maintenance_margin_percent": settings.backtest_maintenance_margin_percent,
         "cross_liquidation_buffer_percent": settings.backtest_cross_liquidation_buffer_percent,
         "max_total_multiplier": settings.backtest_max_total_multiplier,
+        "compounding_enabled": settings.backtest_compounding_enabled,
+        "sizing_mode": "compound_current_equity" if settings.backtest_compounding_enabled else "fixed_initial_capital",
     }
     if include_details:
         payload["trades_log"] = result.trades_log
