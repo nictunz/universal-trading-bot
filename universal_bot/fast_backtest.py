@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -72,12 +72,15 @@ def run_cached_symbol_backtest(
     overrides: dict[str, Any] | None = None,
     database_path: str | Path | None = None,
     include_details: bool = True,
+    control_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run a backtest without any network calls.
 
     Reads the one-time OHLCV cache produced by run_one_year_backtest.py and only
     recalculates strategy/indicators. This is intended for rapid parameter iteration.
     """
+    if control_check is not None:
+        control_check()
     if asset_class.lower() != "crypto":
         raise ValueError("fast cache backtest currently supports crypto caches only")
     if not symbol.strip():
@@ -138,12 +141,19 @@ def run_cached_symbol_backtest(
         _PREPARED_CACHE_KEY = prepared_key
         _PREPARED_CACHE_VALUE = (df, volumes, source_bars, source_status)
 
+    if control_check is not None:
+        control_check()
     normalized = normalize_exchange_volume(volumes, settings.volume_lookback, required_sources=4)
     common_count = int(normalized.reindex(df.index).notna().sum())
     if common_count < max(settings.volume_lookback, 10):
         raise ValueError("insufficient common four-exchange cached volume history")
 
-    result = run_backtest(df, settings, normalized_volume_ratio=normalized)
+    result = run_backtest(
+        df,
+        settings,
+        normalized_volume_ratio=normalized,
+        control_check=control_check,
+    )
     payload = {
         "strategy": "Volume Strategy FINAL Universal v15",
         "symbol": symbol,
