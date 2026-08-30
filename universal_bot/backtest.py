@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timezone
 import math
+from typing import Callable
 import numpy as np
 import pandas as pd
 from universal_bot.config import Settings
@@ -94,6 +95,7 @@ def run_backtest(
     df: pd.DataFrame,
     settings: Settings,
     normalized_volume_ratio: pd.Series | None = None,
+    control_check: Callable[[], None] | None = None,
 ) -> BacktestResult:
     """Fast deterministic v15 bar simulation."""
     if len(df) == 0:
@@ -164,6 +166,10 @@ def run_backtest(
     equity_curve: list[dict] = []
 
     for i in range(start_idx, total):
+        # Mobile stop/pause must be observed inside a long multi-year trial,
+        # not only between trials. Checking every 256 bars keeps overhead tiny.
+        if control_check is not None and (i - start_idx) % 256 == 0:
+            control_check()
         bar_number += 1
         bars_since_entry = None if last_entry_bar is None else bar_number - last_entry_bar
         bars_since_exit = None if last_exit_bar is None else bar_number - last_exit_bar
