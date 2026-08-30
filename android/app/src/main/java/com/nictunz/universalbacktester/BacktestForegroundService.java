@@ -34,6 +34,11 @@ public class BacktestForegroundService extends Service {
     private ExecutorService executor;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean working;
+    private static volatile boolean stopRequested;
+
+    public static boolean isStopRequested() {
+        return stopRequested;
+    }
 
     @Override
     public void onCreate() {
@@ -60,6 +65,7 @@ public class BacktestForegroundService extends Service {
             return START_STICKY;
         }
         if (ACTION_STOP.equals(action)) {
+            stopRequested = true;
             prefs().edit().putBoolean("backtest_requested", false).putBoolean("backtest_paused", false)
                     .putString("backtest_status", "STOPPING").apply();
             requestPythonStop();
@@ -70,6 +76,7 @@ public class BacktestForegroundService extends Service {
         JSONObject request;
         try {
             if (ACTION_START.equals(action) && intent != null) {
+                stopRequested = false;
                 request = requestFromIntent(intent);
                 prefs().edit().putString("backtest_request", request.toString())
                         .putBoolean("backtest_requested", true)
