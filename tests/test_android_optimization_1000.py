@@ -67,4 +67,8 @@ def test_android_stop_is_checked_inside_active_backtest_trial():
     service = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java").read_text(encoding="utf-8")
     assert "static volatile boolean stopRequested" in service
     assert "isStopRequested()" in service
+    assert "isWorkerRunning()" in service
     assert "_native_stop_requested()" in bridge
+    activity = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
+    assert '"STOPPING".equals(state) && !BacktestForegroundService.isWorkerRunning()' in activity
+    assert '.putString("backtest_status", "STOPPED")' in activity
