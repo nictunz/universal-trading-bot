@@ -13,24 +13,21 @@ permissions:
 
 jobs:
   apply:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Apply source upgrade
         shell: bash
-        run: python scripts/apply_pipeline_v3_upgrade.py
+        run: python3 scripts/apply_pipeline_v3_upgrade.py
 
       - name: Verify patched Python syntax
         shell: bash
         run: |
-          python -m py_compile universal_bot/config.py universal_bot/backtest.py universal_bot/strategy/v15.py android/app/src/main/python/mobile_bridge.py android/compat/config.py
+          python3 -m py_compile universal_bot/config.py universal_bot/backtest.py universal_bot/strategy/v15.py android/app/src/main/python/mobile_bridge.py android/compat/config.py
 
       - name: Commit patched source
         shell: bash
