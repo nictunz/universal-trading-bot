@@ -33,11 +33,15 @@ public class BacktestForegroundService extends Service {
     private static final int NOTIFICATION_ID = 4501;
     private ExecutorService executor;
     private PowerManager.WakeLock wakeLock;
-    private volatile boolean working;
+    private static volatile boolean working;
     private static volatile boolean stopRequested;
 
     public static boolean isStopRequested() {
         return stopRequested;
+    }
+
+    public static boolean isWorkerRunning() {
+        return working;
     }
 
     @Override
