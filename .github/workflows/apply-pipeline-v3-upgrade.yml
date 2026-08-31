@@ -1,0 +1,47 @@
+name: Apply Optimization Pipeline V3 Upgrade
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apply_pipeline_v3_upgrade.py'
+      - '.github/workflows/apply-pipeline-v3-upgrade.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply source upgrade
+        shell: bash
+        run: python scripts/apply_pipeline_v3_upgrade.py
+
+      - name: Verify patched Python syntax
+        shell: bash
+        run: |
+          python -m py_compile universal_bot/config.py universal_bot/backtest.py universal_bot/strategy/v15.py android/app/src/main/python/mobile_bridge.py android/compat/config.py
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add universal_bot/config.py universal_bot/backtest.py universal_bot/strategy/v15.py android/compat/config.py android/app/src/main/python/mobile_bridge.py android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java tests/test_pipeline_v3_upgrade.py
+          if git diff --cached --quiet; then
+            echo 'No source changes required.'
+            exit 0
+          fi
+          git commit -m 'feat: add top10 refine and 6m-3m rolling pipeline'
+          git push origin HEAD:main
