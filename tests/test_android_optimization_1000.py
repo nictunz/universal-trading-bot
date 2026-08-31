@@ -3,19 +3,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_android_allows_five_thousand_trials_and_preserves_prefix():
+def test_android_allows_five_thousand_trials_per_stage_and_top10_refine():
     java = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
     bridge = (ROOT / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
-    assert "optimizationTrials > 5000" in java
-    assert "optimization_trials > 5000" in bridge
+    assert "broadOptimizationTrials > 5000" in java
+    assert "refineOptimizationTrials > 5000" in java
+    assert "broad_optimization_trials <= 5000" in bridge
+    assert "refine_optimization_trials <= 5000" in bridge
     assert '"5000회"' in java
     assert '"3봉 분할형"' in java
-    assert 'trial-{position:04d}' in bridge
-    assert 'seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|coarse-buckets-v2"' in bridge
-    assert "broad_trials = min(1000, optimization_trials)" in bridge
-    assert "refine_trials = min(5000, max(1, int(trials)))" in bridge
-    assert '"top_candidates": ranked[:30]' in bridge
-    assert 'candidates = list(refined.get("top_candidates") or [])[:30]' in bridge
+    assert "top10-independent-refine-v3" in bridge
+    assert "bases = top_rows[:10]" in bridge
+    assert "trials_per_seed = min(5000" in bridge
+    assert "expected_trials = len(top_rows) * trials_per_seed" in bridge
+    assert "rolling_6m" in bridge and "rolling_3m" in bridge
+    assert '"mdd_limit_percent": 70.0' in bridge
+    assert "모든 진입 3틱룰" in java
 
 
 def test_android_shares_result_and_cache_through_file_provider():
