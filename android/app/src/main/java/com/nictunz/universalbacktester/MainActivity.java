@@ -551,6 +551,17 @@ public class MainActivity extends android.app.Activity {
     private void refreshBackgroundBacktestStatus() {
         SharedPreferences p = getSharedPreferences("universal_bot", MODE_PRIVATE);
         String state = p.getString("backtest_status", "IDLE");
+        // A force-stop kills the service before its finally block can replace
+        // STOPPING with STOPPED. Reconcile that persisted UI state on relaunch.
+        if ("STOPPING".equals(state) && !BacktestForegroundService.isWorkerRunning()) {
+            state = "STOPPED";
+            p.edit()
+                    .putBoolean("backtest_requested", false)
+                    .putBoolean("backtest_paused", false)
+                    .putString("backtest_status", "STOPPED")
+                    .putString("backtest_error", "")
+                    .apply();
+        }
         setBacktestControlState(state);
         if ("RUNNING".equals(state)) {
             setBusy(true, "백그라운드 실행 중");
