@@ -1064,62 +1064,107 @@ def load_saved_result(result_path: str, include_details: bool = False) -> str:
 
 
 def export_optimization_results(result_path: str) -> str:
+    """Export every automatic-optimization stage without hiding high-MDD trials."""
     result_file = Path(result_path)
     if not result_file.is_file():
         raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
     summary = json.loads(result_file.read_text(encoding="utf-8"))
     selection = summary.get("risk_profile_selection") or {}
-    checkpoint_path = Path(str(selection.get("checkpoint") or ""))
-    if not checkpoint_path.is_file():
-        raise RuntimeError(f"최적화 체크포인트가 없습니다: {checkpoint_path}")
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    completed = checkpoint.get("completed") or {}
     mdd_limit = float((selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
-    rankings: list[dict] = []
-    seen_parameters: set[str] = set()
-    duplicate_trials = 0
-    for trial_id, row in completed.items():
-        parameters = row.get("parameters") or {}
-        identity = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
-        if identity in seen_parameters:
-            duplicate_trials += 1
-            continue
-        seen_parameters.add(identity)
-        result = dict(row.get("result") or {})
-        trades = int(result.get("trades") or 0)
-        mdd = float(result.get("max_drawdown_percent") or 0)
-        liquidations = int(result.get("liquidations") or 0)
-        rankings.append({
-            "trial_id": trial_id,
-            "eligible": trades > 0 and liquidations == 0 and mdd <= mdd_limit,
-            "entry_multiplier": row.get("entry_multiplier"),
-            "max_entries": row.get("max_entries"),
-            "return_percent": result.get("return_percent"),
-            "pnl": result.get("pnl"),
-            "profit_factor": result.get("profit_factor"),
-            "max_drawdown_percent": result.get("max_drawdown_percent"),
-            "trades": result.get("trades"),
-            "wins": result.get("wins"),
-            "win_rate": result.get("win_rate"),
-            "estimated_costs": result.get("estimated_costs"),
-            "liquidations": liquidations,
-            "parameters": parameters,
-            "result": result,
-        })
-    rankings.sort(key=lambda row: (
-        float(row.get("return_percent") or 0),
-        float(row.get("profit_factor") or 0),
-        -float(row.get("max_drawdown_percent") or 0),
-    ), reverse=True)
-    for rank, row in enumerate(rankings, 1):
-        row["overall_rank"] = rank
-    eligible = [row for row in rankings if row["eligible"]]
-    for rank, row in enumerate(eligible, 1):
-        row["eligible_rank"] = rank
+
+    def checkpoint_ranking(raw_path: str) -> dict:
+        checkpoint_path = Path(str(raw_path or ""))
+        if not checkpoint_path.is_file():
+            return {
+                "checkpoint": str(checkpoint_path),
+                "available": False,
+                "completed_trials": 0,
+                "eligible_trials": 0,
+                "mdd_over_limit_trials": 0,
+                "duplicate_trials_removed": 0,
+                "top_30_overall": [],
+                "top_30_eligible": [],
+                "top_30_mdd_over_limit": [],
+                "all_mdd_over_limit": [],
+                "all_trials": [],
+            }
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        completed = checkpoint.get("completed") or {}
+        rankings: list[dict] = []
+        seen_parameters: set[str] = set()
+        duplicate_trials = 0
+        for trial_id, row in completed.items():
+            parameters = row.get("parameters") or {}
+            identity = json.dumps(parameters, sort_keys=True, separators=(",", ":"))
+            if identity in seen_parameters:
+                duplicate_trials += 1
+                continue
+            seen_parameters.add(identity)
+            result = dict(row.get("result") or {})
+            trades = int(result.get("trades") or 0)
+            mdd = float(result.get("max_drawdown_percent") or 0)
+            liquidations = int(result.get("liquidations") or 0)
+            rankings.append({
+                "trial_id": trial_id,
+                "eligible": trades > 0 and liquidations == 0 and mdd <= mdd_limit,
+                "mdd_over_limit": mdd > mdd_limit,
+                "entry_multiplier": row.get("entry_multiplier"),
+                "max_entries": row.get("max_entries"),
+                "return_percent": result.get("return_percent"),
+                "pnl": result.get("pnl"),
+                "profit_factor": result.get("profit_factor"),
+                "max_drawdown_percent": result.get("max_drawdown_percent"),
+                "trades": result.get("trades"),
+                "wins": result.get("wins"),
+                "win_rate": result.get("win_rate"),
+                "estimated_costs": result.get("estimated_costs"),
+                "liquidations": liquidations,
+                "parameters": parameters,
+                "result": result,
+            })
+        rankings.sort(key=lambda row: (
+            float(row.get("return_percent") or 0),
+            float(row.get("profit_factor") or 0),
+            -float(row.get("max_drawdown_percent") or 0),
+        ), reverse=True)
+        for rank, row in enumerate(rankings, 1):
+            row["overall_rank"] = rank
+        eligible = [row for row in rankings if row["eligible"]]
+        over_limit = [row for row in rankings if row["mdd_over_limit"]]
+        for rank, row in enumerate(eligible, 1):
+            row["eligible_rank"] = rank
+        for rank, row in enumerate(over_limit, 1):
+            row["mdd_over_limit_rank"] = rank
+        return {
+            "checkpoint": str(checkpoint_path),
+            "available": True,
+            "completed_trials": len(rankings),
+            "eligible_trials": len(eligible),
+            "mdd_over_limit_trials": len(over_limit),
+            "duplicate_trials_removed": duplicate_trials,
+            "top_30_overall": rankings[:30],
+            "top_30_eligible": eligible[:30],
+            "top_30_mdd_over_limit": over_limit[:30],
+            "all_mdd_over_limit": over_limit,
+            "all_trials": rankings,
+        }
+
+    broad = checkpoint_ranking(str(selection.get("checkpoint") or ""))
+    if not broad["available"]:
+        raise RuntimeError(f"최적화 체크포인트가 없습니다: {broad['checkpoint']}")
+
+    pipeline = summary.get("optimization_pipeline") or {}
+    refined_meta = pipeline.get("refined") or {}
+    refined = checkpoint_ranking(str(refined_meta.get("checkpoint") or ""))
+    rolling_report_path = Path(str(summary.get("rolling_report_path") or ""))
+    rolling_report = None
+    if rolling_report_path.is_file():
+        rolling_report = json.loads(rolling_report_path.read_text(encoding="utf-8"))
+
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "export_type": "full_optimization_pipeline",
         "source_result": str(result_file),
-        "source_checkpoint": str(checkpoint_path),
         "symbol": summary.get("symbol"),
         "timeframe": summary.get("timeframe"),
         "requested_start": summary.get("requested_start"),
@@ -1128,17 +1173,40 @@ def export_optimization_results(result_path: str) -> str:
         "fixed_values": selection.get("fixed_values"),
         "constraints": selection.get("constraints"),
         "ranking_rule": "return_percent desc, profit_factor desc, max_drawdown_percent asc",
-        "completed_trials": len(rankings),
-        "duplicate_trials_removed": duplicate_trials,
-        "eligible_trials": len(eligible),
-        "top_10_overall": rankings[:10],
-        "top_10_eligible": eligible[:10],
-        "all_trials": rankings,
+        "mdd_policy": (
+            f"MDD {mdd_limit:g}% 초과 후보도 보존·표시하지만 적격 후보 및 "
+            "PAPER/LIVE 자동 적용 대상에서는 제외"
+        ),
+        "broad": broad,
+        "refined": refined,
+        "rolling_report_path": str(rolling_report_path),
+        "rolling_report": rolling_report,
+        "rolling_final_selection": summary.get("rolling_final_selection"),
+        # Backward-compatible keys for existing readers.
+        "source_checkpoint": broad["checkpoint"],
+        "completed_trials": broad["completed_trials"],
+        "duplicate_trials_removed": broad["duplicate_trials_removed"],
+        "eligible_trials": broad["eligible_trials"],
+        "mdd_over_limit_trials": broad["mdd_over_limit_trials"],
+        "top_10_overall": broad["top_30_overall"][:10],
+        "top_10_eligible": broad["top_30_eligible"][:10],
+        "top_10_mdd_over_limit": broad["top_30_mdd_over_limit"][:10],
+        "all_mdd_over_limit": broad["all_mdd_over_limit"],
+        "all_trials": broad["all_trials"],
     }
-    export_path = result_file.with_name(result_file.stem + "-optimization-ranking.json")
+    export_path = result_file.with_name(
+        result_file.stem + "-full-optimization-pipeline.json"
+    )
     _save_json_atomic(export_path, payload)
-    return json.dumps({"path": str(export_path), "completed_trials": len(rankings), "duplicate_trials_removed": duplicate_trials, "eligible_trials": len(eligible)}, ensure_ascii=False)
-
+    return json.dumps({
+        "path": str(export_path),
+        "completed_trials": broad["completed_trials"],
+        "duplicate_trials_removed": broad["duplicate_trials_removed"],
+        "eligible_trials": broad["eligible_trials"],
+        "mdd_over_limit_trials": broad["mdd_over_limit_trials"],
+        "refined_trials": refined["completed_trials"],
+        "rolling_candidates": len((rolling_report or {}).get("ranking") or []),
+    }, ensure_ascii=False)
 
 def ensure_ssh_key(app_files_dir: str) -> str:
     return str(_ssh_bridge().ensureKey(app_files_dir))
