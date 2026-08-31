@@ -27,7 +27,7 @@ def test_mobile_risk_profiles_use_mdd_and_search_ranges():
 
     split = RISK_PROFILES["3봉 분할형"]
     assert split == {
-        "mdd_limit_percent": 40.0,
+        "mdd_limit_percent": 70.0,
         "entry_multiplier_min": 1,
         "entry_multiplier_max": 3,
         "max_entries_values": [1, 2, 3, 4, 5],
@@ -127,11 +127,18 @@ def test_android_exposes_staged_and_fully_automatic_optimization():
     activity = (root / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
     service = (root / "android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java").read_text(encoding="utf-8")
     bridge = (root / "android/app/src/main/python/mobile_bridge.py").read_text(encoding="utf-8")
-    for label in ("1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"):
+    for label in ("1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"):
         assert label in activity
     assert 'intent.putExtra("optimization_stage", optimizationStage)' in activity
+    assert 'intent.putExtra("broad_optimization_trials", broadOptimizationTrials)' in activity
+    assert 'intent.putExtra("refine_optimization_trials", refineOptimizationTrials)' in activity
+    assert 'intent.putExtra("all_entries_three_tick", allEntriesThreeTick)' in activity
     assert 'request.optString("optimization_stage", "broad")' in service
+    assert 'request.optInt("broad_optimization_trials"' in service
+    assert 'request.optInt("refine_optimization_trials"' in service
+    assert 'request.optBoolean("all_entries_three_tick", false)' in service
     assert "def _refine_top_candidates(" in bridge
     assert "def _rolling_validate_candidates(" in bridge
-    assert '"target_900_hits"' in bridge
+    assert '"positive_windows"' in bridge
+    assert '"rolling_6m"' in bridge and '"rolling_3m"' in bridge
     assert '"paper_live_applied": False' in bridge
