@@ -274,6 +274,16 @@ public class MainActivity extends android.app.Activity {
         controlRow.addView(resumeBacktestButton, smallButtonParams());
         controlRow.addView(stopBacktestButton, smallButtonParams());
         backtestCard.addView(controlRow, marginTop(8));
+        Button fullExportButton = actionButton(
+                "📤 전체 자동 결과 파일 보내기 (MDD 40% 초과 포함)",
+                Color.rgb(30, 41, 59)
+        );
+        fullExportButton.setOnClickListener(v -> exportAndShareOptimizationResults());
+        backtestCard.addView(fullExportButton, marginTop(8));
+        backtestCard.addView(text(
+                "완료 후 1차·정밀·3개월 롤링·최종 선정과 MDD 제한 초과 후보까지 한 JSON으로 공유합니다.",
+                11, MUTED, false
+        ), marginTop(5));
         setBacktestControlState("IDLE");
         Button strategyLabButton = actionButton("⚙ 서버와 동일한 전략 수치 조정 / 백테스트", Color.rgb(30, 41, 59));
         strategyLabButton.setOnClickListener(v -> {
@@ -305,7 +315,7 @@ public class MainActivity extends android.app.Activity {
         Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
         shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
         resultActions.addView(shareResultButton, marginTop(8));
-        Button shareOptimizationButton = actionButton("🏆 전체 최적화 순위 JSON 공유 (상위 10 포함)", Color.rgb(30, 41, 59));
+        Button shareOptimizationButton = actionButton("📤 전체 자동 결과 JSON 공유 (MDD 초과 포함)", Color.rgb(30, 41, 59));
         shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
         resultActions.addView(shareOptimizationButton, marginTop(8));
         Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
@@ -660,9 +670,13 @@ public class MainActivity extends android.app.Activity {
                 );
                 String path = exported.getString("path");
                 int completed = exported.optInt("completed_trials", 0);
+                int overLimit = exported.optInt("mdd_over_limit_trials", 0);
+                int refined = exported.optInt("refined_trials", 0);
+                int rolling = exported.optInt("rolling_candidates", 0);
                 main.post(() -> {
-                    statusText.setText("전체 순위 " + completed + "개 생성 완료");
-                    shareBacktestFile(path, "application/json", "전체 최적화 순위 JSON 공유");
+                    statusText.setText("전체 결과 " + completed + "개 · MDD 초과 "
+                            + overLimit + "개 · 정밀 " + refined + "개 · 롤링 " + rolling + "개");
+                    shareBacktestFile(path, "application/json", "전체 자동 최적화 결과 JSON 공유");
                 });
             } catch (Exception e) {
                 main.post(() -> {
