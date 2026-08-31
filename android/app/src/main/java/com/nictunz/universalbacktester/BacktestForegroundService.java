@@ -136,9 +136,11 @@ public class BacktestForegroundService extends Service {
                     request.optString("remote_dir"),
                     request.optString("key_path"),
                     request.optString("risk_profile", "공격형"),
-                    request.optInt("optimization_trials", 50),
+                    request.optInt("broad_optimization_trials", request.optInt("optimization_trials", 1000)),
+                    request.optInt("refine_optimization_trials", request.optInt("optimization_trials", 1000)),
                     request.optBoolean("compounding_enabled", true),
-                    request.optString("optimization_stage", "broad")
+                    request.optString("optimization_stage", "broad"),
+                    request.optBoolean("all_entries_three_tick", false)
             ).toString();
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
@@ -185,7 +187,10 @@ public class BacktestForegroundService extends Service {
         request.put("remote_dir", intent.getStringExtra("remote_dir"));
         request.put("key_path", intent.getStringExtra("key_path"));
         request.put("risk_profile", intent.getStringExtra("risk_profile"));
-        request.put("optimization_trials", intent.getIntExtra("optimization_trials", 50));
+        request.put("optimization_trials", intent.getIntExtra("optimization_trials", 1000));
+        request.put("broad_optimization_trials", intent.getIntExtra("broad_optimization_trials", intent.getIntExtra("optimization_trials", 1000)));
+        request.put("refine_optimization_trials", intent.getIntExtra("refine_optimization_trials", intent.getIntExtra("optimization_trials", 1000)));
+        request.put("all_entries_three_tick", intent.getBooleanExtra("all_entries_three_tick", false));
         request.put("compounding_enabled", intent.getBooleanExtra("compounding_enabled", true));
         request.put("optimization_stage", intent.getStringExtra("optimization_stage"));
         return request;

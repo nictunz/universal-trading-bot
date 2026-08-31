@@ -63,7 +63,9 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView riskProfileInput;
     private AutoCompleteTextView sizingModeInput;
     private AutoCompleteTextView optimizationStageInput;
-    private AutoCompleteTextView trialCountInput;
+    private AutoCompleteTextView broadTrialCountInput;
+    private AutoCompleteTextView refineTrialCountInput;
+    private AutoCompleteTextView threeTickModeInput;
     private EditText startInput;
     private EditText endInput;
     private EditText hostInput;
@@ -234,28 +236,47 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(7));
 
         optimizationStageInput = autocomplete(
-                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"},
+                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"},
                 "1차 전체 탐색"
         );
         backtestCard.addView(labeled("자동 최적화 단계", optimizationStageInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
                 "단계 선택",
                 optimizationStageInput,
-                new String[]{"1차 탐색", "정밀 탐색", "3개월 롤링", "전체 자동"},
-                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "3개월 롤링 + 최종 선정", "전체 자동 실행"}
+                new String[]{"1차 탐색", "정밀 탐색", "6→3개월 롤링", "전체 자동"},
+                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"}
         ), marginTop(8));
         backtestCard.addView(text(
-                "후속 단계는 앞 단계 체크포인트를 자동 재사용합니다. 전체 자동은 1차→정밀→롤링→최종 선정을 순서대로 실행합니다.",
+                "후속 단계는 앞 단계 체크포인트를 자동 재사용합니다. 전체 자동은 1차→TOP10 후보별 정밀→6개월 롤링→3개월 롤링→최종 선정을 순서대로 실행합니다.",
                 11, MUTED, false
         ), marginTop(7));
 
-        trialCountInput = autocomplete(new String[]{"50", "100", "200", "300", "500", "750", "1000", "2000", "3000", "5000"}, "50");
-        backtestCard.addView(labeled("최적화 조합 수 (1~5000 직접 입력 가능)", trialCountInput), marginTop(12));
+        broadTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "1000");
+        backtestCard.addView(labeled("1차 전체 탐색 조합 수 (1~5000)", broadTrialCountInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
-                "빠른 조합 수",
-                trialCountInput,
+                "1차 빠른 선택", broadTrialCountInput,
                 new String[]{"100회", "500회", "1000회", "3000회", "5000회"},
                 new String[]{"100", "500", "1000", "3000", "5000"}
+        ), marginTop(8));
+
+        refineTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "1000");
+        backtestCard.addView(labeled("2차 정밀 탐색 · TOP10 후보당 조합 수 (1~5000)", refineTrialCountInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "정밀 빠른 선택", refineTrialCountInput,
+                new String[]{"100회", "500회", "1000회", "3000회", "5000회"},
+                new String[]{"100", "500", "1000", "3000", "5000"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "예: 후보당 5,000회 선택 시 1차 TOP10 각각을 정밀 탐색하여 최대 50,000개 조합을 검사합니다.",
+                11, MUTED, false
+        ), marginTop(7));
+
+        threeTickModeInput = autocomplete(new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}, "첫 진입만 3틱룰");
+        backtestCard.addView(labeled("3틱룰 적용 범위", threeTickModeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "3틱룰", threeTickModeInput,
+                new String[]{"첫 진입만", "모든 진입"},
+                new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}
         ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
@@ -275,7 +296,7 @@ public class MainActivity extends android.app.Activity {
         controlRow.addView(stopBacktestButton, smallButtonParams());
         backtestCard.addView(controlRow, marginTop(8));
         Button fullExportButton = actionButton(
-                "📤 전체 자동 결과 파일 보내기 (MDD 40% 초과 포함)",
+                "📤 전체 자동 결과 파일 보내기 (MDD 70% 초과 포함)",
                 Color.rgb(30, 41, 59)
         );
         fullExportButton.setOnClickListener(v -> exportAndShareOptimizationResults());
@@ -315,7 +336,7 @@ public class MainActivity extends android.app.Activity {
         Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
         shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
         resultActions.addView(shareResultButton, marginTop(8));
-        Button shareOptimizationButton = actionButton("📤 전체 자동 결과 JSON 공유 (MDD 초과 포함)", Color.rgb(30, 41, 59));
+        Button shareOptimizationButton = actionButton("📤 전체 자동 결과 JSON 공유 (MDD 70% 초과 포함)", Color.rgb(30, 41, 59));
         shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
         resultActions.addView(shareOptimizationButton, marginTop(8));
         Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
@@ -479,20 +500,24 @@ public class MainActivity extends android.app.Activity {
         String stageLabel = optimizationStageInput.getText().toString().trim();
         String optimizationStage;
         if ("상위 후보 정밀 탐색".equals(stageLabel)) optimizationStage = "refine";
-        else if ("3개월 롤링 + 최종 선정".equals(stageLabel)) optimizationStage = "rolling";
+        else if ("6개월 → 3개월 롤링 + 최종 선정".equals(stageLabel)) optimizationStage = "rolling";
         else if ("전체 자동 실행".equals(stageLabel)) optimizationStage = "auto";
         else optimizationStage = "broad";
-        int optimizationTrials;
+        int broadOptimizationTrials;
+        int refineOptimizationTrials;
         try {
-            optimizationTrials = Integer.parseInt(trialCountInput.getText().toString().trim());
+            broadOptimizationTrials = Integer.parseInt(broadTrialCountInput.getText().toString().trim());
+            refineOptimizationTrials = Integer.parseInt(refineTrialCountInput.getText().toString().trim());
         } catch (Exception ignored) {
-            toast("조합 수는 1~5000 사이 숫자로 입력하세요.");
+            toast("1차/정밀 조합 수는 각각 1~5000 사이 숫자로 입력하세요.");
             return;
         }
-        if (optimizationTrials < 1 || optimizationTrials > 5000) {
-            toast("조합 수는 1~5000 사이로 입력하세요.");
+        if (broadOptimizationTrials < 1 || broadOptimizationTrials > 5000
+                || refineOptimizationTrials < 1 || refineOptimizationTrials > 5000) {
+            toast("1차/정밀 조합 수는 각각 1~5000 사이로 입력하세요.");
             return;
         }
+        boolean allEntriesThreeTick = "모든 진입 3틱룰".equals(threeTickModeInput.getText().toString().trim());
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
         Calendar startCal = parseDate(start);
@@ -518,7 +543,10 @@ public class MainActivity extends android.app.Activity {
         intent.putExtra("remote_dir", remoteInput.getText().toString().trim());
         intent.putExtra("key_path", privateKeyPath);
         intent.putExtra("risk_profile", riskProfile);
-        intent.putExtra("optimization_trials", optimizationTrials);
+        intent.putExtra("optimization_trials", broadOptimizationTrials);
+        intent.putExtra("broad_optimization_trials", broadOptimizationTrials);
+        intent.putExtra("refine_optimization_trials", refineOptimizationTrials);
+        intent.putExtra("all_entries_three_tick", allEntriesThreeTick);
         intent.putExtra("compounding_enabled", compoundingEnabled);
         intent.putExtra("optimization_stage", optimizationStage);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -535,7 +563,9 @@ public class MainActivity extends android.app.Activity {
         logText.setText("백그라운드 백테스트 시작\n프로필: " + riskProfile
                 + " · 계산: " + sizingMode
                 + " · 단계: " + stageLabel
-                + " · 조합: " + optimizationTrials + "회\n"
+                + " · 1차: " + broadOptimizationTrials + "회"
+                + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
+                + " · 3틱룰: " + (allEntriesThreeTick ? "모든 진입" : "첫 진입만") + "\n"
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
         setBacktestControlState("RUNNING");

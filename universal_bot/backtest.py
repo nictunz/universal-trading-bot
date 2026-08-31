@@ -91,6 +91,26 @@ def backtest_sizing_equity(
     return max(0.0, float(initial_capital) + float(realized_net_pnl))
 
 
+def _consecutive_candle_direction_ok(
+    opens: np.ndarray,
+    closes: np.ndarray,
+    index: int,
+    candles: int,
+    side: str,
+) -> bool:
+    count = max(1, int(candles))
+    start = index - count + 1
+    if start < 0:
+        return False
+    recent_open = opens[start:index + 1]
+    recent_close = closes[start:index + 1]
+    if side == "LONG":
+        return bool(np.all(recent_close < recent_open))
+    if side == "SHORT":
+        return bool(np.all(recent_close > recent_open))
+    return False
+
+
 def run_backtest(
     df: pd.DataFrame,
     settings: Settings,
@@ -212,9 +232,20 @@ def run_backtest(
         long_ok = (not settings.use_rsi_filter) or oversold
         short_ok = (not settings.use_rsi_filter) or overbought
         signal: str | None = None
-        if base_entry and settings.allow_long and c < o and long_ok:
+        first_entry_bars = max(1, int(settings.first_entry_consecutive_candles))
+        apply_three_tick_to_all = bool(getattr(settings, "apply_consecutive_candles_to_all_entries", False))
+        require_consecutive = position_side is None or apply_three_tick_to_all
+        long_candle_ok = (
+            _consecutive_candle_direction_ok(opens, closes, i, first_entry_bars, "LONG")
+            if require_consecutive else c < o
+        )
+        short_candle_ok = (
+            _consecutive_candle_direction_ok(opens, closes, i, first_entry_bars, "SHORT")
+            if require_consecutive else c > o
+        )
+        if base_entry and settings.allow_long and long_candle_ok and long_ok:
             signal = "LONG"
-        elif base_entry and settings.allow_short and c > o and short_ok:
+        elif base_entry and settings.allow_short and short_candle_ok and short_ok:
             signal = "SHORT"
 
         if position_side is not None:

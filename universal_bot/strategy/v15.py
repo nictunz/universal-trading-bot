@@ -118,7 +118,9 @@ class UniversalV15Strategy:
         bearish = last_close < last_open
         bullish = last_close > last_open
         first_entry_bars = max(1, int(self.s.first_entry_consecutive_candles))
-        if position is None or position.flat:
+        apply_three_tick_to_all = bool(getattr(self.s, "apply_consecutive_candles_to_all_entries", False))
+        require_consecutive = position is None or position.flat or apply_three_tick_to_all
+        if require_consecutive:
             recent = df.iloc[-first_entry_bars:]
             consecutive_bearish = bool((recent["close"].astype(float) < recent["open"].astype(float)).all())
             consecutive_bullish = bool((recent["close"].astype(float) > recent["open"].astype(float)).all())
@@ -146,6 +148,7 @@ class UniversalV15Strategy:
             "cooldown_ok": cooldown_ok, "bars_since_entry": bars_since_entry, "bars_since_exit": bars_since_exit, "base_entry_condition": base_entry,
             "bearish_candle": bearish, "bullish_candle": bullish,
             "first_entry_consecutive_candles": first_entry_bars,
+            "apply_consecutive_candles_to_all_entries": apply_three_tick_to_all,
             "consecutive_bearish": consecutive_bearish, "consecutive_bullish": consecutive_bullish,
             "long_candle_ok": long_candle_ok, "short_candle_ok": short_candle_ok,
             "raw_tp_percent": raw_tp, "raw_sl_percent": raw_sl,

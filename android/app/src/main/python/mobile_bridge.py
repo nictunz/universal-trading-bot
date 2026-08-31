@@ -89,7 +89,7 @@ RISK_PROFILES = {
         "max_entries_values": [1],
     },
     "3봉 분할형": {
-        "mdd_limit_percent": 40.0,
+        "mdd_limit_percent": 70.0,
         "entry_multiplier_min": 1,
         "entry_multiplier_max": 3,
         "max_entries_values": [1, 2, 3, 4, 5],
@@ -488,7 +488,7 @@ def _clamp(value: float, low: float, high: float, digits: int = 2) -> float:
     return round(max(low, min(high, value)), digits)
 
 
-def _refinement_candidates(top_rows: list[dict], trials: int, seed_material: str) -> list[dict]:
+def _refinement_candidates(top_rows: list[dict], trials_per_seed: int, seed_material: str) -> list[tuple[int, dict]]:
     rng = random.Random(int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:16], 16))
     fields = {
         "volume_break_multiplier": (3.0, 25.0, 0.35, 2),
@@ -508,38 +508,42 @@ def _refinement_candidates(top_rows: list[dict], trials: int, seed_material: str
         "rsi_overbought_min": (50.0, 90.0, 1.0, 1),
         "rsi_overbought_max": (60.0, 100.0, 1.0, 1),
     }
-    candidates: list[dict] = []
+    bases = top_rows[:10]
+    candidates: list[tuple[int, dict]] = []
     seen: set[str] = set()
-    bases = top_rows[: min(30, len(top_rows))]
-    if not bases:
-        return candidates
-    cursor = 0
-    while len(candidates) < trials:
-        base = dict(bases[cursor % len(bases)].get("parameters") or {})
-        cursor += 1
-        params = dict(base)
-        for name, (low, high, step, digits) in fields.items():
-            if name in params:
-                params[name] = _clamp(float(params[name]) + rng.choice([-2, -1, 0, 1, 2]) * step, low, high, digits)
-        for name, low, high, radius in (
-            ("volume_lookback", 20, 160, 8),
-            ("adx_length", 5, 30, 2),
-            ("rsi_length", 3, 24, 2),
-            ("cooldown_bars", 0, 36, 3),
-            ("reentry_bars", 0, 24, 3),
-        ):
-            if name in params:
-                params[name] = max(low, min(high, int(params[name]) + rng.randint(-radius, radius)))
-        if params.get("min_one_bar_vol", 0) >= params.get("max_one_bar_vol", 1):
-            params["max_one_bar_vol"] = _clamp(float(params["min_one_bar_vol"]) + 0.15, 0.40, 2.50)
-        if params.get("min_tp_percent", 0) >= params.get("max_tp_percent", 1):
-            params["max_tp_percent"] = _clamp(float(params["min_tp_percent"]) + 0.10, 0.50, 3.00)
-        if params.get("min_sl_percent", 0) >= params.get("max_sl_percent", 1):
-            params["max_sl_percent"] = _clamp(float(params["min_sl_percent"]) + 0.15, 0.80, 4.00)
-        identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
-        if identity not in seen:
+    for seed_index, row in enumerate(bases, 1):
+        base = dict(row.get("parameters") or {})
+        made = 0
+        attempts = 0
+        while made < trials_per_seed:
+            attempts += 1
+            if attempts > trials_per_seed * 200 + 1000:
+                raise RuntimeError(f"정밀 탐색 후보 생성 실패: TOP{seed_index}에서 중복이 너무 많습니다.")
+            params = dict(base)
+            for name, (low, high, step, digits) in fields.items():
+                if name in params:
+                    params[name] = _clamp(float(params[name]) + rng.choice([-2, -1, 0, 1, 2]) * step, low, high, digits)
+            for name, low, high, radius in (
+                ("volume_lookback", 20, 160, 8),
+                ("adx_length", 5, 30, 2),
+                ("rsi_length", 3, 24, 2),
+                ("cooldown_bars", 0, 36, 3),
+                ("reentry_bars", 0, 24, 3),
+            ):
+                if name in params:
+                    params[name] = max(low, min(high, int(params[name]) + rng.randint(-radius, radius)))
+            if params.get("min_one_bar_vol", 0) >= params.get("max_one_bar_vol", 1):
+                params["max_one_bar_vol"] = _clamp(float(params["min_one_bar_vol"]) + 0.15, 0.40, 2.50)
+            if params.get("min_tp_percent", 0) >= params.get("max_tp_percent", 1):
+                params["max_tp_percent"] = _clamp(float(params["min_tp_percent"]) + 0.10, 0.50, 3.00)
+            if params.get("min_sl_percent", 0) >= params.get("max_sl_percent", 1):
+                params["max_sl_percent"] = _clamp(float(params["min_sl_percent"]) + 0.15, 0.80, 4.00)
+            identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
+            if identity in seen:
+                continue
             seen.add(identity)
-            candidates.append(params)
+            candidates.append((seed_index, params))
+            made += 1
     return candidates
 
 
@@ -558,57 +562,43 @@ def _refine_top_candidates(
     broad_checkpoint = Path(str(broad_selection["checkpoint"]))
     broad = json.loads(broad_checkpoint.read_text(encoding="utf-8"))
     mdd_limit = float((broad_selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
-    top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)
-    refine_trials = min(5000, max(1, int(trials)))
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {
-                "base": base_overrides,
-                "broad_checkpoint": str(broad_checkpoint),
-                "broad_trials": broad_selection.get("tested_combinations"),
-                "refine_trials": refine_trials,
-            },
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)[:10]
+    if not top_rows:
+        raise RuntimeError("1차 탐색에서 정밀 탐색에 사용할 TOP10 후보가 없습니다.")
+    trials_per_seed = min(5000, max(1, int(trials)))
+    expected_trials = len(top_rows) * trials_per_seed
+    fingerprint = hashlib.sha256(json.dumps({
+        "base": base_overrides,
+        "broad_checkpoint": str(broad_checkpoint),
+        "broad_top10": [row.get("parameters") for row in top_rows],
+        "trials_per_seed": trials_per_seed,
+        "schema": "top10-independent-refine-v3",
+    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     path = broad_checkpoint.with_name(broad_checkpoint.stem + "-refined.json")
-    state = {"version": 1, "strategy_fingerprint": fingerprint, "completed": {}}
+    state = {"version": 3, "strategy_fingerprint": fingerprint, "completed": {}}
     if path.is_file():
         loaded = json.loads(path.read_text(encoding="utf-8"))
         if loaded.get("strategy_fingerprint") == fingerprint:
             state = loaded
-            log(f"정밀 탐색 체크포인트 재개: {len(state.get('completed') or {})}/{refine_trials}")
+            log(f"정밀 탐색 체크포인트 재개: {len(state.get('completed') or {})}/{expected_trials}")
         else:
             stale = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
             path.replace(stale)
     completed = state.setdefault("completed", {})
-    candidates = _refinement_candidates(
-        top_rows,
-        refine_trials,
-        f"{symbol}|{timeframe}|{start_text}|{end_text}|{fingerprint}",
-    )
-    for position, params in enumerate(candidates, 1):
+    candidates = _refinement_candidates(top_rows, trials_per_seed, f"{symbol}|{timeframe}|{start_text}|{end_text}|{fingerprint}")
+    for position, (seed_index, params) in enumerate(candidates, 1):
         _wait_for_optimization_control()
         identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
-        key = f"refine-{position:04d}-{hashlib.sha256(identity.encode()).hexdigest()[:10]}"
+        key = f"refine-top{seed_index:02d}-{position:05d}-{hashlib.sha256(identity.encode()).hexdigest()[:10]}"
         if key in completed:
             continue
         overrides = dict(base_overrides)
         overrides.update({k: v for k, v in params.items() if k != "entry_multiplier"})
-        result = run_cached_symbol_backtest(
-            symbol=symbol,
-            asset_class="crypto",
-            exchange="bitget",
-            timeframe=timeframe,
-            start=start_text,
-            end=end_text,
-            overrides=overrides,
-            database_path=db,
-            control_check=_wait_for_optimization_control,
-            include_details=False,
-        )
+        result = run_cached_symbol_backtest(symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
+            start=start_text, end=end_text, overrides=overrides, database_path=db,
+            control_check=_wait_for_optimization_control, include_details=False)
         completed[key] = {
+            "broad_seed_rank": seed_index,
             "entry_multiplier": params.get("entry_multiplier"),
             "max_entries": params.get("max_pyramiding"),
             "parameters": params,
@@ -617,7 +607,7 @@ def _refine_top_candidates(
         state["last_completed"] = key
         if position % 25 == 0 or position == len(candidates):
             _save_json_atomic(path, state)
-            log(f"정밀 탐색 {position}/{len(candidates)} · 상위 후보 주변 재검증")
+            log(f"정밀 탐색 {position}/{expected_trials} · TOP10 후보별 {trials_per_seed}회")
         del result, overrides
         gc.collect()
     ranked = _rank_completed_rows(completed, mdd_limit)
@@ -625,13 +615,17 @@ def _refine_top_candidates(
         raise RuntimeError("정밀 탐색에서 MDD·청산 조건을 통과한 후보가 없습니다.")
     state["stage"] = "COMPLETE"
     state["best"] = ranked[0]
+    state["top10_broad_seeds"] = top_rows
+    state["trials_per_seed"] = trials_per_seed
     _save_json_atomic(path, state)
     return {
         "checkpoint": str(path),
-        "requested_trials": refine_trials,
+        "broad_seed_count": len(top_rows),
+        "trials_per_seed": trials_per_seed,
+        "requested_trials": expected_trials,
         "completed_trials": len(completed),
         "eligible_trials": len(ranked),
-        "top_candidates": ranked[:30],
+        "top_candidates": ranked[:10],
     }
 
 
@@ -647,13 +641,13 @@ def _add_months(value: date, months: int) -> date:
     return date(year, month, min(value.day, calendar.monthrange(year, month)[1]))
 
 
-def _three_month_windows(start_text: str, end_text: str) -> list[tuple[str, str]]:
+def _month_windows(start_text: str, end_text: str, months: int) -> list[tuple[str, str]]:
     start = _parse_day(start_text)
     end = _parse_day(end_text)
     windows: list[tuple[str, str]] = []
     cursor = start
     while True:
-        window_end = _add_months(cursor, 3) - timedelta(days=1)
+        window_end = _add_months(cursor, months) - timedelta(days=1)
         if window_end > end:
             break
         windows.append((cursor.isoformat(), window_end.isoformat()))
@@ -673,32 +667,29 @@ def _rolling_validate_candidates(
     db: Path,
     output_dir: Path,
     base_overrides: dict,
-    refined: dict,
+    candidate_rows: list[dict],
+    source_checkpoint: str,
+    months: int,
     log,
 ) -> dict:
-    windows = _three_month_windows(start_text, end_text)
+    windows = _month_windows(start_text, end_text, months)
     if not windows:
-        raise RuntimeError("3개월 롤링 검증에는 최소 3개월의 기간이 필요합니다.")
-    candidates = list(refined.get("top_candidates") or [])[:30]
-    source = Path(str(refined["checkpoint"]))
-    path = source.with_name(source.stem + "-rolling.json")
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {
-                "source": str(source),
-                "windows": windows,
-                "candidate_parameters": [row.get("parameters") for row in candidates],
-            },
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-    state = {"version": 1, "strategy_fingerprint": fingerprint, "completed": {}}
+        raise RuntimeError(f"{months}개월 롤링 검증에는 최소 {months}개월의 기간이 필요합니다.")
+    candidates = list(candidate_rows or [])[:10]
+    if not candidates:
+        raise RuntimeError(f"{months}개월 롤링 검증 후보가 없습니다.")
+    source = Path(str(source_checkpoint))
+    path = source.with_name(source.stem + f"-rolling-{months}m.json")
+    fingerprint = hashlib.sha256(json.dumps({
+        "source": str(source), "months": months, "windows": windows,
+        "candidate_parameters": [row.get("parameters") for row in candidates],
+    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    state = {"version": 2, "strategy_fingerprint": fingerprint, "completed": {}}
     if path.is_file():
         loaded = json.loads(path.read_text(encoding="utf-8"))
         if loaded.get("strategy_fingerprint") == fingerprint:
             state = loaded
-            log(f"3개월 롤링 체크포인트 재개: {len(state.get('completed') or {})}개 구간 완료")
+            log(f"{months}개월 롤링 체크포인트 재개: {len(state.get('completed') or {})}개 구간 완료")
     completed = state.setdefault("completed", {})
     for candidate_index, row in enumerate(candidates, 1):
         params = dict(row.get("parameters") or {})
@@ -710,49 +701,28 @@ def _rolling_validate_candidates(
             key = f"candidate-{candidate_index:02d}-{identity}-window-{window_index:02d}"
             if key in completed:
                 continue
-            result = run_cached_symbol_backtest(
-                symbol=symbol,
-                asset_class="crypto",
-                exchange="bitget",
-                timeframe=timeframe,
-                start=window_start,
-                end=window_end,
-                overrides=overrides,
-                database_path=db,
-                control_check=_wait_for_optimization_control,
-                include_details=False,
-            )
-            completed[key] = {
-                "candidate": candidate_index,
-                "candidate_id": identity,
-                "parameters": params,
-                "window_start": window_start,
-                "window_end": window_end,
-                "result": _compact_risk_result(result),
-            }
+            result = run_cached_symbol_backtest(symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
+                start=window_start, end=window_end, overrides=overrides, database_path=db,
+                control_check=_wait_for_optimization_control, include_details=False)
+            completed[key] = {"candidate": candidate_index, "candidate_id": identity, "parameters": params,
+                "window_start": window_start, "window_end": window_end, "result": _compact_risk_result(result)}
             if len(completed) % 10 == 0:
                 _save_json_atomic(path, state)
-                log(f"3개월 롤링 검증 {len(completed)}/{len(candidates) * len(windows)}")
+                log(f"{months}개월 롤링 검증 {len(completed)}/{len(candidates) * len(windows)}")
             del result
             gc.collect()
     summaries: list[dict] = []
     for candidate_index, row in enumerate(candidates, 1):
         params = dict(row.get("parameters") or {})
         identity = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:10]
-        results = [
-            item["result"] for item in completed.values()
-            if item.get("candidate_id") == identity
-        ]
+        results = [item["result"] for item in completed.values() if item.get("candidate_id") == identity]
         returns = [float(item.get("return_percent") or 0) for item in results]
         pfs = [float(item.get("profit_factor") or 0) for item in results]
         mdds = [float(item.get("max_drawdown_percent") or 0) for item in results]
         trades = [float(item.get("trades") or 0) for item in results]
         summaries.append({
-            "candidate": candidate_index,
-            "candidate_id": identity,
-            "parameters": params,
-            "window_count": len(results),
-            "target_900_hits": sum(value >= 900.0 for value in returns),
+            "candidate": candidate_index, "candidate_id": identity, "parameters": params, "window_count": len(results),
+            "positive_windows": sum(value > 0 for value in returns),
             "median_return_percent": _median_numeric(returns),
             "worst_return_percent": min(returns) if returns else 0.0,
             "best_return_percent": max(returns) if returns else 0.0,
@@ -760,48 +730,27 @@ def _rolling_validate_candidates(
             "worst_mdd_percent": max(mdds) if mdds else 0.0,
             "median_trades": _median_numeric(trades),
         })
-    summaries.sort(
-        key=lambda row: (
-            int(row["target_900_hits"]),
-            float(row["median_return_percent"]),
-            float(row["worst_return_percent"]),
-            float(row["median_profit_factor"]),
-            -float(row["worst_mdd_percent"]),
-            float(row["median_trades"]),
-        ),
-        reverse=True,
-    )
+    summaries.sort(key=lambda row: (
+        int(row["positive_windows"]), float(row["median_return_percent"]), float(row["worst_return_percent"]),
+        float(row["median_profit_factor"]), -float(row["worst_mdd_percent"]), float(row["median_trades"]),
+    ), reverse=True)
     selected = summaries[0] if summaries else None
     payload = {
-        "schema_version": 1,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "requested_start": start_text,
-        "requested_end": end_text,
-        "window_rule": "3 calendar months, shifted by 1 month",
-        "selection_rule": "900% hits, median return, worst return, median PF, lower worst MDD, median trades",
-        "candidate_count": len(candidates),
-        "window_count": len(windows),
-        "completed_validations": len(completed),
-        "ranking": summaries,
-        "selected": selected,
-        "paper_live_applied": False,
+        "schema_version": 2, "symbol": symbol, "timeframe": timeframe, "requested_start": start_text, "requested_end": end_text,
+        "window_months": months, "window_rule": f"{months} calendar months, shifted by 1 month",
+        "selection_rule": "positive windows, median return, worst return, median PF, lower worst MDD, median trades",
+        "candidate_count": len(candidates), "window_count": len(windows), "completed_validations": len(completed),
+        "ranking": summaries, "selected": selected, "paper_live_applied": False,
     }
-    report_path = output_dir / "BacktestResults" / (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    report_path = output_dir / "BacktestResults" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         + "-" + re.sub(r"[^A-Za-z0-9]+", "-", symbol).strip("-").lower()
-        + f"-{timeframe}-rolling-final.json"
-    )
+        + f"-{timeframe}-rolling-{months}m-final.json")
     _save_json_atomic(report_path, payload)
     state["stage"] = "COMPLETE"
     state["report"] = str(report_path)
     _save_json_atomic(path, state)
-    log(
-        f"최종 선정 완료 · 후보 {len(candidates)}개 · 롤링 {len(windows)}구간 · "
-        f"3개월 +900% 달성 {int((selected or {}).get('target_900_hits') or 0)}회"
-    )
-    return {**payload, "report_path": str(report_path)}
-
+    log(f"{months}개월 롤링 완료 · 후보 {len(candidates)}개 · {len(windows)}구간 · 최종 중간수익률 {float((selected or {}).get('median_return_percent') or 0):.2f}%")
+    return {**payload, "checkpoint": str(path), "report_path": str(report_path)}
 
 
 def _ssh_bridge():
@@ -832,9 +781,11 @@ def run_backtest(
     remote_dir: str = "",
     key_path: str = "",
     risk_profile: str = "공격형",
-    optimization_trials: int = 50,
+    broad_optimization_trials: int = 1000,
+    refine_optimization_trials: int = 1000,
     compounding_enabled: bool = True,
     optimization_stage: str = "broad",
+    all_entries_three_tick: bool = False,
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -867,15 +818,19 @@ def run_backtest(
     selected_stage = (optimization_stage or "broad").strip().lower()
     if selected_stage not in {"broad", "refine", "rolling", "auto"}:
         selected_stage = "broad"
-    optimization_trials = int(optimization_trials)
-    if optimization_trials < 1 or optimization_trials > 5000:
-        raise ValueError("최적화 조합 수는 1~5000이어야 합니다.")
+    broad_optimization_trials = int(broad_optimization_trials)
+    refine_optimization_trials = int(refine_optimization_trials)
+    if not 1 <= broad_optimization_trials <= 5000:
+        raise ValueError("1차 최적화 조합 수는 1~5000이어야 합니다.")
+    if not 1 <= refine_optimization_trials <= 5000:
+        raise ValueError("정밀 최적화 후보당 조합 수는 1~5000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
     overrides.update(FIXED_BACKTEST)
     overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
     overrides["order_percent_of_equity"] = 100.0
     overrides["max_pyramiding"] = 1
+    overrides["apply_consecutive_candles_to_all_entries"] = bool(all_entries_three_tick)
     profile = RISK_PROFILES[selected_profile]
     log(
         f"위험 프로필: {selected_profile} · MDD {profile['mdd_limit_percent']:.0f}% 이하 · "
@@ -885,7 +840,7 @@ def run_backtest(
     stage_names = {
         "broad": "1차 전체 탐색",
         "refine": "상위 후보 정밀 탐색",
-        "rolling": "3개월 롤링 + 최종 선정",
+        "rolling": "6개월 → 3개월 롤링 + 최종 선정",
         "auto": "전체 자동 실행",
     }
     log(f"최적화 단계: {stage_names[selected_stage]}")
@@ -896,6 +851,7 @@ def run_backtest(
     else:
         log("계산 방식: 고정식 · 최초자본 1,000 USDT 기준으로 주문 규모와 최대 총노출 유지")
     log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
+    log(f"3틱룰 적용: {'모든 진입' if all_entries_three_tick else '첫 진입만'}")
 
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
@@ -912,10 +868,11 @@ def run_backtest(
     summary.pop("trades_log", None)
     gc.collect()
     log("휴대폰 안전 모드: 대형 기준 결과 메모리 해제 · trial별 자동 냉각 적용")
-    broad_trials = min(1000, optimization_trials)
+    broad_trials = broad_optimization_trials
+    refine_trials_per_seed = refine_optimization_trials
     log(
-        f"단계별 배분: 1차 큰 구간 {broad_trials}회 → "
-        f"상위 30개 주변 정밀 {optimization_trials}회 → 상위 30개 3개월 롤링"
+        f"단계별 배분: 1차 큰 구간 {broad_trials}회 → 수익률 TOP10 각각 정밀 {refine_trials_per_seed}회 "
+        f"(최대 {refine_trials_per_seed * 10}회) → 6개월 롤링 → 3개월 롤링"
     )
     optimized_result, risk_selection = _optimize_risk_profile(
         symbol.strip(),
@@ -953,21 +910,28 @@ def run_backtest(
         refined = _refine_top_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
             Path(db), Path(output_dir), overrides, risk_selection,
-            optimization_trials, log,
+            refine_trials_per_seed, log,
         )
         pipeline["refined"] = {
             key: value for key, value in refined.items() if key != "top_candidates"
         }
     if selected_stage in {"rolling", "auto"}:
-        rolling = _rolling_validate_candidates(
+        rolling_6m = _rolling_validate_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
-            Path(db), Path(output_dir), overrides, refined, log,
+            Path(db), Path(output_dir), overrides, list(refined.get("top_candidates") or [])[:10],
+            str(refined.get("checkpoint") or ""), 6, log,
         )
-        pipeline["rolling"] = {
-            key: value for key, value in rolling.items() if key != "ranking"
-        }
-        summary["rolling_final_selection"] = rolling.get("selected")
-        summary["rolling_report_path"] = rolling.get("report_path")
+        rolling_3m = _rolling_validate_candidates(
+            symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
+            Path(db), Path(output_dir), overrides, list(rolling_6m.get("ranking") or [])[:10],
+            str(rolling_6m.get("checkpoint") or ""), 3, log,
+        )
+        pipeline["rolling_6m"] = {key: value for key, value in rolling_6m.items() if key != "ranking"}
+        pipeline["rolling_3m"] = {key: value for key, value in rolling_3m.items() if key != "ranking"}
+        summary["rolling_6m_report_path"] = rolling_6m.get("report_path")
+        summary["rolling_3m_report_path"] = rolling_3m.get("report_path")
+        summary["rolling_final_selection"] = rolling_3m.get("selected")
+        summary["rolling_report_path"] = rolling_3m.get("report_path")
     summary["optimization_pipeline"] = pipeline
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -1157,9 +1121,11 @@ def export_optimization_results(result_path: str) -> str:
     refined_meta = pipeline.get("refined") or {}
     refined = checkpoint_ranking(str(refined_meta.get("checkpoint") or ""))
     rolling_report_path = Path(str(summary.get("rolling_report_path") or ""))
-    rolling_report = None
-    if rolling_report_path.is_file():
-        rolling_report = json.loads(rolling_report_path.read_text(encoding="utf-8"))
+    rolling_report = json.loads(rolling_report_path.read_text(encoding="utf-8")) if rolling_report_path.is_file() else None
+    rolling_6m_path = Path(str(summary.get("rolling_6m_report_path") or ""))
+    rolling_3m_path = Path(str(summary.get("rolling_3m_report_path") or summary.get("rolling_report_path") or ""))
+    rolling_6m_report = json.loads(rolling_6m_path.read_text(encoding="utf-8")) if rolling_6m_path.is_file() else None
+    rolling_3m_report = json.loads(rolling_3m_path.read_text(encoding="utf-8")) if rolling_3m_path.is_file() else None
 
     payload = {
         "schema_version": 2,
@@ -1181,6 +1147,10 @@ def export_optimization_results(result_path: str) -> str:
         "refined": refined,
         "rolling_report_path": str(rolling_report_path),
         "rolling_report": rolling_report,
+        "rolling_6m_report_path": str(rolling_6m_path),
+        "rolling_6m_report": rolling_6m_report,
+        "rolling_3m_report_path": str(rolling_3m_path),
+        "rolling_3m_report": rolling_3m_report,
         "rolling_final_selection": summary.get("rolling_final_selection"),
         # Backward-compatible keys for existing readers.
         "source_checkpoint": broad["checkpoint"],

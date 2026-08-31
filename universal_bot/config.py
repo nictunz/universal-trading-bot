@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # First entry may require N consecutive same-direction 5-minute candles.
     # 1 preserves the original single-candle reversal behavior.
     first_entry_consecutive_candles: int = 1
+    # False=3틱룰은 첫 진입만, True=추가 진입에도 동일한 연속봉 조건 적용.
+    apply_consecutive_candles_to_all_entries: bool = False
     # Maximum entries per position; profile optimization may override this.
 
     max_pyramiding: int = 2

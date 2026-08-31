@@ -40,6 +40,7 @@ _DEFAULTS = {
     "allow_long": True,
     "allow_short": True,
     "first_entry_consecutive_candles": 1,
+    "apply_consecutive_candles_to_all_entries": False,
     "max_pyramiding": 2,
     "cooldown_bars": 6,
     "reentry_bars": 6,
