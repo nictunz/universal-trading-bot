@@ -800,8 +800,22 @@ def run_backtest(
             stream.write(line + "\n")
 
     log("백그라운드 작업 시작 · 실시간 진행 로그 연결됨")
+    replay_payload: dict = {}
+    selected_parameters: dict = {}
+    original_candidate_result: dict = {}
+    source_context: dict = {}
+    if str(selected_parameters_json or "").strip():
+        replay_payload = json.loads(selected_parameters_json)
+        if not isinstance(replay_payload, dict):
+            raise ValueError("선택 전략 수치 형식이 올바르지 않습니다.")
+        candidate = replay_payload.get("parameters", replay_payload)
+        if not isinstance(candidate, dict):
+            raise ValueError("선택 전략 파라미터가 없습니다.")
+        selected_parameters = dict(candidate)
+        original_candidate_result = dict(replay_payload.get("original_result") or {})
+        source_context = dict(replay_payload.get("source_context") or {})
     overrides: dict = {}
-    if host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
+    if not selected_parameters and host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
         try:
             raw = str(
                 _ssh_bridge().readStrategySettings(
@@ -827,19 +841,16 @@ def run_backtest(
         raise ValueError("정밀 최적화 후보당 조합 수는 1~5000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
-    selected_parameters: dict = {}
-    if str(selected_parameters_json or "").strip():
-        parsed_parameters = json.loads(selected_parameters_json)
-        if not isinstance(parsed_parameters, dict):
-            raise ValueError("선택 전략 수치 형식이 올바르지 않습니다.")
-        selected_parameters = dict(parsed_parameters)
+    if selected_parameters:
         overrides.update({
             key: value for key, value in selected_parameters.items()
             if key != "entry_multiplier"
         })
     overrides.update(FIXED_BACKTEST)
-    overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
     if selected_parameters:
+        overrides["backtest_compounding_enabled"] = bool(
+            selected_parameters.get("backtest_compounding_enabled", compounding_enabled)
+        )
         entry_multiplier = float(selected_parameters.get("entry_multiplier", 1.0))
         overrides["order_percent_of_equity"] = float(
             selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
@@ -847,6 +858,7 @@ def run_backtest(
         overrides["max_pyramiding"] = int(selected_parameters.get("max_pyramiding", 1))
         log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
     else:
+        overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
         overrides["order_percent_of_equity"] = 100.0
         overrides["max_pyramiding"] = 1
         overrides["apply_consecutive_candles_to_all_entries"] = bool(all_entries_three_tick)
@@ -865,7 +877,7 @@ def run_backtest(
     log(f"최적화 단계: {stage_names[selected_stage]}")
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
-    if bool(compounding_enabled):
+    if bool(overrides.get("backtest_compounding_enabled", True)):
         log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     else:
         log("계산 방식: 고정식 · 최초자본 1,000 USDT 기준으로 주문 규모와 최대 총노출 유지")
@@ -886,6 +898,25 @@ def run_backtest(
         summary["risk_profile"] = selected_profile
         summary["selected_strategy_retest"] = True
         summary["selected_strategy_parameters"] = selected_parameters
+        summary["selected_strategy_original_result"] = original_candidate_result
+        summary["selected_strategy_source_context"] = source_context
+        original_return = float(original_candidate_result.get("return_percent") or 0)
+        original_mdd = float(original_candidate_result.get("max_drawdown_percent") or 0)
+        same_period = (
+            str(source_context.get("requested_start") or "") == start_text.strip()
+            and str(source_context.get("requested_end") or "") == end_text.strip()
+        )
+        same_cache = str(source_context.get("cache_sha256") or "") == str(summary.get("cache_sha256") or "")
+        summary["reproduction_comparison"] = {
+            "same_requested_period": same_period,
+            "same_cache_sha256": same_cache,
+            "original_return_percent": original_return,
+            "retest_return_percent": float(summary.get("return_percent") or 0),
+            "return_difference_percent_points": float(summary.get("return_percent") or 0) - original_return,
+            "original_mdd_percent": original_mdd,
+            "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
+            "mdd_difference_percent_points": float(summary.get("max_drawdown_percent") or 0) - original_mdd,
+        }
         summary["optimization_pipeline"] = {
             "stage": "selected_strategy_retest",
             "paper_live_applied": False,
@@ -935,6 +966,7 @@ def run_backtest(
         summary[key] = optimized_result.get(key)
     summary["risk_profile"] = selected_profile
     summary["risk_profile_selection"] = risk_selection
+    summary["optimization_base_overrides"] = overrides
     pipeline: dict = {
         "stage": selected_stage,
         "broad": {
@@ -1095,8 +1127,38 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
         -float((row.get("result") or {}).get("max_drawdown_percent") or 0),
     ), reverse=True)
     count = max(1, min(int(limit), 10))
+    base_overrides = dict(summary.get("optimization_base_overrides") or {})
+    if not base_overrides:
+        # Backward compatibility for optimization results made before the replay
+        # snapshot was stored. Candidate fields still reproduce all optimized values.
+        base_overrides.update(FIXED_BACKTEST)
+        base_overrides["backtest_compounding_enabled"] = bool(
+            summary.get("compounding_enabled", True)
+        )
+    items: list[dict] = []
+    for rank, row in enumerate(eligible[:count], 1):
+        parameters = dict(row.get("parameters") or {})
+        effective = dict(base_overrides)
+        effective.update(parameters)
+        entry = float(parameters.get("entry_multiplier", 1.0))
+        effective["entry_multiplier"] = entry
+        effective["order_percent_of_equity"] = float(
+            parameters.get("order_percent_of_equity", entry * 100.0)
+        )
+        item = dict(row)
+        item["rank"] = rank
+        item["effective_parameters"] = effective
+        item["source_context"] = {
+            "source_result": str(result_file),
+            "requested_start": summary.get("requested_start"),
+            "requested_end": summary.get("requested_end"),
+            "data_start": summary.get("data_start"),
+            "data_end": summary.get("data_end"),
+            "cache_sha256": summary.get("cache_sha256"),
+        }
+        items.append(item)
     return json.dumps({
-        "items": eligible[:count],
+        "items": items,
         "source": "refined" if refined.get("checkpoint") else "broad",
         "mdd_limit_percent": mdd_limit,
     }, ensure_ascii=False)

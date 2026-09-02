@@ -91,6 +91,7 @@ public class MainActivity extends android.app.Activity {
     private Button chartButton;
     private JSONObject lastSummary;
     private JSONObject selectedStrategyParameters;
+    private JSONObject selectedStrategyRow;
     private TextView selectedStrategyText;
 
     private String lastDbPath = "";
@@ -297,6 +298,9 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         );
         backtestCard.addView(selectedStrategyText, marginTop(6));
+        Button selectedDetailsButton = actionButton("📋 선택된 전략 전체 수치 보기", Color.rgb(30, 41, 59));
+        selectedDetailsButton.setOnClickListener(v -> showSelectedStrategyDetails());
+        backtestCard.addView(selectedDetailsButton, marginTop(8));
         Button selectedBacktestButton = actionButton("▶ 선택한 수치로 기간 재백테스트", SUCCESS);
         selectedBacktestButton.setOnClickListener(v -> runSelectedStrategyBacktest());
         backtestCard.addView(selectedBacktestButton, marginTop(8));
@@ -592,7 +596,17 @@ enableResultActions(false);
         intent.putExtra("compounding_enabled", compoundingEnabled);
         intent.putExtra("optimization_stage", optimizationStage);
         if (fixedParameters != null) {
-            intent.putExtra("selected_parameters_json", fixedParameters.toString());
+            JSONObject replayPayload = new JSONObject();
+            try {
+                replayPayload.put("parameters", fixedParameters);
+                if (selectedStrategyRow != null) {
+                    replayPayload.put("original_result", selectedStrategyRow.optJSONObject("result"));
+                    replayPayload.put("source_context", selectedStrategyRow.optJSONObject("source_context"));
+                    replayPayload.put("source_rank", selectedStrategyRow.optInt("rank", 0));
+                }
+            } catch (Exception ignored) {
+            }
+            intent.putExtra("selected_parameters_json", replayPayload.toString());
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
@@ -714,6 +728,8 @@ enableResultActions(false);
                     toast("백그라운드 백테스트가 완료됐습니다.");
                     if (lastSummary != null && !lastSummary.optBoolean("selected_strategy_retest", false)) {
                         showTopStrategies(true);
+                    } else if (lastSummary != null) {
+                        showReproductionComparison();
                     }
                 });
             } catch (Exception e) {
@@ -1133,7 +1149,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                         .setItems(labels, (dialog, which) -> {
                             JSONObject row = items.optJSONObject(which);
                             if (row == null) return;
-                            selectedStrategyParameters = row.optJSONObject("parameters");
+                            selectedStrategyRow = row;
+                            selectedStrategyParameters = row.optJSONObject("effective_parameters");
+                            if (selectedStrategyParameters == null) {
+                                selectedStrategyParameters = row.optJSONObject("parameters");
+                            }
                             JSONObject result = row.optJSONObject("result");
                             if (selectedStrategyParameters == null) {
                                 toast("선택한 후보의 전략 수치를 읽지 못했습니다.");
@@ -1168,6 +1188,60 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         });
     }
 
+    private void showSelectedStrategyDetails() {
+        if (selectedStrategyParameters == null) {
+            toast("먼저 수익률 TOP10에서 전략을 선택하세요.");
+            return;
+        }
+        JSONObject p = selectedStrategyParameters;
+        StringBuilder sb = new StringBuilder();
+        appendSettingGroup(sb, "진입 설정", p,
+                new String[][]{{"롱 허용","allow_long"},{"숏 허용","allow_short"},{"첫 진입 연속봉","first_entry_consecutive_candles"},{"진입 배수","entry_multiplier"},{"주문 비율(%)","order_percent_of_equity"},{"최대 진입 횟수","max_pyramiding"},{"모든 진입 3틱룰","apply_consecutive_candles_to_all_entries"}});
+        appendSettingGroup(sb, "거래량·변동성", p,
+                new String[][]{{"거래량 평균 기간","volume_lookback"},{"거래량 돌파 배수","volume_break_multiplier"},{"1봉 변동 최소(%)","min_one_bar_vol"},{"1봉 변동 최대(%)","max_one_bar_vol"},{"변동성 계산 봉","volatility_bars"},{"N봉 차단 사용","use_nbar_volatility_block"},{"N봉 차단 기간","nbar_volatility_bars"},{"N봉 최대 변동(%)","max_nbar_volatility"}});
+        appendSettingGroup(sb, "익절·손절", p,
+                new String[][]{{"TP 변동성 배수","tp_vol_multiplier"},{"SL 변동성 배수","sl_vol_multiplier"},{"최소 TP(%)","min_tp_percent"},{"최대 TP(%)","max_tp_percent"},{"최소 SL(%)","min_sl_percent"},{"최대 SL(%)","max_sl_percent"}});
+        appendSettingGroup(sb, "RSI", p,
+                new String[][]{{"RSI 사용","use_rsi_filter"},{"RSI 기간","rsi_length"},{"과매도 최소","rsi_oversold_min"},{"과매도 최대","rsi_oversold_max"},{"과매수 최소","rsi_overbought_min"},{"과매수 최대","rsi_overbought_max"}});
+        appendSettingGroup(sb, "ADX·재진입", p,
+                new String[][]{{"ADX 사용","use_adx_filter"},{"ADX 기간","adx_length"},{"ADX 최소","adx_min"},{"ADX 최대","adx_max"},{"쿨다운 봉","cooldown_bars"},{"재진입 대기 봉","reentry_bars"}});
+        appendSettingGroup(sb, "시간·계산", p,
+                new String[][]{{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"}});
+        showTextDialog("선택된 전략 전체 수치", sb.toString());
+    }
+
+    private void showReproductionComparison() {
+        if (lastSummary == null) return;
+        JSONObject comparison = lastSummary.optJSONObject("reproduction_comparison");
+        if (comparison == null) return;
+        String period = comparison.optBoolean("same_requested_period", false) ? "동일" : "다름";
+        String cache = comparison.optBoolean("same_cache_sha256", false) ? "동일" : "변경됨";
+        String message = String.format(
+                Locale.KOREA,
+                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n\n기간과 캐시가 모두 같으면 같은 결과가 재현됩니다.",
+                comparison.optDouble("original_return_percent", 0.0),
+                comparison.optDouble("retest_return_percent", 0.0),
+                comparison.optDouble("return_difference_percent_points", 0.0),
+                comparison.optDouble("original_mdd_percent", 0.0),
+                comparison.optDouble("retest_mdd_percent", 0.0),
+                comparison.optDouble("mdd_difference_percent_points", 0.0),
+                period,
+                cache
+        );
+        showTextDialog("TOP10 원본 ↔ 재백테스트 비교", message);
+    }
+
+    private void appendSettingGroup(StringBuilder sb, String title, JSONObject values, String[][] fields) {
+        sb.append("【").append(title).append("】\n");
+        for (String[] field : fields) {
+            if (!values.has(field[1]) || values.isNull(field[1])) continue;
+            Object value = values.opt(field[1]);
+            if (value instanceof Boolean) value = (Boolean) value ? "사용" : "미사용";
+            sb.append(field[0]).append(": ").append(value).append('\n');
+        }
+        sb.append('\n');
+    }
+
     private void showResultSummary() {
         if (lastSummary == null) {
             toast("백테스트를 먼저 실행하세요.");
@@ -1178,6 +1252,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 "gross_pnl", "estimated_costs", "pnl", "return_percent",
                 "max_drawdown_percent", "sizing_mode", "compounding_enabled",
                 "optimization_pipeline", "rolling_final_selection", "rolling_report_path",
+                "reproduction_comparison", "selected_strategy_parameters",
                 "data_start", "data_end", "cache_sha256"
         };
         StringBuilder sb = new StringBuilder();
