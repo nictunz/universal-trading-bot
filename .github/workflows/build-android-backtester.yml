@@ -29,8 +29,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 240
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +43,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare self-hosted unzip compatibility
+      - name: Prepare unzip compatibility
         shell: bash
         run: |
           if ! command -v unzip >/dev/null 2>&1; then
@@ -249,7 +249,7 @@ jobs:
           printf '%s\n' "$UPDATE_SSH_PRIVATE_KEY" > "$KEYFILE"
           chmod 600 "$KEYFILE"
           mkdir -p "$HOME/.ssh"
-          ssh-keyscan -H 34.132.172.40 >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          timeout 15 ssh-keyscan -T 10 -H 34.132.172.40 >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
           echo "ANDROID_UPDATE_SSH_KEYFILE=$KEYFILE" >> "$GITHUB_ENV"
           echo 'UPDATE_SERVER_READY=true' >> "$GITHUB_ENV"
 
@@ -261,10 +261,11 @@ jobs:
           HOST=34.132.172.40
           USER=kpj3669
           REMOTE=/home/kpj3669/.cache/universal-trading-bot/android-updates
-          ssh -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" "mkdir -p '$REMOTE'"
-          scp -i "$ANDROID_UPDATE_SSH_KEYFILE" UniversalTradingBacktester-Android.apk "$USER@$HOST:$REMOTE/UniversalTradingBacktester-Android.apk.uploading"
-          scp -i "$ANDROID_UPDATE_SSH_KEYFILE" android-update.json "$USER@$HOST:$REMOTE/android-update.json.uploading"
-          ssh -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" \
+          SSH_OPTS=(-o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" "mkdir -p '$REMOTE'"
+          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" UniversalTradingBacktester-Android.apk "$USER@$HOST:$REMOTE/UniversalTradingBacktester-Android.apk.uploading"
+          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" android-update.json "$USER@$HOST:$REMOTE/android-update.json.uploading"
+          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" \
             "mv '$REMOTE/UniversalTradingBacktester-Android.apk.uploading' '$REMOTE/UniversalTradingBacktester-Android.apk' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
           echo 'Verified Android update published to private SFTP channel.'
 
