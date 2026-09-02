@@ -403,6 +403,12 @@ resultActions.addView(tradeHistoryButton, marginTop(6));
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
+Button validationButton = actionButton("🛡 다중 검증·실전 안전게이트", SUCCESS);
+validationButton.setOnClickListener(v -> showValidationSuite());
+resultActions.addView(validationButton, marginTop(6));
+Button comparisonButton = actionButton("⚖ 최근 결과 최대 5개 비교", Color.rgb(30, 41, 59));
+comparisonButton.setOnClickListener(v -> showRecentResultComparison());
+resultActions.addView(comparisonButton, marginTop(6));
 Button monthlyButton = actionButton("🗓 월별 성과·손실 구간 보기", Color.rgb(30, 41, 59));
 monthlyButton.setOnClickListener(v -> showMonthlyPerformance());
 resultActions.addView(monthlyButton, marginTop(6));
@@ -1272,12 +1278,13 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     JSONObject result = row == null ? null : row.optJSONObject("result");
                     labels[i] = String.format(
                             Locale.KOREA,
-                            "%d위 · 수익률 %.2f%% · MDD %.2f%% · 승률 %.1f%% · PF %.2f",
+                            "%d위 · 수익률 %.2f%% · MDD %.2f%% · 승률 %.1f%% · PF %.2f · 종합 %.1f",
                             i + 1,
                             result == null ? 0.0 : result.optDouble("return_percent", 0.0),
                             result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
                             result == null ? 0.0 : result.optDouble("win_rate", 0.0),
-                            result == null ? 0.0 : result.optDouble("profit_factor", 0.0)
+                            result == null ? 0.0 : result.optDouble("profit_factor", 0.0),
+                            row == null ? 0.0 : row.optDouble("composite_score", 0.0)
                     );
                 }
                 main.post(() -> new AlertDialog.Builder(this)
@@ -1380,6 +1387,89 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         sb.append('\n');
     }
 
+
+
+    private void showValidationSuite() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        JSONObject suite = lastSummary.optJSONObject("validation_suite");
+        if (suite == null) {
+            showTextDialog("다중 검증", "이 결과는 다중 검증 기능 추가 전 결과입니다.");
+            return;
+        }
+        JSONObject gate = suite.optJSONObject("safety_gate");
+        StringBuilder sb = new StringBuilder();
+        sb.append("【실전 안전게이트】\n")
+                .append(gate == null ? "UNKNOWN" : gate.optString("status", "UNKNOWN"))
+                .append("\n실전 적용  ").append(gate != null && gate.optBoolean("paper_live_allowed") ? "허용" : "차단")
+                .append("\n차단 원인  ").append(gate == null ? "—" : gate.optJSONArray("blocking_reasons"))
+                .append("\n경고  ").append(gate == null ? "—" : gate.optJSONArray("warnings"))
+                .append("\n\n【검증별 상태】\n");
+        String[][] tests = {
+                {"data_quality", "데이터 품질"}, {"lookahead_audit", "미래 데이터 방지"},
+                {"train_test_split", "학습 70 / 검증 30"}, {"walk_forward", "워크포워드"},
+                {"cost_stress", "비용 스트레스"}, {"monte_carlo", "몬테카를로"},
+                {"market_regimes", "시장 국면"}
+        };
+        for (String[] test : tests) {
+            JSONObject result = suite.optJSONObject(test[0]);
+            sb.append(result == null ? "—" : result.optString("status", "—"))
+                    .append("  ").append(test[1]).append('\n');
+        }
+        JSONObject data = suite.optJSONObject("data_quality");
+        if (data != null) sb.append("\n4개 거래소 공통 봉 비율  ")
+                .append(String.format(Locale.KOREA, "%.3f%%", data.optDouble("common_bar_ratio_percent")));
+        JSONObject mc = suite.optJSONObject("monte_carlo");
+        if (mc != null) sb.append("\n몬테카를로 MDD 95%  ")
+                .append(String.format(Locale.KOREA, "%.2f%%", mc.optDouble("mdd_p95_percent")))
+                .append("\n파산 확률  ").append(String.format(Locale.KOREA, "%.3f%%", mc.optDouble("ruin_probability_percent")));
+        JSONObject wf = suite.optJSONObject("walk_forward");
+        if (wf != null) sb.append("\n워크포워드 수익 구간  ")
+                .append(wf.optInt("profitable_windows")).append("/").append(wf.optInt("total_windows"));
+        showTextDialog("🛡 다중 검증 결과", sb.toString());
+    }
+
+    private void showRecentResultComparison() {
+        statusText.setText("최근 결과 비교 중");
+        executor.execute(() -> {
+            try {
+                File output = new File(getFilesDir(), "UniversalTradingBotCache");
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject response = new JSONObject(bridge.callAttr("compare_recent_results", output.getAbsolutePath(), 5).toString());
+                JSONArray items = response.optJSONArray("items");
+                JSONObject changes = response.optJSONObject("newest_vs_previous");
+                StringBuilder sb = new StringBuilder();
+                if (items != null) for (int i = 0; i < items.length(); i++) {
+                    JSONObject row = items.optJSONObject(i);
+                    if (row == null) continue;
+                    JSONObject q = row.optJSONObject("quality");
+                    JSONObject g = row.optJSONObject("safety_gate");
+                    sb.append(i + 1).append(". ").append(row.optString("symbol")).append(" · ")
+                            .append(row.optString("start")).append("~").append(row.optString("end"))
+                            .append("\n수익률 ").append(String.format(Locale.KOREA, "%.2f%%", row.optDouble("return_percent")))
+                            .append(" · MDD ").append(String.format(Locale.KOREA, "%.2f%%", row.optDouble("max_drawdown_percent")))
+                            .append(" · PF ").append(String.format(Locale.KOREA, "%.2f", row.optDouble("profit_factor")))
+                            .append("\n신뢰도 ").append(q == null ? "—" : q.optString("grade") + " " + q.optInt("score"))
+                            .append(" · 안전 ").append(g == null ? "—" : g.optString("status")).append("\n\n");
+                }
+                if (changes != null) {
+                    sb.append("【최신 - 직전 변화】\n")
+                            .append("수익률 ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("return_percent")))
+                            .append("\nMDD ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("max_drawdown_percent")))
+                            .append("\n승률 ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("win_rate")))
+                            .append("\n동일 실행 지문 ").append(changes.optBoolean("same_run_signature") ? "예" : "아니오");
+                }
+                main.post(() -> {
+                    statusText.setText("최근 결과 비교 완료");
+                    showTextDialog("⚖ 최근 백테스트 비교", sb.length() == 0 ? "비교할 결과가 부족합니다." : sb.toString());
+                });
+            } catch (Exception e) {
+                main.post(() -> appendFullLog("\nRESULT COMPARISON ERROR\n" + stackMessage(e) + "\n"));
+            }
+        });
+    }
 
     private void showMonthlyPerformance() {
         if (lastSummary == null) {
@@ -1600,7 +1690,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
     private void updateMetrics(JSONObject summary) {
         tradesValue.setText(String.valueOf(summary.optInt("trades", 0)));
         JSONObject quality = summary.optJSONObject("quality");
-        qualityValue.setText(quality == null ? "—" : quality.optString("grade", "—") + " · " + quality.optInt("score", 0));
+        JSONObject gate = summary.optJSONObject("validation_suite") == null ? null
+                : summary.optJSONObject("validation_suite").optJSONObject("safety_gate");
+        qualityValue.setText(quality == null ? "—" : quality.optString("grade", "—") + " · " + quality.optInt("score", 0)
+                + (gate == null ? "" : "\n" + gate.optString("status", "")));
         if (quality != null) {
             int score = quality.optInt("score", 0);
             qualityValue.setTextColor(score >= 85 ? Color.rgb(34, 197, 94)
