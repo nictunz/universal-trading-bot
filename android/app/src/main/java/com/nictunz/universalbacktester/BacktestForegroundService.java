@@ -143,7 +143,8 @@ public class BacktestForegroundService extends Service {
                     request.optBoolean("all_entries_three_tick", false),
                     request.optString("selected_parameters_json", ""),
                     request.optString("execution_model", "signal_close"),
-                    request.optString("optimization_speed", "quick")
+                    request.optString("optimization_speed", "quick"),
+                    request.optBoolean("precheck_enabled", true)
             ).toString();
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
@@ -199,6 +200,7 @@ public class BacktestForegroundService extends Service {
         request.put("selected_parameters_json", intent.getStringExtra("selected_parameters_json"));
         request.put("execution_model", intent.getStringExtra("execution_model"));
         request.put("optimization_speed", intent.getStringExtra("optimization_speed"));
+        request.put("precheck_enabled", intent.getBooleanExtra("precheck_enabled", true));
         return request;
     }
 
