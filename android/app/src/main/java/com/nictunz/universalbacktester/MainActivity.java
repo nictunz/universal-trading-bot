@@ -751,6 +751,7 @@ enableResultActions(false);
                 + " · 계산: " + sizingMode
                 + " · 체결: " + ("next_open".equals(executionModel) ? "다음 봉 시가" : "신호 봉 종가")
                 + " · 속도: " + (optimizationSpeed.equals("quick") ? "빠른" : (optimizationSpeed.equals("standard") ? "표준" : "정밀"))
+                + " · 국면: " + (adaptiveRegimeEnabled ? "자동 전환" : "고정")
                 + " · 단계: " + stageLabel
                 + " · 1차: " + broadOptimizationTrials + "회"
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
