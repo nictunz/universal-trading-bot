@@ -352,20 +352,20 @@ public class MainActivity extends android.app.Activity {
         TextView rangeHint = text("모든 USDT 무기한 선물 심볼 직접 입력 가능 · 최대 10년 · 실제 시작일은 4개 거래소 공통 상장 이력에 따라 달라집니다.", 11, MUTED, false);
         backtestCard.addView(rangeHint, marginTop(8));
 
-        root.addView(buildMetrics(), marginTop(14));
+        root.addView(buildMetrics(), 2, marginTop(14));
 
 LinearLayout resultActions = panel();
-root.addView(resultActions, marginTop(12));
-resultActions.addView(sectionTitle("백테스트 결과"));
+root.addView(resultActions, 3, marginTop(12));
+resultActions.addView(sectionTitle("성과 분석 대시보드"));
 
-resultActions.addView(resultGroupTitle("① 결과 확인", "앱에서 바로 확인"));
-resultSummaryButton = actionButton("결과 요약 보기", Color.rgb(30, 41, 59));
+resultActions.addView(resultGroupTitle("① 핵심 분석", "요약 · 차트 · 모든 거래를 한곳에서 확인"));
+resultSummaryButton = actionButton("📊 성과 요약 보기", PRIMARY);
 resultSummaryButton.setOnClickListener(v -> showResultSummary());
 resultActions.addView(resultSummaryButton, marginTop(6));
-tradeHistoryButton = actionButton("전체 거래내역 보기", Color.rgb(30, 41, 59));
+tradeHistoryButton = actionButton("📋 전체 거래내역 보기", Color.rgb(30, 41, 59));
 tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
 resultActions.addView(tradeHistoryButton, marginTop(6));
-chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
+chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
 
@@ -463,18 +463,23 @@ enableResultActions(false);
     }
 
     private View buildMetrics() {
+        LinearLayout dashboard = panel();
+        dashboard.addView(sectionTitle("최근 백테스트 핵심 성과"));
+        dashboard.addView(text("수익성과 위험을 먼저 확인하고 아래에서 상세 분석하세요.", 11, MUTED, false));
+
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         scroll.addView(row);
 
-        tradesValue = metric(row, "거래");
+        returnValue = metric(row, "총 수익률");
+        mddValue = metric(row, "최대 낙폭");
         winRateValue = metric(row, "승률");
         pfValue = metric(row, "Profit Factor");
-        returnValue = metric(row, "수익률");
-        mddValue = metric(row, "MDD");
-        return scroll;
+        tradesValue = metric(row, "거래 수");
+        dashboard.addView(scroll, marginTop(10));
+        return dashboard;
     }
 
     private TextView metric(LinearLayout row, String title) {
@@ -1280,22 +1285,36 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             toast("백테스트를 먼저 실행하세요.");
             return;
         }
-        String[] keys = {
-                "symbol", "bars", "trades", "wins", "win_rate", "profit_factor",
-                "gross_pnl", "estimated_costs", "pnl", "return_percent",
-                "max_drawdown_percent", "sizing_mode", "compounding_enabled",
-                "execution_model",
-                "optimization_pipeline", "rolling_final_selection", "rolling_report_path",
-                "reproduction_comparison", "selected_strategy_parameters",
-                "data_start", "data_end", "cache_sha256"
-        };
+        String execution = lastSummary.optString("execution_model", "next_open");
+        String executionLabel = "next_open".equals(execution)
+                ? "현실형 · 다음 봉 시가"
+                : "기존형 · 신호 봉 종가";
+        String sizing = lastSummary.optString("sizing_mode", "");
         StringBuilder sb = new StringBuilder();
-        for (String key : keys) {
-            if (lastSummary.has(key) && !lastSummary.isNull(key)) {
-                sb.append(key).append(": ").append(lastSummary.opt(key)).append('\n');
-            }
+        sb.append("【성과】\n")
+                .append("총 수익률  ").append(formatMetric(lastSummary, "return_percent", "%")).append('\n')
+                .append("순손익  ").append(formatMetric(lastSummary, "pnl", " USDT")).append('\n')
+                .append("총손익  ").append(formatMetric(lastSummary, "gross_pnl", " USDT")).append('\n')
+                .append("예상 비용  ").append(formatMetric(lastSummary, "estimated_costs", " USDT")).append("\n\n")
+                .append("【위험과 품질】\n")
+                .append("최대 낙폭  ").append(formatMetric(lastSummary, "max_drawdown_percent", "%")).append('\n')
+                .append("Profit Factor  ").append(formatMetric(lastSummary, "profit_factor", "")).append('\n')
+                .append("승률  ").append(formatMetric(lastSummary, "win_rate", "%")).append('\n')
+                .append("거래  ").append(lastSummary.optInt("trades", 0))
+                .append("회 · 승리 ").append(lastSummary.optInt("wins", 0)).append("회\n\n")
+                .append("【검증 조건】\n")
+                .append("종목  ").append(lastSummary.optString("symbol", "—")).append('\n')
+                .append("데이터  ").append(lastSummary.optString("data_start", "—"))
+                .append(" ~ ").append(lastSummary.optString("data_end", "—")).append('\n')
+                .append("봉 수  ").append(lastSummary.optInt("bars", 0)).append('\n')
+                .append("체결 모델  ").append(executionLabel).append('\n')
+                .append("자산 계산  ").append(sizing.isEmpty() ? "—" : sizing).append('\n')
+                .append("데이터 지문  ").append(lastSummary.optString("cache_sha256", "—"));
+        if (lastSummary.has("reproduction_comparison")) {
+            sb.append("\n\n【TOP10 재검증 일치 확인】\n")
+                    .append(lastSummary.opt("reproduction_comparison"));
         }
-        showTextDialog("백테스트 결과 요약", sb.toString());
+        showTextDialog("성과 요약 · 재현 조건", sb.toString());
     }
 
     private void showTradeHistory() {
@@ -1382,6 +1401,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         pfValue.setText(formatMetric(summary, "profit_factor", ""));
         returnValue.setText(formatMetric(summary, "return_percent", "%"));
         mddValue.setText(formatMetric(summary, "max_drawdown_percent", "%"));
+        double result = summary.optDouble("return_percent", 0.0);
+        double drawdown = summary.optDouble("max_drawdown_percent", 0.0);
+        returnValue.setTextColor(result >= 0 ? Color.rgb(34, 197, 94) : Color.rgb(239, 68, 68));
+        mddValue.setTextColor(drawdown <= 40.0 ? Color.rgb(250, 204, 21) : Color.rgb(239, 68, 68));
     }
 
     private String formatMetric(JSONObject obj, String key, String suffix) {
