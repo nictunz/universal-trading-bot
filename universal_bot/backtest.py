@@ -147,6 +147,11 @@ def run_backtest(
     block_range = block_range_s.to_numpy(dtype=float, copy=False)
     adx = adx_s.to_numpy(dtype=float, copy=False)
     rsi_values = rsi_s.to_numpy(dtype=float, copy=False)
+    regime_lookback = max(20, int(getattr(settings, "regime_lookback_bars", 288)))
+    regime_trend_s = (close_s / close_s.shift(regime_lookback) - 1.0) * 100.0
+    candle_range_s = ((prepared["high"] - prepared["low"]) / close_s.replace(0, np.nan) * 100.0).rolling(regime_lookback).mean()
+    regime_trend = regime_trend_s.to_numpy(dtype=float, copy=False)
+    regime_volatility = candle_range_s.to_numpy(dtype=float, copy=False)
     index = prepared.index
 
     warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, 200)
@@ -188,6 +193,11 @@ def run_backtest(
     pending_signal: str | None = None
     pending_tp_percent = math.nan
     pending_sl_percent = math.nan
+    pending_market_regime = "미분류"
+    pending_volatility_regime = "미분류"
+    pending_risk_multiplier = 1.0
+    position_market_regime = "미분류"
+    position_volatility_regime = "미분류"
     trade_log: list[dict] = []
     equity_curve: list[dict] = []
 
@@ -208,6 +218,20 @@ def run_backtest(
         br = block_range[i]
         av = adx[i]
         rv = rsi_values[i]
+        adaptive_regime = bool(getattr(settings, "adaptive_regime_enabled", False))
+        trend_value = regime_trend[i]
+        regime_vol_value = regime_volatility[i]
+        trend_threshold = float(getattr(settings, "regime_trend_threshold_percent", 2.0))
+        high_vol_threshold = float(getattr(settings, "regime_high_volatility_percent", 0.8))
+        market_regime = (
+            "상승장" if np.isfinite(trend_value) and trend_value >= trend_threshold
+            else ("하락장" if np.isfinite(trend_value) and trend_value <= -trend_threshold else "횡보장")
+        )
+        volatility_regime = "고변동성" if np.isfinite(regime_vol_value) and regime_vol_value >= high_vol_threshold else "저변동성"
+        regime_risk_multiplier = (
+            float(getattr(settings, "regime_high_volatility_risk_multiplier", 0.5))
+            if adaptive_regime and volatility_regime == "고변동성" else 1.0
+        )
 
         one_bar_vol = abs(c - o) / o * 100.0 if o else 0.0
         raw_tp = nr * float(settings.tp_vol_multiplier) if np.isfinite(nr) else math.nan
@@ -249,9 +273,11 @@ def run_backtest(
             _consecutive_candle_direction_ok(opens, closes, i, first_entry_bars, "SHORT")
             if require_consecutive else c > o
         )
-        if base_entry and settings.allow_long and long_candle_ok and long_ok:
+        regime_allow_long = (not adaptive_regime) or market_regime in {"상승장", "횡보장"}
+        regime_allow_short = (not adaptive_regime) or market_regime in {"하락장", "횡보장"}
+        if base_entry and settings.allow_long and regime_allow_long and long_candle_ok and long_ok:
             signal = "LONG"
-        elif base_entry and settings.allow_short and short_candle_ok and short_ok:
+        elif base_entry and settings.allow_short and regime_allow_short and short_candle_ok and short_ok:
             signal = "SHORT"
 
         # Realistic event-driven execution inspired by Zipline/Freqtrade:
@@ -262,11 +288,12 @@ def run_backtest(
             sizing_equity = backtest_sizing_equity(
                 initial_capital, realized_pnl - realized_costs, compounding_enabled
             )
-            order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0
+            order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0 * pending_risk_multiplier
             max_total_notional = sizing_equity * float(settings.backtest_max_total_multiplier)
             can_fill = (
                 sizing_equity > 0.0
                 and entries < settings.max_pyramiding
+                and (pending_volatility_regime != "고변동성" or entries < 1)
                 and entry_notional + order_notional <= max_total_notional + 1e-9
                 and (position_side is None or position_side == pending_signal)
                 and o > 0
@@ -283,6 +310,8 @@ def run_backtest(
                     position_tp = o * (1 + pending_tp_percent / 100.0) if pending_signal == "LONG" else o * (1 - pending_tp_percent / 100.0)
                     position_sl = o * (1 - pending_sl_percent / 100.0) if pending_signal == "LONG" else o * (1 + pending_sl_percent / 100.0)
                     position_entry_time = ts_iso
+                    position_market_regime = pending_market_regime
+                    position_volatility_regime = pending_volatility_regime
                     entries = 1
                 else:
                     entries += 1
@@ -292,6 +321,9 @@ def run_backtest(
             pending_signal = None
             pending_tp_percent = math.nan
             pending_sl_percent = math.nan
+            pending_market_regime = "미분류"
+            pending_volatility_regime = "미분류"
+            pending_risk_multiplier = 1.0
 
         if position_side is not None:
             qty = abs(position_size)
@@ -365,6 +397,9 @@ def run_backtest(
                     "sizing_equity": position_sizing_equity,
                     "compounding_enabled": compounding_enabled,
                     "cross_margin": str(settings.backtest_margin_mode).lower() == "crossed",
+                    "market_regime": position_market_regime,
+                    "volatility_regime": position_volatility_regime,
+                    "adaptive_regime_enabled": adaptive_regime,
                 })
                 position_side = None
                 position_size = 0.0
@@ -373,6 +408,8 @@ def run_backtest(
                 position_tp = math.nan
                 position_sl = math.nan
                 position_entry_time = None
+                position_market_regime = "미분류"
+                position_volatility_regime = "미분류"
                 entries = 0
                 position_sizing_equity = initial_capital
                 last_exit_bar = bar_number
@@ -391,7 +428,7 @@ def run_backtest(
             realized_pnl - realized_costs,
             compounding_enabled,
         )
-        order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0
+        order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0 * regime_risk_multiplier
         max_total_notional = sizing_equity * float(settings.backtest_max_total_multiplier)
         can_pyramid = (
             sizing_equity > 0.0
@@ -403,6 +440,9 @@ def run_backtest(
             pending_signal = signal
             pending_tp_percent = final_tp
             pending_sl_percent = final_sl
+            pending_market_regime = market_regime
+            pending_volatility_regime = volatility_regime
+            pending_risk_multiplier = regime_risk_multiplier
         elif execution_model == "signal_close" and signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
             amount = order_notional / c if c > 0 else 0.0
             if amount > 0:
@@ -416,6 +456,8 @@ def run_backtest(
                     position_tp = c * (1 + final_tp / 100.0) if signal == "LONG" else c * (1 - final_tp / 100.0)
                     position_sl = c * (1 - final_sl / 100.0) if signal == "LONG" else c * (1 + final_sl / 100.0)
                     position_entry_time = ts_iso
+                    position_market_regime = market_regime
+                    position_volatility_regime = volatility_regime
                     entries = 1
                 else:
                     entries += 1
