@@ -64,6 +64,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView sizingModeInput;
     private AutoCompleteTextView executionModelInput;
     private AutoCompleteTextView optimizationStageInput;
+    private AutoCompleteTextView optimizationSpeedInput;
     private AutoCompleteTextView broadTrialCountInput;
     private AutoCompleteTextView refineTrialCountInput;
     private AutoCompleteTextView threeTickModeInput;
@@ -256,9 +257,24 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
+        optimizationSpeedInput = autocomplete(
+                new String[]{"빠른 탐색 · 추천", "표준 탐색", "정밀 탐색"},
+                "빠른 탐색 · 추천"
+        );
+        backtestCard.addView(labeled("휴대폰 최적화 속도", optimizationSpeedInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "속도 선택", optimizationSpeedInput,
+                new String[]{"빠른(추천)", "표준", "정밀"},
+                new String[]{"빠른 탐색 · 추천", "표준 탐색", "정밀 탐색"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "빠른=1차 100·TOP3×100 · 표준=1차 500·TOP5×300 · 정밀=입력값·TOP10. 동일 설정은 체크포인트를 재사용합니다.",
+                11, MUTED, false
+        ), marginTop(7));
+
         optimizationStageInput = autocomplete(
                 new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"},
-                "1차 전체 탐색"
+                "전체 자동 실행"
         );
         backtestCard.addView(labeled("자동 최적화 단계", optimizationStageInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
@@ -272,7 +288,7 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
-        broadTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "1000");
+        broadTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "100");
         backtestCard.addView(labeled("1차 전체 탐색 조합 수 (1~5000)", broadTrialCountInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
                 "1차 빠른 선택", broadTrialCountInput,
@@ -280,7 +296,7 @@ public class MainActivity extends android.app.Activity {
                 new String[]{"100", "500", "1000", "3000", "5000"}
         ), marginTop(8));
 
-        refineTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "1000");
+        refineTrialCountInput = autocomplete(new String[]{"100", "300", "500", "1000", "2000", "3000", "5000"}, "100");
         backtestCard.addView(labeled("2차 정밀 탐색 · TOP10 후보당 조합 수 (1~5000)", refineTrialCountInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
                 "정밀 빠른 선택", refineTrialCountInput,
@@ -567,6 +583,8 @@ enableResultActions(false);
         sizingMode = compoundingEnabled ? "복리식" : "고정식";
         String executionModel = executionModelInput.getText().toString().contains("다음 봉")
                 ? "next_open" : "signal_close";
+        String speedLabel = optimizationSpeedInput.getText().toString().trim();
+        String optimizationSpeed = speedLabel.startsWith("정밀") ? "deep" : (speedLabel.startsWith("표준") ? "standard" : "quick");
         String stageLabel = optimizationStageInput.getText().toString().trim();
         String optimizationStage;
         if ("상위 후보 정밀 탐색".equals(stageLabel)) optimizationStage = "refine";
@@ -620,6 +638,7 @@ enableResultActions(false);
         intent.putExtra("compounding_enabled", compoundingEnabled);
         intent.putExtra("optimization_stage", optimizationStage);
         intent.putExtra("execution_model", executionModel);
+        intent.putExtra("optimization_speed", optimizationSpeed);
         if (fixedParameters != null) {
             JSONObject replayPayload = new JSONObject();
             try {
@@ -648,6 +667,7 @@ enableResultActions(false);
         logText.setText((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
                 + " · 계산: " + sizingMode
                 + " · 체결: " + ("next_open".equals(executionModel) ? "다음 봉 시가" : "신호 봉 종가")
+                + " · 속도: " + (optimizationSpeed.equals("quick") ? "빠른" : (optimizationSpeed.equals("standard") ? "표준" : "정밀"))
                 + " · 단계: " + stageLabel
                 + " · 1차: " + broadOptimizationTrials + "회"
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
