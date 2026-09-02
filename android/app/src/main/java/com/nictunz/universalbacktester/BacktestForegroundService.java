@@ -144,7 +144,8 @@ public class BacktestForegroundService extends Service {
                     request.optString("selected_parameters_json", ""),
                     request.optString("execution_model", "signal_close"),
                     request.optString("optimization_speed", "quick"),
-                    request.optBoolean("precheck_enabled", true)
+                    request.optBoolean("precheck_enabled", true),
+                    request.optBoolean("adaptive_regime_enabled", true)
             ).toString();
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
@@ -201,6 +202,7 @@ public class BacktestForegroundService extends Service {
         request.put("execution_model", intent.getStringExtra("execution_model"));
         request.put("optimization_speed", intent.getStringExtra("optimization_speed"));
         request.put("precheck_enabled", intent.getBooleanExtra("precheck_enabled", true));
+        request.put("adaptive_regime_enabled", intent.getBooleanExtra("adaptive_regime_enabled", true));
         return request;
     }
 
