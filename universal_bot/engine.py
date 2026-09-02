@@ -36,6 +36,9 @@ class TradingEngine:
         self.entry_notional = 0.0
         self.position_entry_time: str | None = None
         self.current_bar_time: str | None = None
+        self.current_market_regime = "미분류"
+        self.current_volatility_regime = "미분류"
+        self.current_regime_risk_multiplier = 1.0
         self.live = settings.bot_mode.upper() == "LIVE"
         self.safety = LiveSafety(enabled=self.live)
         self._live_initialized = False
@@ -45,8 +48,28 @@ class TradingEngine:
 
     def _amount(self, price: float) -> float:
         equity = self.settings.initial_capital if not self.live else self.adapter.equity()
-        notional = equity * self.settings.order_percent_of_equity / 100.0
+        notional = equity * self.settings.order_percent_of_equity / 100.0 * self.current_regime_risk_multiplier
         return notional / price if price > 0 else 0.0
+
+    def _adaptive_regime(self, df) -> tuple[str, str, float]:
+        if not bool(getattr(self.settings, "adaptive_regime_enabled", False)):
+            return "비활성", "비활성", 1.0
+        lookback = max(20, int(getattr(self.settings, "regime_lookback_bars", 288)))
+        if len(df.index) <= lookback:
+            return "미분류", "미분류", 0.0
+        closes = df["close"].astype(float).iloc[-(lookback + 1):]
+        oldest = float(closes.iloc[0])
+        newest = float(closes.iloc[-1])
+        trend = (newest / oldest - 1.0) * 100.0 if oldest else 0.0
+        threshold = float(getattr(self.settings, "regime_trend_threshold_percent", 2.0))
+        market = "상승장" if trend >= threshold else ("하락장" if trend <= -threshold else "횡보장")
+        recent = df.iloc[-lookback:]
+        ranges = ((recent["high"].astype(float) - recent["low"].astype(float)) / recent["close"].astype(float).replace(0, float("nan")) * 100.0)
+        avg_range = float(ranges.mean()) if len(ranges) else 0.0
+        high_threshold = float(getattr(self.settings, "regime_high_volatility_percent", 0.8))
+        volatility = "고변동성" if avg_range >= high_threshold else "저변동성"
+        risk = float(getattr(self.settings, "regime_high_volatility_risk_multiplier", 0.5)) if volatility == "고변동성" else 1.0
+        return market, volatility, risk
 
     def _internal_position_dict(self) -> dict:
         return {"side": self.position.side if not self.position.flat else "FLAT", "size": abs(self.position.size), "entry_price": self.position.entry_price or 0.0}
@@ -271,7 +294,21 @@ class TradingEngine:
             if hit_tp or hit_sl:
                 self._close(price, "TP" if hit_tp else "SL")
         signal = result.signal.side
-        can_pyramid = self.position.entries < self.settings.max_pyramiding
+        market_regime, volatility_regime, regime_risk = self._adaptive_regime(df)
+        self.current_market_regime = market_regime
+        self.current_volatility_regime = volatility_regime
+        self.current_regime_risk_multiplier = regime_risk
+        if bool(getattr(self.settings, "adaptive_regime_enabled", False)):
+            if market_regime == "상승장" and signal == "SHORT":
+                signal = None
+            elif market_regime == "하락장" and signal == "LONG":
+                signal = None
+            elif market_regime == "미분류":
+                signal = None
+        can_pyramid = (
+            self.position.entries < self.settings.max_pyramiding
+            and (volatility_regime != "고변동성" or self.position.entries < 1)
+        )
         same_direction = self.position.flat or self.position.side == signal
         new_entry_this_bar = self.last_entry_bar != self.bar_number
         if signal and can_pyramid and same_direction and new_entry_this_bar:
@@ -293,6 +330,10 @@ class TradingEngine:
             "live_halted": self.safety.halted,
             "live_safety_reason": self.safety.reason,
             "protection_ok": self.safety.protection_ok,
+            "market_regime": self.current_market_regime,
+            "volatility_regime": self.current_volatility_regime,
+            "regime_risk_multiplier": self.current_regime_risk_multiplier,
+            "adaptive_regime_enabled": bool(getattr(self.settings, "adaptive_regime_enabled", False)),
         }
         self.last_state = result.state
         self.equity_curve.append({"bar": self.bar_number, "timestamp": self.current_bar_time, "equity": display_equity})
