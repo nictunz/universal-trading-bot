@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/build-android-backtester.yml'
       - 'android/**'
       - 'universal_bot/local_cache_core.py'
       - 'universal_bot/archive_historical.py'
@@ -283,6 +284,7 @@ jobs:
 
       - name: Publish GitHub Android update release
         if: env.UPDATE_RELEASE_READY == 'true'
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-v${{ env.ANDROID_VERSION_CODE }}
