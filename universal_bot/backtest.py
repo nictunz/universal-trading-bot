@@ -154,7 +154,7 @@ def run_backtest(
     regime_volatility = candle_range_s.to_numpy(dtype=float, copy=False)
     index = prepared.index
 
-    warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, regime_lookback, 200)
+    warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, regime_lookback if bool(getattr(settings, "adaptive_regime_enabled", False)) else 0, 200)
     start_idx = min(warmup, total - 1)
     excluded_hours = {x.strip() for x in settings.excluded_hours.split(",") if x.strip()}
     start_date = settings.start_date
