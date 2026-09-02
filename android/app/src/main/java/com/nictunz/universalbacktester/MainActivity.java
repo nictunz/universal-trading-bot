@@ -318,31 +318,46 @@ public class MainActivity extends android.app.Activity {
 
         root.addView(buildMetrics(), marginTop(14));
 
-        LinearLayout resultActions = panel();
-        root.addView(resultActions, marginTop(12));
-        resultActions.addView(sectionTitle("백테스트 결과 확인"));
-        resultSummaryButton = actionButton("결과 요약 팝업", Color.rgb(30, 41, 59));
-        resultSummaryButton.setOnClickListener(v -> showResultSummary());
-        resultActions.addView(resultSummaryButton);
-        tradeHistoryButton = actionButton("전체 거래내역 팝업", Color.rgb(30, 41, 59));
-        tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
-        resultActions.addView(tradeHistoryButton, marginTop(8));
-        chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
-        chartButton.setOnClickListener(v -> showBacktestChart());
-        resultActions.addView(chartButton, marginTop(8));
-        Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
-        savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
-        resultActions.addView(savedResultsButton, marginTop(8));
-        Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
-        shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
-        resultActions.addView(shareResultButton, marginTop(8));
-        Button shareOptimizationButton = actionButton("📤 전체 자동 결과 JSON 공유 (MDD 70% 초과 포함)", Color.rgb(30, 41, 59));
-        shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
-        resultActions.addView(shareOptimizationButton, marginTop(8));
-        Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
-        shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
-        resultActions.addView(shareCacheButton, marginTop(8));
-        enableResultActions(false);
+LinearLayout resultActions = panel();
+root.addView(resultActions, marginTop(12));
+resultActions.addView(sectionTitle("백테스트 결과"));
+
+resultActions.addView(resultGroupTitle("① 결과 확인", "앱에서 바로 확인"));
+resultSummaryButton = actionButton("결과 요약 보기", Color.rgb(30, 41, 59));
+resultSummaryButton.setOnClickListener(v -> showResultSummary());
+resultActions.addView(resultSummaryButton, marginTop(6));
+tradeHistoryButton = actionButton("전체 거래내역 보기", Color.rgb(30, 41, 59));
+tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
+resultActions.addView(tradeHistoryButton, marginTop(6));
+chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
+chartButton.setOnClickListener(v -> showBacktestChart());
+resultActions.addView(chartButton, marginTop(6));
+
+resultActions.addView(resultGroupTitle("② 저장된 결과", "이전 백테스트 다시 불러오기"), marginTop(14));
+Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
+savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
+resultActions.addView(savedResultsButton, marginTop(6));
+
+resultActions.addView(resultGroupTitle("③ 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
+resultActions.addView(stageExportButton("1차 전체 탐색 결과", "broad"), marginTop(6));
+resultActions.addView(stageExportButton("2차 정밀 탐색 결과", "refined"), marginTop(6));
+resultActions.addView(stageExportButton("3차 6개월 롤링 결과", "rolling6"), marginTop(6));
+resultActions.addView(stageExportButton("4차 3개월 롤링 결과", "rolling3"), marginTop(6));
+resultActions.addView(stageExportButton("5차 최종 선정 결과", "final"), marginTop(6));
+
+resultActions.addView(resultGroupTitle("④ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
+Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
+shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
+resultActions.addView(shareResultButton, marginTop(6));
+Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공유", Color.rgb(30, 41, 59));
+shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
+resultActions.addView(shareOptimizationButton, marginTop(6));
+
+resultActions.addView(resultGroupTitle("⑤ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
+Button shareCacheButton = actionButton("현재 캐시 DB 공유", Color.rgb(30, 41, 59));
+shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
+resultActions.addView(shareCacheButton, marginTop(6));
+enableResultActions(false);
 
         LinearLayout serverCard = panel();
         root.addView(serverCard, marginTop(14));
@@ -685,6 +700,47 @@ public class MainActivity extends android.app.Activity {
         stopBacktestButton.setEnabled(active);
         stopBacktestButton.setAlpha(active ? 1f : 0.45f);
     }
+
+
+private View resultGroupTitle(String title, String subtitle) {
+    LinearLayout wrap = new LinearLayout(this);
+    wrap.setOrientation(LinearLayout.VERTICAL);
+    wrap.addView(text(title, 13, ACCENT, true));
+    wrap.addView(text(subtitle, 11, MUTED, false), marginTop(2));
+    return wrap;
+}
+
+private Button stageExportButton(String label, String stage) {
+    Button button = actionButton("⬇ " + label + " JSON", Color.rgb(30, 41, 59));
+    button.setOnClickListener(v -> exportAndShareOptimizationStage(stage, label));
+    return button;
+}
+
+private void exportAndShareOptimizationStage(String stage, String label) {
+    if (lastResultPath == null || lastResultPath.trim().isEmpty()) {
+        toast("먼저 완료된 최적화 결과를 불러오세요.");
+        return;
+    }
+    statusText.setText(label + " 파일 생성 중");
+    executor.execute(() -> {
+        try {
+            PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+            JSONObject exported = new JSONObject(bridge.callAttr("export_optimization_stage", lastResultPath, stage).toString());
+            String path = exported.getString("path");
+            int count = exported.optInt("count", 0);
+            main.post(() -> {
+                statusText.setText(label + " · " + count + "개");
+                shareBacktestFile(path, "application/json", label + " JSON 공유");
+            });
+        } catch (Exception e) {
+            main.post(() -> {
+                logText.append("\nSTAGE EXPORT ERROR\n" + stackMessage(e) + "\n");
+                statusText.setText(label + " 생성 오류");
+                toast(label + " 파일 생성 실패");
+            });
+        }
+    });
+}
 
     private void exportAndShareOptimizationResults() {
         if (lastResultPath == null || lastResultPath.trim().isEmpty()) {

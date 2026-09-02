@@ -1178,6 +1178,53 @@ def export_optimization_results(result_path: str) -> str:
         "rolling_candidates": len((rolling_report or {}).get("ranking") or []),
     }, ensure_ascii=False)
 
+
+def export_optimization_stage(result_path: str, stage: str) -> str:
+    stage_key = str(stage or "").strip().lower()
+    full_meta = json.loads(export_optimization_results(result_path))
+    full_path = Path(full_meta["path"])
+    payload = json.loads(full_path.read_text(encoding="utf-8"))
+    stage_map = {
+        "broad": ("01-broad-ranking", payload.get("broad"), "1차 전체 탐색"),
+        "refined": ("02-refined-ranking", payload.get("refined"), "2차 정밀 탐색"),
+        "rolling6": ("03-rolling-6m", payload.get("rolling_6m_report"), "3차 6개월 롤링"),
+        "rolling3": ("04-rolling-3m", payload.get("rolling_3m_report"), "4차 3개월 롤링"),
+        "final": ("05-final-selection", payload.get("rolling_final_selection"), "5차 최종 선정"),
+    }
+    if stage_key not in stage_map:
+        raise RuntimeError(f"지원하지 않는 결과 단계입니다: {stage}")
+    suffix, data, label = stage_map[stage_key]
+    if data is None:
+        raise RuntimeError(f"{label} 결과가 없습니다. 해당 단계까지 최적화를 완료했는지 확인하세요.")
+    stage_payload = {
+        "schema_version": 1,
+        "export_type": "optimization_stage",
+        "stage": stage_key,
+        "stage_label": label,
+        "source_result": payload.get("source_result"),
+        "symbol": payload.get("symbol"),
+        "timeframe": payload.get("timeframe"),
+        "requested_start": payload.get("requested_start"),
+        "requested_end": payload.get("requested_end"),
+        "risk_profile": payload.get("risk_profile"),
+        "constraints": payload.get("constraints"),
+        "ranking_rule": payload.get("ranking_rule"),
+        "mdd_policy": payload.get("mdd_policy"),
+        "result": data,
+    }
+    out = Path(result_path).with_name(Path(result_path).stem + f"-{suffix}.json")
+    _save_json_atomic(out, stage_payload)
+    if isinstance(data, dict) and "completed_trials" in data:
+        count = int(data.get("completed_trials") or 0)
+    elif isinstance(data, dict) and isinstance(data.get("ranking"), list):
+        count = len(data.get("ranking") or [])
+    elif isinstance(data, list):
+        count = len(data)
+    else:
+        count = 1
+    return json.dumps({"path": str(out), "stage": stage_key, "label": label, "count": count}, ensure_ascii=False)
+
+
 def ensure_ssh_key(app_files_dir: str) -> str:
     return str(_ssh_bridge().ensureKey(app_files_dir))
 
