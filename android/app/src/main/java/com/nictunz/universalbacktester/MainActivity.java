@@ -1289,7 +1289,9 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         String executionLabel = "next_open".equals(execution)
                 ? "현실형 · 다음 봉 시가"
                 : "기존형 · 신호 봉 종가";
-        String sizing = lastSummary.optString("sizing_mode", "");
+        String[] sizingKeys = {"sizing_mode", "compounding_enabled"};
+        String sizing = lastSummary.optString(sizingKeys[0], "");
+        boolean compounding = lastSummary.optBoolean(sizingKeys[1], false);
         StringBuilder sb = new StringBuilder();
         sb.append("【성과】\n")
                 .append("총 수익률  ").append(formatMetric(lastSummary, "return_percent", "%")).append('\n')
@@ -1308,7 +1310,8 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .append(" ~ ").append(lastSummary.optString("data_end", "—")).append('\n')
                 .append("봉 수  ").append(lastSummary.optInt("bars", 0)).append('\n')
                 .append("체결 모델  ").append(executionLabel).append('\n')
-                .append("자산 계산  ").append(sizing.isEmpty() ? "—" : sizing).append('\n')
+                .append("자산 계산  ").append(sizing.isEmpty() ? "—" : sizing)
+                .append(" · 복리 ").append(compounding ? "사용" : "미사용").append('\n')
                 .append("데이터 지문  ").append(lastSummary.optString("cache_sha256", "—"));
         if (lastSummary.has("reproduction_comparison")) {
             sb.append("\n\n【TOP10 재검증 일치 확인】\n")
