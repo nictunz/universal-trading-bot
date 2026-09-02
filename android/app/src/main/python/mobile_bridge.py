@@ -991,35 +991,52 @@ def _walk_forward_validation(symbol: str, timeframe: str, start_text: str, end_t
 
 
 def _market_regime_report(db: Path, symbol: str, timeframe: str, trades: list[dict]) -> dict:
-    buckets = {
-        "상승장": {"trades": 0, "pnl": 0.0}, "하락장": {"trades": 0, "pnl": 0.0},
-        "횡보장": {"trades": 0, "pnl": 0.0}, "고변동성": {"trades": 0, "pnl": 0.0},
-    }
+    names = ("상승장", "하락장", "횡보장", "고변동성", "저변동성")
+    buckets = {name: {"trades": 0, "wins": 0, "pnl": 0.0} for name in names}
     with sqlite3.connect(str(db)) as con:
         for trade in trades or []:
-            text = str(trade.get("exit_time") or "")
-            try:
-                ts = int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
-            except Exception:
-                continue
-            rows = con.execute(
-                "SELECT close, high, low FROM ohlcv WHERE asset_class='crypto' AND exchange='bitget' "
-                "AND symbol=? AND timeframe=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 288",
-                (symbol, timeframe, ts),
-            ).fetchall()
-            if len(rows) < 20:
-                continue
-            newest, oldest = float(rows[0][0]), float(rows[-1][0])
-            trend = (newest / oldest - 1) * 100 if oldest else 0.0
-            ranges = [(float(r[1]) - float(r[2])) / float(r[0]) * 100 for r in rows if float(r[0])]
-            avg_range = statistics.mean(ranges) if ranges else 0.0
-            regime = "고변동성" if avg_range >= 0.8 else ("상승장" if trend >= 2 else ("하락장" if trend <= -2 else "횡보장"))
-            buckets[regime]["trades"] += 1
-            buckets[regime]["pnl"] += float(trade.get("pnl") or 0)
-    rows = [{"regime": name, "trades": row["trades"], "pnl": round(row["pnl"], 6)} for name, row in buckets.items()]
-    covered = sum(row["trades"] for row in rows)
-    return {"status": "PASS" if covered else "WARN", "lookback_bars": 288, "regimes": rows, "covered_trades": covered}
-
+            market = str(trade.get("market_regime") or "")
+            volatility = str(trade.get("volatility_regime") or "")
+            if market not in {"상승장", "하락장", "횡보장"} or volatility not in {"고변동성", "저변동성"}:
+                text = str(trade.get("exit_time") or "")
+                try:
+                    ts = int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+                except Exception:
+                    continue
+                rows = con.execute(
+                    "SELECT close, high, low FROM ohlcv WHERE asset_class='crypto' AND exchange='bitget' "
+                    "AND symbol=? AND timeframe=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 288",
+                    (symbol, timeframe, ts),
+                ).fetchall()
+                if len(rows) < 20:
+                    continue
+                newest, oldest = float(rows[0][0]), float(rows[-1][0])
+                trend = (newest / oldest - 1) * 100 if oldest else 0.0
+                ranges = [(float(r[1]) - float(r[2])) / float(r[0]) * 100 for r in rows if float(r[0])]
+                avg_range = statistics.mean(ranges) if ranges else 0.0
+                market = "상승장" if trend >= 2 else ("하락장" if trend <= -2 else "횡보장")
+                volatility = "고변동성" if avg_range >= 0.8 else "저변동성"
+            pnl = float(trade.get("pnl") or 0)
+            for name in (market, volatility):
+                buckets[name]["trades"] += 1
+                buckets[name]["wins"] += int(pnl >= 0)
+                buckets[name]["pnl"] += pnl
+    rows = []
+    for name in names:
+        row = buckets[name]
+        rows.append({
+            "regime": name, "trades": row["trades"], "wins": row["wins"],
+            "win_rate": round(row["wins"] / row["trades"] * 100, 2) if row["trades"] else 0.0,
+            "pnl": round(row["pnl"], 6),
+        })
+    covered = sum(buckets[name]["trades"] for name in ("상승장", "하락장", "횡보장"))
+    return {
+        "status": "PASS" if covered else "WARN", "lookback_bars": 288,
+        "regimes": rows, "covered_trades": covered,
+        "adaptive_regime_enabled": any(bool(t.get("adaptive_regime_enabled")) for t in trades or []),
+        "routing": {"상승장": "LONG", "하락장": "SHORT", "횡보장": "LONG+SHORT",
+                    "고변동성": "risk 50% + no pyramiding", "저변동성": "risk 100%"},
+    }
 
 def _attach_validation_suite(summary: dict, db: Path, symbol: str, timeframe: str, start_text: str, end_text: str, final_overrides: dict, log) -> None:
     log("다중 검증 시작: 데이터 품질 → 미래참조 → 70/30 → 워크포워드 → 비용 → 몬테카를로 → 시장국면")
