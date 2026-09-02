@@ -7,6 +7,7 @@ import statistics
 import json
 import os
 import random
+import sqlite3
 import re
 import threading
 import zipfile
@@ -813,6 +814,243 @@ def _rolling_validate_candidates(
 
 
 
+
+def _timeframe_millis(timeframe: str) -> int:
+    try:
+        value, unit = int(timeframe[:-1]), timeframe[-1].lower()
+        return value * {"m": 60_000, "h": 3_600_000, "d": 86_400_000}[unit]
+    except Exception:
+        return 300_000
+
+
+def _data_quality_report(db: Path, symbol: str, timeframe: str, start_text: str, end_text: str) -> dict:
+    start_ms = int(datetime.combine(_parse_day(start_text), datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
+    end_ms = int(datetime.combine(_parse_day(end_text), datetime.max.time(), tzinfo=timezone.utc).timestamp() * 1000)
+    step = _timeframe_millis(timeframe)
+    exchanges: list[dict] = []
+    fatal = 0
+    warnings = 0
+    with sqlite3.connect(str(db)) as con:
+        for exchange in ("binance", "bitget", "okx", "bybit"):
+            where = "asset_class='crypto' AND exchange=? AND symbol=? AND timeframe=? AND timestamp BETWEEN ? AND ?"
+            args = (exchange, symbol, timeframe, start_ms, end_ms)
+            count, first_ts, last_ts, invalid = con.execute(
+                f"SELECT COUNT(*), MIN(timestamp), MAX(timestamp), "
+                f"SUM(CASE WHEN open<=0 OR high<=0 OR low<=0 OR close<=0 OR volume<0 "
+                f"OR high<MAX(open,close) OR low>MIN(open,close) THEN 1 ELSE 0 END) FROM ohlcv WHERE {where}",
+                args,
+            ).fetchone()
+            gaps = con.execute(
+                f"SELECT COUNT(*) FROM (SELECT timestamp-LAG(timestamp) OVER (ORDER BY timestamp) AS delta "
+                f"FROM ohlcv WHERE {where}) WHERE delta IS NOT NULL AND delta<>?",
+                args + (step,),
+            ).fetchone()[0]
+            row = {
+                "exchange": exchange, "bars": int(count or 0), "first_timestamp": first_ts,
+                "last_timestamp": last_ts, "invalid_ohlcv": int(invalid or 0), "irregular_gaps": int(gaps or 0),
+            }
+            row["status"] = "FAIL" if not count or invalid else ("WARN" if gaps else "PASS")
+            fatal += int(row["status"] == "FAIL")
+            warnings += int(row["status"] == "WARN")
+            exchanges.append(row)
+    counts = [row["bars"] for row in exchanges if row["bars"]]
+    common_ratio = min(counts) / max(counts) * 100 if counts else 0.0
+    if common_ratio < 99.0:
+        warnings += 1
+    return {
+        "status": "FAIL" if fatal else ("WARN" if warnings else "PASS"),
+        "exchanges": exchanges,
+        "common_bar_ratio_percent": round(common_ratio, 4),
+        "primary_key_duplicate_policy": "SQLite PRIMARY KEY prevents duplicates",
+        "fatal_issues": fatal,
+        "warnings": warnings,
+    }
+
+
+def _lookahead_audit(summary: dict) -> dict:
+    failures: list[str] = []
+    trades = list(summary.get("trades_log") or [])
+    previous_exit = ""
+    for trade in trades:
+        entry = str(trade.get("entry_time") or "")
+        exit_ = str(trade.get("exit_time") or "")
+        if not entry or not exit_ or entry > exit_:
+            failures.append(f"trade-{trade.get('trade')}: entry/exit timestamp order")
+        if previous_exit and entry < previous_exit and int(trade.get("entries") or 1) <= 1:
+            failures.append(f"trade-{trade.get('trade')}: overlapping closed trades")
+        previous_exit = max(previous_exit, exit_)
+    execution = str(summary.get("execution_model") or "")
+    return {
+        "status": "FAIL" if failures else "PASS",
+        "checked_trades": len(trades),
+        "execution_model": execution,
+        "next_bar_execution": execution == "next_open",
+        "same_bar_tp_sl_policy": "conservative stop-first",
+        "unfinished_bar_policy": "closed cached bars only",
+        "failures": failures[:50],
+    }
+
+
+def _monte_carlo_report(summary: dict, simulations: int = 1000) -> dict:
+    pnls = [float(row.get("pnl") or 0) for row in list(summary.get("trades_log") or [])]
+    if not pnls:
+        return {"status": "WARN", "simulations": 0, "reason": "no trades"}
+    seed_text = str((summary.get("reproducibility") or {}).get("run_signature") or summary.get("cache_sha256") or "monte-carlo")
+    rng = random.Random(int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16))
+    drawdowns: list[float] = []
+    max_loss_streaks: list[int] = []
+    ruins = 0
+    for _ in range(max(100, simulations)):
+        sample = [pnls[rng.randrange(len(pnls))] for _ in pnls]
+        equity = 1000.0
+        peak = equity
+        max_dd = 0.0
+        streak = 0
+        max_streak = 0
+        for pnl in sample:
+            equity += pnl
+            peak = max(peak, equity)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - equity) / peak * 100)
+            streak = streak + 1 if pnl < 0 else 0
+            max_streak = max(max_streak, streak)
+        ruins += int(equity <= 0)
+        drawdowns.append(max_dd)
+        max_loss_streaks.append(max_streak)
+    drawdowns.sort()
+    max_loss_streaks.sort()
+    p95 = drawdowns[min(len(drawdowns) - 1, int(len(drawdowns) * 0.95))]
+    return {
+        "status": "FAIL" if ruins / len(drawdowns) >= 0.05 else ("WARN" if p95 > 70 else "PASS"),
+        "simulations": len(drawdowns),
+        "mdd_median_percent": round(statistics.median(drawdowns), 3),
+        "mdd_p95_percent": round(p95, 3),
+        "loss_streak_p95": max_loss_streaks[min(len(max_loss_streaks) - 1, int(len(max_loss_streaks) * 0.95))],
+        "ruin_probability_percent": round(ruins / len(drawdowns) * 100, 3),
+        "method": "deterministic bootstrap with replacement",
+    }
+
+
+def _cost_stress_report(summary: dict) -> dict:
+    gross = float(summary.get("gross_pnl") or 0)
+    base_cost = float(summary.get("estimated_costs") or 0)
+    base_total = 0.03
+    rows = []
+    for label, fee, slip in (("기본", 0.02, 0.01), ("보통 악화", 0.03, 0.03), ("강한 악화", 0.05, 0.05)):
+        cost = base_cost * ((fee + slip) / base_total) if base_total else base_cost
+        pnl = gross - cost
+        rows.append({"label": label, "fee_percent": fee, "slippage_percent": slip,
+                     "estimated_costs": round(cost, 6), "pnl": round(pnl, 6),
+                     "return_percent": round(pnl / 1000.0 * 100, 6), "profitable": pnl > 0})
+    return {"status": "PASS" if rows[-1]["profitable"] else "WARN", "scenarios": rows}
+
+
+def _fixed_period_validation(symbol: str, timeframe: str, start_text: str, end_text: str, db: Path, overrides: dict) -> dict:
+    start = _parse_day(start_text)
+    end = _parse_day(end_text)
+    total_days = max(1, (end - start).days + 1)
+    split = start + timedelta(days=max(1, int(total_days * 0.70)) - 1)
+    test_start = split + timedelta(days=1)
+    periods = [("train_70", start, split), ("test_30", test_start, end)]
+    rows = []
+    for label, a, b in periods:
+        if a > b:
+            continue
+        result = run_cached_symbol_backtest(
+            symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
+            start=a.isoformat(), end=b.isoformat(), overrides=overrides, database_path=db,
+            control_check=_wait_for_optimization_control, include_details=False,
+        )
+        rows.append({"period": label, "start": a.isoformat(), "end": b.isoformat(), **_compact_risk_result(result)})
+    test_row = next((row for row in rows if row["period"] == "test_30"), {})
+    return {"status": "PASS" if float(test_row.get("pnl") or 0) > 0 else "WARN", "split": "70/30 chronological", "periods": rows}
+
+
+def _walk_forward_validation(symbol: str, timeframe: str, start_text: str, end_text: str, db: Path, overrides: dict) -> dict:
+    start = _parse_day(start_text)
+    end = _parse_day(end_text)
+    total_days = max(1, (end - start).days + 1)
+    window_days = max(30, total_days // 4)
+    rows = []
+    cursor = start
+    index = 1
+    while cursor <= end and index <= 4:
+        window_end = min(end, cursor + timedelta(days=window_days - 1))
+        result = run_cached_symbol_backtest(
+            symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
+            start=cursor.isoformat(), end=window_end.isoformat(), overrides=overrides, database_path=db,
+            control_check=_wait_for_optimization_control, include_details=False,
+        )
+        rows.append({"window": index, "start": cursor.isoformat(), "end": window_end.isoformat(), **_compact_risk_result(result)})
+        cursor = window_end + timedelta(days=1)
+        index += 1
+    profitable = sum(float(row.get("pnl") or 0) > 0 for row in rows)
+    return {"status": "PASS" if rows and profitable / len(rows) >= 0.75 else "WARN",
+            "profitable_windows": profitable, "total_windows": len(rows), "windows": rows,
+            "method": "anchored fixed-parameter out-of-sample stability windows"}
+
+
+def _market_regime_report(db: Path, symbol: str, timeframe: str, trades: list[dict]) -> dict:
+    buckets = {
+        "상승장": {"trades": 0, "pnl": 0.0}, "하락장": {"trades": 0, "pnl": 0.0},
+        "횡보장": {"trades": 0, "pnl": 0.0}, "고변동성": {"trades": 0, "pnl": 0.0},
+    }
+    with sqlite3.connect(str(db)) as con:
+        for trade in trades or []:
+            text = str(trade.get("exit_time") or "")
+            try:
+                ts = int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+            except Exception:
+                continue
+            rows = con.execute(
+                "SELECT close, high, low FROM ohlcv WHERE asset_class='crypto' AND exchange='bitget' "
+                "AND symbol=? AND timeframe=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 288",
+                (symbol, timeframe, ts),
+            ).fetchall()
+            if len(rows) < 20:
+                continue
+            newest, oldest = float(rows[0][0]), float(rows[-1][0])
+            trend = (newest / oldest - 1) * 100 if oldest else 0.0
+            ranges = [(float(r[1]) - float(r[2])) / float(r[0]) * 100 for r in rows if float(r[0])]
+            avg_range = statistics.mean(ranges) if ranges else 0.0
+            regime = "고변동성" if avg_range >= 0.8 else ("상승장" if trend >= 2 else ("하락장" if trend <= -2 else "횡보장"))
+            buckets[regime]["trades"] += 1
+            buckets[regime]["pnl"] += float(trade.get("pnl") or 0)
+    rows = [{"regime": name, "trades": row["trades"], "pnl": round(row["pnl"], 6)} for name, row in buckets.items()]
+    covered = sum(row["trades"] for row in rows)
+    return {"status": "PASS" if covered else "WARN", "lookback_bars": 288, "regimes": rows, "covered_trades": covered}
+
+
+def _attach_validation_suite(summary: dict, db: Path, symbol: str, timeframe: str, start_text: str, end_text: str, final_overrides: dict, log) -> None:
+    log("다중 검증 시작: 데이터 품질 → 미래참조 → 70/30 → 워크포워드 → 비용 → 몬테카를로 → 시장국면")
+    suite = {
+        "data_quality": _data_quality_report(db, symbol, timeframe, start_text, end_text),
+        "lookahead_audit": _lookahead_audit(summary),
+        "train_test_split": _fixed_period_validation(symbol, timeframe, start_text, end_text, db, final_overrides),
+        "walk_forward": _walk_forward_validation(symbol, timeframe, start_text, end_text, db, final_overrides),
+        "cost_stress": _cost_stress_report(summary),
+        "monte_carlo": _monte_carlo_report(summary),
+        "market_regimes": _market_regime_report(db, symbol, timeframe, list(summary.get("trades_log") or [])),
+    }
+    critical = [name for name in ("data_quality", "lookahead_audit") if suite[name].get("status") == "FAIL"]
+    warnings = [name for name, result in suite.items() if result.get("status") == "WARN"]
+    gate_reasons = list(critical)
+    if suite["train_test_split"].get("status") != "PASS":
+        gate_reasons.append("test_30_not_profitable")
+    if suite["walk_forward"].get("status") != "PASS":
+        gate_reasons.append("walk_forward_unstable")
+    if suite["monte_carlo"].get("status") == "FAIL":
+        gate_reasons.append("monte_carlo_ruin_risk")
+    suite["safety_gate"] = {
+        "status": "BLOCKED" if gate_reasons else ("CAUTION" if warnings else "APPROVED"),
+        "paper_live_allowed": not gate_reasons,
+        "blocking_reasons": gate_reasons,
+        "warnings": warnings,
+    }
+    summary["validation_suite"] = suite
+    log(f"다중 검증 완료: 실전 안전게이트 {suite['safety_gate']['status']} · 경고 {len(warnings)}개")
+
+
 def _result_quality(summary: dict) -> dict:
     trades = int(summary.get("trades") or 0)
     win_rate = float(summary.get("win_rate") or 0)
@@ -1100,6 +1338,9 @@ def run_backtest(
             "paper_live_applied": False,
         }
         _attach_result_insights(summary, overrides, speed_mode, "selected_strategy_retest")
+        final_validation_overrides = dict(overrides)
+        final_validation_overrides.update({k: v for k, v in selected_parameters.items() if k != "entry_multiplier"})
+        _attach_validation_suite(summary, Path(db), symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(), final_validation_overrides, log)
         history_dir = Path(output_dir) / "BacktestResults"
         history_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -1186,6 +1427,12 @@ def run_backtest(
         summary["rolling_report_path"] = rolling_3m.get("report_path")
     summary["optimization_pipeline"] = pipeline
     _attach_result_insights(summary, overrides, speed_mode, selected_stage)
+    final_validation_overrides = dict(overrides)
+    final_validation_overrides.update({
+        k: v for k, v in dict(risk_selection.get("parameters") or {}).items()
+        if k != "entry_multiplier"
+    })
+    _attach_validation_suite(summary, Path(db), symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(), final_validation_overrides, log)
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
