@@ -25,7 +25,13 @@ def test_android_shares_result_and_cache_through_file_provider():
     java = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java").read_text(encoding="utf-8")
     paths = (ROOT / "android/app/src/main/res/xml/file_paths.xml").read_text(encoding="utf-8")
     manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-    assert "최신 결과 JSON 공유" in java
+    assert "최종 백테스트 원본 JSON 공유" in java
+    assert "전체 최적화 통합 JSON 공유" in java
+    assert "1차 전체 탐색 결과" in java
+    assert "2차 정밀 탐색 결과" in java
+    assert "3차 6개월 롤링 결과" in java
+    assert "4차 3개월 롤링 결과" in java
+    assert "5차 최종 선정 결과" in java
     assert "현재 캐시 DB 공유" in java
     assert "FileProvider.getUriForFile" in java
     assert 'files-path name="backtest_cache"' in paths
