@@ -1165,6 +1165,7 @@ def run_backtest(
     execution_model: str = "signal_close",
     optimization_speed: str = "quick",
     precheck_enabled: bool = True,
+    adaptive_regime_enabled: bool = True,
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -1236,6 +1237,7 @@ def run_backtest(
             if key != "entry_multiplier"
         })
     overrides.update(FIXED_BACKTEST)
+    overrides["adaptive_regime_enabled"] = bool(adaptive_regime_enabled)
     if selected_parameters:
         overrides["backtest_compounding_enabled"] = bool(
             selected_parameters.get("backtest_compounding_enabled", compounding_enabled)
@@ -1294,6 +1296,7 @@ def run_backtest(
         log("계산 방식: 고정식 · 최초자본 1,000 USDT 기준으로 주문 규모와 최대 총노출 유지")
     log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
     log(f"3틱룰 적용: {'모든 진입' if all_entries_three_tick else '첫 진입만'}")
+    log(f"자동 시장국면 전환: {'사용' if adaptive_regime_enabled else '사용 안 함'} · 상승=롱 · 하락=숏 · 횡보=양방향 · 고변동성=진입 50%")
 
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
