@@ -189,6 +189,7 @@ def run_cached_symbol_backtest(
         "max_total_multiplier": settings.backtest_max_total_multiplier,
         "compounding_enabled": settings.backtest_compounding_enabled,
         "sizing_mode": "compound_current_equity" if settings.backtest_compounding_enabled else "fixed_initial_capital",
+        "execution_model": settings.backtest_execution_model,
     }
     if include_details:
         payload["trades_log"] = result.trades_log

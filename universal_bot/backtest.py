@@ -182,6 +182,12 @@ def run_backtest(
     position_sizing_equity = initial_capital
     liquidations = 0
     account_liquidated = False
+    execution_model = str(getattr(settings, "backtest_execution_model", "signal_close")).strip().lower()
+    if execution_model not in {"signal_close", "next_open"}:
+        execution_model = "signal_close"
+    pending_signal: str | None = None
+    pending_tp_percent = math.nan
+    pending_sl_percent = math.nan
     trade_log: list[dict] = []
     equity_curve: list[dict] = []
 
@@ -247,6 +253,45 @@ def run_backtest(
             signal = "LONG"
         elif base_entry and settings.allow_short and short_candle_ok and short_ok:
             signal = "SHORT"
+
+        # Realistic event-driven execution inspired by Zipline/Freqtrade:
+        # a signal confirmed on the previous candle is filled at this candle's
+        # open. The current high/low is then allowed to trigger liquidation,
+        # SL or TP, with the same conservative priority as legacy simulation.
+        if execution_model == "next_open" and pending_signal is not None:
+            sizing_equity = backtest_sizing_equity(
+                initial_capital, realized_pnl - realized_costs, compounding_enabled
+            )
+            order_notional = sizing_equity * float(settings.order_percent_of_equity) / 100.0
+            max_total_notional = sizing_equity * float(settings.backtest_max_total_multiplier)
+            can_fill = (
+                sizing_equity > 0.0
+                and entries < settings.max_pyramiding
+                and entry_notional + order_notional <= max_total_notional + 1e-9
+                and (position_side is None or position_side == pending_signal)
+                and o > 0
+            )
+            if can_fill and np.isfinite(pending_tp_percent) and np.isfinite(pending_sl_percent):
+                amount = order_notional / o
+                signed = amount if pending_signal == "LONG" else -amount
+                if position_side is None:
+                    position_side = pending_signal
+                    position_sizing_equity = sizing_equity
+                    position_size = signed
+                    initial_entry = o
+                    entry_notional = amount * o
+                    position_tp = o * (1 + pending_tp_percent / 100.0) if pending_signal == "LONG" else o * (1 - pending_tp_percent / 100.0)
+                    position_sl = o * (1 - pending_sl_percent / 100.0) if pending_signal == "LONG" else o * (1 + pending_sl_percent / 100.0)
+                    position_entry_time = ts_iso
+                    entries = 1
+                else:
+                    entries += 1
+                    position_size += signed
+                    entry_notional += amount * o
+                last_entry_bar = bar_number
+            pending_signal = None
+            pending_tp_percent = math.nan
+            pending_sl_percent = math.nan
 
         if position_side is not None:
             qty = abs(position_size)
@@ -354,7 +399,11 @@ def run_backtest(
             and entry_notional + order_notional <= max_total_notional + 1e-9
         )
         same_direction = position_side is None or position_side == signal
-        if signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
+        if execution_model == "next_open" and signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
+            pending_signal = signal
+            pending_tp_percent = final_tp
+            pending_sl_percent = final_sl
+        elif execution_model == "signal_close" and signal and can_pyramid and same_direction and last_entry_bar != bar_number and np.isfinite(final_tp) and np.isfinite(final_sl):
             amount = order_notional / c if c > 0 else 0.0
             if amount > 0:
                 signed = amount if signal == "LONG" else -amount

@@ -141,7 +141,8 @@ public class BacktestForegroundService extends Service {
                     request.optBoolean("compounding_enabled", true),
                     request.optString("optimization_stage", "broad"),
                     request.optBoolean("all_entries_three_tick", false),
-                    request.optString("selected_parameters_json", "")
+                    request.optString("selected_parameters_json", ""),
+                    request.optString("execution_model", "signal_close")
             ).toString();
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
@@ -195,6 +196,7 @@ public class BacktestForegroundService extends Service {
         request.put("compounding_enabled", intent.getBooleanExtra("compounding_enabled", true));
         request.put("optimization_stage", intent.getStringExtra("optimization_stage"));
         request.put("selected_parameters_json", intent.getStringExtra("selected_parameters_json"));
+        request.put("execution_model", intent.getStringExtra("execution_model"));
         return request;
     }
 

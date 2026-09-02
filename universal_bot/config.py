@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     backtest_max_total_multiplier: float = 15.0
     # Backtest only: size each new position from current net equity when enabled.
     backtest_compounding_enabled: bool = False
+    # signal_close preserves legacy results. next_open executes a confirmed
+    # signal at the following candle open to avoid optimistic same-close fills.
+    backtest_execution_model: str = "signal_close"
     crypto_volume_provider: str = "none"
     crypto_volume_fallback_exchanges: str = "binance,bybit"
     allow_community_market_data_live: bool = False

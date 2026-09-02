@@ -62,6 +62,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView timeframeInput;
     private AutoCompleteTextView riskProfileInput;
     private AutoCompleteTextView sizingModeInput;
+    private AutoCompleteTextView executionModelInput;
     private AutoCompleteTextView optimizationStageInput;
     private AutoCompleteTextView broadTrialCountInput;
     private AutoCompleteTextView refineTrialCountInput;
@@ -236,6 +237,22 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(8));
         backtestCard.addView(text(
                 "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=최초 1,000 USDT 기준을 계속 사용",
+                11, MUTED, false
+        ), marginTop(7));
+
+        executionModelInput = autocomplete(
+                new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"},
+                "현실형 · 다음 봉 시가 체결"
+        );
+        backtestCard.addView(labeled("백테스트 체결 모델", executionModelInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "체결 방식",
+                executionModelInput,
+                new String[]{"현실형(추천)", "기존형(비교)"},
+                new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "현실형=신호 확정 후 다음 봉 시가 진입 · 기존형=예전 결과와 비교하기 위한 신호 봉 종가 진입",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -543,6 +560,8 @@ enableResultActions(false);
         String sizingMode = sizingModeInput.getText().toString().trim();
         boolean compoundingEnabled = !"고정식".equals(sizingMode);
         sizingMode = compoundingEnabled ? "복리식" : "고정식";
+        String executionModel = executionModelInput.getText().toString().contains("다음 봉")
+                ? "next_open" : "signal_close";
         String stageLabel = optimizationStageInput.getText().toString().trim();
         String optimizationStage;
         if ("상위 후보 정밀 탐색".equals(stageLabel)) optimizationStage = "refine";
@@ -595,10 +614,12 @@ enableResultActions(false);
         intent.putExtra("all_entries_three_tick", allEntriesThreeTick);
         intent.putExtra("compounding_enabled", compoundingEnabled);
         intent.putExtra("optimization_stage", optimizationStage);
+        intent.putExtra("execution_model", executionModel);
         if (fixedParameters != null) {
             JSONObject replayPayload = new JSONObject();
             try {
                 replayPayload.put("parameters", fixedParameters);
+                replayPayload.put("execution_model_override", executionModel);
                 if (selectedStrategyRow != null) {
                     replayPayload.put("original_result", selectedStrategyRow.optJSONObject("result"));
                     replayPayload.put("source_context", selectedStrategyRow.optJSONObject("source_context"));
@@ -621,6 +642,7 @@ enableResultActions(false);
         enableResultActions(false);
         logText.setText((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
                 + " · 계산: " + sizingMode
+                + " · 체결: " + ("next_open".equals(executionModel) ? "다음 봉 시가" : "신호 봉 종가")
                 + " · 단계: " + stageLabel
                 + " · 1차: " + broadOptimizationTrials + "회"
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
@@ -1102,6 +1124,15 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     false
             );
         }
+        String savedExecutionModel = summary.optString("execution_model", "");
+        if (!savedExecutionModel.isEmpty()) {
+            executionModelInput.setText(
+                    "next_open".equals(savedExecutionModel)
+                            ? "현실형 · 다음 봉 시가 체결"
+                            : "기존형 · 신호 봉 종가 체결",
+                    false
+            );
+        }
         String savedStart = summary.optString("requested_start", "");
         String savedEnd = summary.optString("requested_end", "");
         if (!savedStart.isEmpty()) startInput.setText(savedStart);
@@ -1206,7 +1237,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         appendSettingGroup(sb, "ADX·재진입", p,
                 new String[][]{{"ADX 사용","use_adx_filter"},{"ADX 기간","adx_length"},{"ADX 최소","adx_min"},{"ADX 최대","adx_max"},{"쿨다운 봉","cooldown_bars"},{"재진입 대기 봉","reentry_bars"}});
         appendSettingGroup(sb, "시간·계산", p,
-                new String[][]{{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"}});
+                new String[][]{{"체결 모델","backtest_execution_model"},{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"}});
         showTextDialog("선택된 전략 전체 수치", sb.toString());
     }
 
@@ -1216,9 +1247,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         if (comparison == null) return;
         String period = comparison.optBoolean("same_requested_period", false) ? "동일" : "다름";
         String cache = comparison.optBoolean("same_cache_sha256", false) ? "동일" : "변경됨";
+        String model = comparison.optBoolean("same_execution_model", false) ? "동일" : "다름";
         String message = String.format(
                 Locale.KOREA,
-                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n\n기간과 캐시가 모두 같으면 같은 결과가 재현됩니다.",
+                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n체결 모델: %s\n\n기간·캐시·체결 모델이 모두 같으면 같은 결과가 재현됩니다.",
                 comparison.optDouble("original_return_percent", 0.0),
                 comparison.optDouble("retest_return_percent", 0.0),
                 comparison.optDouble("return_difference_percent_points", 0.0),
@@ -1226,7 +1258,8 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 comparison.optDouble("retest_mdd_percent", 0.0),
                 comparison.optDouble("mdd_difference_percent_points", 0.0),
                 period,
-                cache
+                cache,
+                model
         );
         showTextDialog("TOP10 원본 ↔ 재백테스트 비교", message);
     }
@@ -1251,6 +1284,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 "symbol", "bars", "trades", "wins", "win_rate", "profit_factor",
                 "gross_pnl", "estimated_costs", "pnl", "return_percent",
                 "max_drawdown_percent", "sizing_mode", "compounding_enabled",
+                "execution_model",
                 "optimization_pipeline", "rolling_final_selection", "rolling_report_path",
                 "reproduction_comparison", "selected_strategy_parameters",
                 "data_start", "data_end", "cache_sha256"

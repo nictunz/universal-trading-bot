@@ -787,6 +787,7 @@ def run_backtest(
     optimization_stage: str = "broad",
     all_entries_three_tick: bool = False,
     selected_parameters_json: str = "",
+    execution_model: str = "signal_close",
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -851,6 +852,15 @@ def run_backtest(
         overrides["backtest_compounding_enabled"] = bool(
             selected_parameters.get("backtest_compounding_enabled", compounding_enabled)
         )
+        requested_replay_model = str(
+            replay_payload.get("execution_model_override")
+            or selected_parameters.get("backtest_execution_model")
+            or "signal_close"
+        ).strip().lower()
+        overrides["backtest_execution_model"] = (
+            requested_replay_model if requested_replay_model in {"signal_close", "next_open"}
+            else "signal_close"
+        )
         entry_multiplier = float(selected_parameters.get("entry_multiplier", 1.0))
         overrides["order_percent_of_equity"] = float(
             selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
@@ -859,6 +869,11 @@ def run_backtest(
         log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
     else:
         overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
+        normalized_execution_model = str(execution_model or "signal_close").strip().lower()
+        overrides["backtest_execution_model"] = (
+            normalized_execution_model if normalized_execution_model in {"signal_close", "next_open"}
+            else "signal_close"
+        )
         overrides["order_percent_of_equity"] = 100.0
         overrides["max_pyramiding"] = 1
         overrides["apply_consecutive_candles_to_all_entries"] = bool(all_entries_three_tick)
@@ -877,6 +892,11 @@ def run_backtest(
     log(f"최적화 단계: {stage_names[selected_stage]}")
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
+    log(
+        "체결 모델: "
+        + ("현실형 · 신호 확정 후 다음 봉 시가" if overrides.get("backtest_execution_model") == "next_open"
+           else "기존형 · 신호 봉 종가")
+    )
     if bool(overrides.get("backtest_compounding_enabled", True)):
         log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     else:
@@ -907,9 +927,14 @@ def run_backtest(
             and str(source_context.get("requested_end") or "") == end_text.strip()
         )
         same_cache = str(source_context.get("cache_sha256") or "") == str(summary.get("cache_sha256") or "")
+        source_execution_model = str(source_context.get("execution_model") or "signal_close")
+        same_execution_model = source_execution_model == str(overrides.get("backtest_execution_model"))
         summary["reproduction_comparison"] = {
             "same_requested_period": same_period,
             "same_cache_sha256": same_cache,
+            "same_execution_model": same_execution_model,
+            "original_execution_model": source_execution_model,
+            "retest_execution_model": overrides.get("backtest_execution_model"),
             "original_return_percent": original_return,
             "retest_return_percent": float(summary.get("return_percent") or 0),
             "return_difference_percent_points": float(summary.get("return_percent") or 0) - original_return,
@@ -962,6 +987,7 @@ def run_backtest(
         "liquidations", "margin_mode", "maintenance_margin_percent",
         "cross_liquidation_buffer_percent", "max_total_multiplier",
         "compounding_enabled", "sizing_mode",
+        "execution_model",
     ):
         summary[key] = optimized_result.get(key)
     summary["risk_profile"] = selected_profile
@@ -1155,6 +1181,7 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
             "data_start": summary.get("data_start"),
             "data_end": summary.get("data_end"),
             "cache_sha256": summary.get("cache_sha256"),
+            "execution_model": summary.get("execution_model") or base_overrides.get("backtest_execution_model", "signal_close"),
         }
         items.append(item)
     return json.dumps({
