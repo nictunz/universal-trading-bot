@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import gc
 import hashlib
 import statistics
@@ -8,6 +9,7 @@ import os
 import random
 import re
 import threading
+import zipfile
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1345,6 +1347,69 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
         "mdd_limit_percent": mdd_limit,
     }, ensure_ascii=False)
 
+
+
+
+def export_analysis_bundle(result_path: str) -> str:
+    result_file = Path(result_path)
+    if not result_file.is_file():
+        raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
+    summary = json.loads(result_file.read_text(encoding="utf-8"))
+    bundle_dir = result_file.with_name(result_file.stem + "-analysis")
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_json = bundle_dir / "01-summary.json"
+    summary_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    trades = list(summary.get("trades_log") or [])
+    trade_csv = bundle_dir / "02-trades.csv"
+    trade_fields = [
+        "trade", "side", "entry_time", "exit_time", "avg_entry_price", "exit_price",
+        "qty", "gross_pnl", "estimated_cost", "pnl", "pnl_percent", "reason",
+        "entries", "total_exposure_multiplier", "sizing_equity",
+    ]
+    with trade_csv.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=trade_fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(trades)
+
+    months = list(summary.get("monthly_performance") or _monthly_performance(trades))
+    monthly_csv = bundle_dir / "03-monthly-performance.csv"
+    with monthly_csv.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["month", "trades", "wins", "win_rate", "pnl"], extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(months)
+
+    reproduction_json = bundle_dir / "04-reproducibility.json"
+    reproduction_json.write_text(
+        json.dumps(summary.get("reproducibility") or {}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    quality = summary.get("quality") or _result_quality(summary)
+    report = bundle_dir / "00-readme-summary.txt"
+    report.write_text(
+        "백테스트 전체 분석\n"
+        f"종목: {summary.get('symbol', '-')}\n"
+        f"기간: {summary.get('requested_start', '-')} ~ {summary.get('requested_end', '-')}\n"
+        f"수익률: {float(summary.get('return_percent') or 0):.2f}%\n"
+        f"MDD: {float(summary.get('max_drawdown_percent') or 0):.2f}%\n"
+        f"승률: {float(summary.get('win_rate') or 0):.2f}%\n"
+        f"Profit Factor: {float(summary.get('profit_factor') or 0):.3f}\n"
+        f"신뢰도: {quality.get('grade')} ({quality.get('score')}/100)\n"
+        f"실행 지문: {(summary.get('reproducibility') or {}).get('run_signature', '-')}\n",
+        encoding="utf-8",
+    )
+    zip_path = result_file.with_name(result_file.stem + "-full-analysis.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(bundle_dir.iterdir()):
+            if path.is_file():
+                archive.write(path, arcname=path.name)
+    return json.dumps({
+        "path": str(zip_path),
+        "files": [path.name for path in sorted(bundle_dir.iterdir()) if path.is_file()],
+        "trades": len(trades),
+        "months": len(months),
+    }, ensure_ascii=False)
 
 
 def export_optimization_results(result_path: str) -> str:
