@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     rsi_overbought_max: float = 90.0
     allow_long: bool = True
     allow_short: bool = True
+    # Adaptive regime routing uses only closed historical bars.
+    adaptive_regime_enabled: bool = False
+    regime_lookback_bars: int = 288
+    regime_trend_threshold_percent: float = 2.0
+    regime_high_volatility_percent: float = 0.8
+    regime_high_volatility_risk_multiplier: float = 0.5
     # First entry may require N consecutive same-direction 5-minute candles.
     # 1 preserves the original single-candle reversal behavior.
     first_entry_consecutive_candles: int = 1
