@@ -90,6 +90,8 @@ public class MainActivity extends android.app.Activity {
     private Button tradeHistoryButton;
     private Button chartButton;
     private JSONObject lastSummary;
+    private JSONObject selectedStrategyParameters;
+    private TextView selectedStrategyText;
 
     private String lastDbPath = "";
     private String lastResultPath = "";
@@ -199,6 +201,7 @@ public class MainActivity extends android.app.Activity {
         quickRow.addView(text("빠른 기간", 12, MUTED, true));
         quickRow.addView(smallButton("30일", v -> setQuickRange(30)), smallButtonParams());
         quickRow.addView(smallButton("1년", v -> setQuickRange(365)), smallButtonParams());
+        quickRow.addView(smallButton("2년", v -> setQuickRange(730)), smallButtonParams());
         quickRow.addView(smallButton("3년", v -> setQuickRange(1095)), smallButtonParams());
         quickRow.addView(smallButton("5년", v -> setQuickRange(1826)), smallButtonParams());
         quickRow.addView(smallButton("10년", v -> setQuickRange(3653)), smallButtonParams());
@@ -285,6 +288,18 @@ public class MainActivity extends android.app.Activity {
         runButton = actionButton("▶ 백그라운드 캐시 생성 + 백테스트", PRIMARY);
         runButton.setOnClickListener(v -> runBacktest());
         backtestCard.addView(runButton, marginTop(12));
+
+        Button topStrategiesButton = actionButton("🏆 수익률 TOP10 전략 선택", Color.rgb(30, 41, 59));
+        topStrategiesButton.setOnClickListener(v -> showTopStrategies(false));
+        backtestCard.addView(topStrategiesButton, marginTop(8));
+        selectedStrategyText = text(
+                "선택된 전략 없음 · 최적화 완료 후 TOP10에서 선택하면 모든 전략 수치가 자동 입력됩니다.",
+                11, MUTED, false
+        );
+        backtestCard.addView(selectedStrategyText, marginTop(6));
+        Button selectedBacktestButton = actionButton("▶ 선택한 수치로 기간 재백테스트", SUCCESS);
+        selectedBacktestButton.setOnClickListener(v -> runSelectedStrategyBacktest());
+        backtestCard.addView(selectedBacktestButton, marginTop(8));
 
         LinearLayout controlRow = new LinearLayout(this);
         controlRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -506,6 +521,18 @@ enableResultActions(false);
     }
 
     private void runBacktest() {
+        startBacktest(null);
+    }
+
+    private void runSelectedStrategyBacktest() {
+        if (selectedStrategyParameters == null) {
+            toast("먼저 수익률 TOP10에서 전략을 선택하세요.");
+            return;
+        }
+        startBacktest(selectedStrategyParameters);
+    }
+
+    private void startBacktest(JSONObject fixedParameters) {
         String symbol = symbolInput.getText().toString().trim();
         String timeframe = timeframeInput.getText().toString().trim();
         String riskProfile = riskProfileInput.getText().toString().trim();
@@ -564,6 +591,9 @@ enableResultActions(false);
         intent.putExtra("all_entries_three_tick", allEntriesThreeTick);
         intent.putExtra("compounding_enabled", compoundingEnabled);
         intent.putExtra("optimization_stage", optimizationStage);
+        if (fixedParameters != null) {
+            intent.putExtra("selected_parameters_json", fixedParameters.toString());
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
@@ -575,16 +605,17 @@ enableResultActions(false);
         lastSummary = null;
         enableUpload(false);
         enableResultActions(false);
-        logText.setText("백그라운드 백테스트 시작\n프로필: " + riskProfile
+        logText.setText((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
                 + " · 계산: " + sizingMode
                 + " · 단계: " + stageLabel
                 + " · 1차: " + broadOptimizationTrials + "회"
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
                 + " · 3틱룰: " + (allEntriesThreeTick ? "모든 진입" : "첫 진입만") + "\n"
+                + (fixedParameters == null ? "" : "TOP10에서 고른 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n")
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
         setBacktestControlState("RUNNING");
-        toast("백그라운드 백테스트를 시작했습니다.");
+        toast(fixedParameters == null ? "백그라운드 백테스트를 시작했습니다." : "선택한 수치로 기간 재백테스트를 시작했습니다.");
     }
 
     private void controlBacktest(String action) {
@@ -681,6 +712,9 @@ enableResultActions(false);
                 main.post(() -> {
                     applySavedResult(wrapper, false);
                     toast("백그라운드 백테스트가 완료됐습니다.");
+                    if (lastSummary != null && !lastSummary.optBoolean("selected_strategy_retest", false)) {
+                        showTopStrategies(true);
+                    }
                 });
             } catch (Exception e) {
                 main.post(() -> logText.append("\nRESULT LOAD ERROR\n" + stackMessage(e) + "\n"));
@@ -1062,6 +1096,76 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         statusText.setText(automatic ? "최근 백테스트 자동 복원됨" : "저장된 백테스트 불러옴");
         logText.append("\n저장 결과 불러옴: " + item.optString("label", lastResultPath) + "\n");
         if (!automatic) toast("결과·차트·거래내역을 복원했습니다.");
+    }
+
+    private void showTopStrategies(boolean automatic) {
+        if (lastResultPath == null || lastResultPath.isEmpty()) {
+            if (!automatic) toast("최적화 결과를 먼저 완료하거나 저장된 결과를 불러오세요.");
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject response = new JSONObject(
+                        bridge.callAttr("list_top_strategies", lastResultPath, 10).toString()
+                );
+                JSONArray items = response.optJSONArray("items");
+                if (items == null || items.length() == 0) {
+                    if (!automatic) main.post(() -> toast("선택할 수 있는 최적화 후보가 없습니다."));
+                    return;
+                }
+                String[] labels = new String[items.length()];
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject row = items.optJSONObject(i);
+                    JSONObject result = row == null ? null : row.optJSONObject("result");
+                    labels[i] = String.format(
+                            Locale.KOREA,
+                            "%d위 · 수익률 %.2f%% · MDD %.2f%% · 승률 %.1f%% · PF %.2f",
+                            i + 1,
+                            result == null ? 0.0 : result.optDouble("return_percent", 0.0),
+                            result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                            result == null ? 0.0 : result.optDouble("win_rate", 0.0),
+                            result == null ? 0.0 : result.optDouble("profit_factor", 0.0)
+                    );
+                }
+                main.post(() -> new AlertDialog.Builder(this)
+                        .setTitle("수익률 TOP" + items.length() + " · 전략 선택")
+                        .setItems(labels, (dialog, which) -> {
+                            JSONObject row = items.optJSONObject(which);
+                            if (row == null) return;
+                            selectedStrategyParameters = row.optJSONObject("parameters");
+                            JSONObject result = row.optJSONObject("result");
+                            if (selectedStrategyParameters == null) {
+                                toast("선택한 후보의 전략 수치를 읽지 못했습니다.");
+                                return;
+                            }
+                            selectedStrategyText.setText(String.format(
+                                    Locale.KOREA,
+                                    "%d위 수치 자동입력 완료 · 수익률 %.2f%% · MDD %.2f%%\n진입 %.0f배 · 최대 %d회 · 거래량 %.2f배 · RSI %d · ADX %d · TP %.2f~%.2f%% · SL %.2f~%.2f%%",
+                                    which + 1,
+                                    result == null ? 0.0 : result.optDouble("return_percent", 0.0),
+                                    result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                                    selectedStrategyParameters.optDouble("entry_multiplier", 0.0),
+                                    selectedStrategyParameters.optInt("max_pyramiding", 1),
+                                    selectedStrategyParameters.optDouble("volume_break_multiplier", 0.0),
+                                    selectedStrategyParameters.optInt("rsi_length", 0),
+                                    selectedStrategyParameters.optInt("adx_length", 0),
+                                    selectedStrategyParameters.optDouble("min_tp_percent", 0.0),
+                                    selectedStrategyParameters.optDouble("max_tp_percent", 0.0),
+                                    selectedStrategyParameters.optDouble("min_sl_percent", 0.0),
+                                    selectedStrategyParameters.optDouble("max_sl_percent", 0.0)
+                            ));
+                            toast("전략 수치가 자동 입력됐습니다. 기간을 고른 뒤 재백테스트하세요.");
+                        })
+                        .setNegativeButton("닫기", null)
+                        .show());
+            } catch (Exception e) {
+                if (!automatic) main.post(() -> {
+                    logText.append("\nTOP10 ERROR\n" + stackMessage(e) + "\n");
+                    toast("TOP10 후보 불러오기 실패");
+                });
+            }
+        });
     }
 
     private void showResultSummary() {

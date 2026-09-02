@@ -786,6 +786,7 @@ def run_backtest(
     compounding_enabled: bool = True,
     optimization_stage: str = "broad",
     all_entries_three_tick: bool = False,
+    selected_parameters_json: str = "",
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -826,11 +827,29 @@ def run_backtest(
         raise ValueError("정밀 최적화 후보당 조합 수는 1~5000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
+    selected_parameters: dict = {}
+    if str(selected_parameters_json or "").strip():
+        parsed_parameters = json.loads(selected_parameters_json)
+        if not isinstance(parsed_parameters, dict):
+            raise ValueError("선택 전략 수치 형식이 올바르지 않습니다.")
+        selected_parameters = dict(parsed_parameters)
+        overrides.update({
+            key: value for key, value in selected_parameters.items()
+            if key != "entry_multiplier"
+        })
     overrides.update(FIXED_BACKTEST)
     overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
-    overrides["order_percent_of_equity"] = 100.0
-    overrides["max_pyramiding"] = 1
-    overrides["apply_consecutive_candles_to_all_entries"] = bool(all_entries_three_tick)
+    if selected_parameters:
+        entry_multiplier = float(selected_parameters.get("entry_multiplier", 1.0))
+        overrides["order_percent_of_equity"] = float(
+            selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
+        )
+        overrides["max_pyramiding"] = int(selected_parameters.get("max_pyramiding", 1))
+        log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
+    else:
+        overrides["order_percent_of_equity"] = 100.0
+        overrides["max_pyramiding"] = 1
+        overrides["apply_consecutive_candles_to_all_entries"] = bool(all_entries_three_tick)
     profile = RISK_PROFILES[selected_profile]
     log(
         f"위험 프로필: {selected_profile} · MDD {profile['mdd_limit_percent']:.0f}% 이하 · "
@@ -863,6 +882,25 @@ def run_backtest(
         strategy_overrides=overrides,
         control_check=_wait_for_optimization_control,
     )
+    if selected_parameters:
+        summary["risk_profile"] = selected_profile
+        summary["selected_strategy_retest"] = True
+        summary["selected_strategy_parameters"] = selected_parameters
+        summary["optimization_pipeline"] = {
+            "stage": "selected_strategy_retest",
+            "paper_live_applied": False,
+        }
+        history_dir = Path(output_dir) / "BacktestResults"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", symbol.strip()).strip("-").lower()
+        archive = history_dir / f"{stamp}-{slug}-{timeframe.strip()}-selected-strategy-backtest.json"
+        archive.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        log(
+            f"선택 전략 기간 재백테스트 완료 · 수익률 {float(summary.get('return_percent') or 0):.2f}% · "
+            f"MDD {float(summary.get('max_drawdown_percent') or 0):.2f}%"
+        )
+        return json.dumps({"db": str(db), "result": str(archive), "summary": summary, "logs": logs}, ensure_ascii=False)
     del result
     summary.pop("equity_curve", None)
     summary.pop("trades_log", None)
@@ -1024,6 +1062,44 @@ def load_saved_result(result_path: str, include_details: bool = False) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def list_top_strategies(result_path: str, limit: int = 10) -> str:
+    """Return selectable highest-return candidates with their complete parameters."""
+    result_file = Path(result_path)
+    if not result_file.is_file():
+        raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
+    summary = json.loads(result_file.read_text(encoding="utf-8"))
+    if summary.get("selected_strategy_retest"):
+        raise RuntimeError("이 결과는 선택 전략 재백테스트입니다. 원래 최적화 결과를 불러오세요.")
+    selection = summary.get("risk_profile_selection") or {}
+    pipeline = summary.get("optimization_pipeline") or {}
+    refined = pipeline.get("refined") or {}
+    checkpoint_text = str(refined.get("checkpoint") or selection.get("checkpoint") or "")
+    checkpoint_path = Path(checkpoint_text)
+    if not checkpoint_path.is_file():
+        raise RuntimeError("TOP10 후보 체크포인트가 없습니다.")
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    rows = list((checkpoint.get("completed") or {}).values())
+    mdd_limit = float((selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
+    eligible = [
+        row for row in rows
+        if int((row.get("result") or {}).get("trades") or 0) > 0
+        and int((row.get("result") or {}).get("liquidations") or 0) == 0
+        and float((row.get("result") or {}).get("max_drawdown_percent") or 0) <= mdd_limit
+        and isinstance(row.get("parameters"), dict)
+    ]
+    eligible.sort(key=lambda row: (
+        float((row.get("result") or {}).get("return_percent") or 0),
+        float((row.get("result") or {}).get("profit_factor") or 0),
+        -float((row.get("result") or {}).get("max_drawdown_percent") or 0),
+    ), reverse=True)
+    count = max(1, min(int(limit), 10))
+    return json.dumps({
+        "items": eligible[:count],
+        "source": "refined" if refined.get("checkpoint") else "broad",
+        "mdd_limit_percent": mdd_limit,
+    }, ensure_ascii=False)
 
 
 
