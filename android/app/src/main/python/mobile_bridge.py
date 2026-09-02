@@ -400,10 +400,9 @@ def _optimize_risk_profile(
                 del overrides
             if "engine_params" in locals():
                 del engine_params
-            gc.collect()
-            time.sleep(1.5 if position % 10 == 0 else 0.20)
             if position % 25 == 0:
-                log(f"안전 모드: {position}회 완료 · 메모리 정리 및 냉각 완료")
+                gc.collect()
+                log(f"가속 모드: {position}회 완료 · 주기적 메모리 정리")
 
     viable = [
         row for row in completed.values()
@@ -558,13 +557,14 @@ def _refine_top_candidates(
     broad_selection: dict,
     trials: int,
     log,
+    top_n: int = 10,
 ) -> dict:
     broad_checkpoint = Path(str(broad_selection["checkpoint"]))
     broad = json.loads(broad_checkpoint.read_text(encoding="utf-8"))
     mdd_limit = float((broad_selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
-    top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)[:10]
+    top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)[:top_n]
     if not top_rows:
-        raise RuntimeError("1차 탐색에서 정밀 탐색에 사용할 TOP10 후보가 없습니다.")
+        raise RuntimeError(f"1차 탐색에서 정밀 탐색에 사용할 TOP{top_n} 후보가 없습니다.")
     trials_per_seed = min(5000, max(1, int(trials)))
     expected_trials = len(top_rows) * trials_per_seed
     fingerprint = hashlib.sha256(json.dumps({
@@ -585,7 +585,7 @@ def _refine_top_candidates(
             stale = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
             path.replace(stale)
     completed = state.setdefault("completed", {})
-    candidates = _refinement_candidates(top_rows, trials_per_seed, f"{symbol}|{timeframe}|{start_text}|{end_text}|{fingerprint}")
+    candidates = _refinement_candidates(top_rows[:top_n], trials_per_seed, f"{symbol}|{timeframe}|{start_text}|{end_text}|{fingerprint}")
     for position, (seed_index, params) in enumerate(candidates, 1):
         _wait_for_optimization_control()
         identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
@@ -671,11 +671,12 @@ def _rolling_validate_candidates(
     source_checkpoint: str,
     months: int,
     log,
+    top_n: int = 10,
 ) -> dict:
     windows = _month_windows(start_text, end_text, months)
     if not windows:
         raise RuntimeError(f"{months}개월 롤링 검증에는 최소 {months}개월의 기간이 필요합니다.")
-    candidates = list(candidate_rows or [])[:10]
+    candidates = list(candidate_rows or [])[:top_n]
     if not candidates:
         raise RuntimeError(f"{months}개월 롤링 검증 후보가 없습니다.")
     source = Path(str(source_checkpoint))
@@ -788,6 +789,7 @@ def run_backtest(
     all_entries_three_tick: bool = False,
     selected_parameters_json: str = "",
     execution_model: str = "signal_close",
+    optimization_speed: str = "quick",
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -832,10 +834,20 @@ def run_backtest(
             )
     selected_profile = risk_profile.strip() if risk_profile else "공격형"
     selected_stage = (optimization_stage or "broad").strip().lower()
+    speed_mode = (optimization_speed or "quick").strip().lower()
+    if speed_mode not in {"quick", "standard", "deep"}:
+        speed_mode = "quick"
+    speed_presets = {
+        "quick": {"label": "빠른", "broad": 100, "refine": 100, "top_n": 3},
+        "standard": {"label": "표준", "broad": 500, "refine": 300, "top_n": 5},
+        "deep": {"label": "정밀", "broad": 5000, "refine": 5000, "top_n": 10},
+    }
+    speed_preset = speed_presets[speed_mode]
     if selected_stage not in {"broad", "refine", "rolling", "auto"}:
         selected_stage = "broad"
-    broad_optimization_trials = int(broad_optimization_trials)
-    refine_optimization_trials = int(refine_optimization_trials)
+    broad_optimization_trials = min(int(broad_optimization_trials), int(speed_preset["broad"]))
+    refine_optimization_trials = min(int(refine_optimization_trials), int(speed_preset["refine"]))
+    optimization_top_n = int(speed_preset["top_n"])
     if not 1 <= broad_optimization_trials <= 5000:
         raise ValueError("1차 최적화 조합 수는 1~5000이어야 합니다.")
     if not 1 <= refine_optimization_trials <= 5000:
@@ -890,6 +902,8 @@ def run_backtest(
         "auto": "전체 자동 실행",
     }
     log(f"최적화 단계: {stage_names[selected_stage]}")
+    log(f"속도 모드: {speed_preset['label']} · 1차 {broad_optimization_trials}회 · 후속 TOP{optimization_top_n}×{refine_optimization_trials}회")
+    log("재실행 가속: 동일 설정 체크포인트와 완료 결과를 자동 재사용합니다.")
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
     log(
@@ -961,12 +975,12 @@ def run_backtest(
     summary.pop("equity_curve", None)
     summary.pop("trades_log", None)
     gc.collect()
-    log("휴대폰 안전 모드: 대형 기준 결과 메모리 해제 · trial별 자동 냉각 적용")
+    log("휴대폰 가속 모드: 대형 기준 결과 메모리 해제 · 불필요한 trial별 대기 제거")
     broad_trials = broad_optimization_trials
     refine_trials_per_seed = refine_optimization_trials
     log(
-        f"단계별 배분: 1차 큰 구간 {broad_trials}회 → 수익률 TOP10 각각 정밀 {refine_trials_per_seed}회 "
-        f"(최대 {refine_trials_per_seed * 10}회) → 6개월 롤링 → 3개월 롤링"
+        f"단계별 배분: 1차 {broad_trials}회 → 수익률 TOP{optimization_top_n} 각각 정밀 {refine_trials_per_seed}회 "
+        f"(최대 {refine_trials_per_seed * optimization_top_n}회) → 6개월 롤링 → 3개월 롤링"
     )
     optimized_result, risk_selection = _optimize_risk_profile(
         symbol.strip(),
@@ -1006,7 +1020,7 @@ def run_backtest(
         refined = _refine_top_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
             Path(db), Path(output_dir), overrides, risk_selection,
-            refine_trials_per_seed, log,
+            refine_trials_per_seed, log, optimization_top_n,
         )
         pipeline["refined"] = {
             key: value for key, value in refined.items() if key != "top_candidates"
@@ -1014,13 +1028,13 @@ def run_backtest(
     if selected_stage in {"rolling", "auto"}:
         rolling_6m = _rolling_validate_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
-            Path(db), Path(output_dir), overrides, list(refined.get("top_candidates") or [])[:10],
-            str(refined.get("checkpoint") or ""), 6, log,
+            Path(db), Path(output_dir), overrides, list(refined.get("top_candidates") or [])[:optimization_top_n],
+            str(refined.get("checkpoint") or ""), 6, log, optimization_top_n,
         )
         rolling_3m = _rolling_validate_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
-            Path(db), Path(output_dir), overrides, list(rolling_6m.get("ranking") or [])[:10],
-            str(rolling_6m.get("checkpoint") or ""), 3, log,
+            Path(db), Path(output_dir), overrides, list(rolling_6m.get("ranking") or [])[:optimization_top_n],
+            str(rolling_6m.get("checkpoint") or ""), 3, log, optimization_top_n,
         )
         pipeline["rolling_6m"] = {key: value for key, value in rolling_6m.items() if key != "ranking"}
         pipeline["rolling_3m"] = {key: value for key, value in rolling_3m.items() if key != "ranking"}
