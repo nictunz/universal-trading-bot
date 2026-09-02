@@ -20,189 +20,165 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import re
+          import textwrap
           from pathlib import Path
 
           java_path = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
           py_path = Path('android/app/src/main/python/mobile_bridge.py')
-
           java = java_path.read_text(encoding='utf-8')
-          old = '''        LinearLayout resultActions = panel();
-          root.addView(resultActions, marginTop(12));
-          resultActions.addView(sectionTitle("백테스트 결과 확인"));
-          resultSummaryButton = actionButton("결과 요약 팝업", Color.rgb(30, 41, 59));
-          resultSummaryButton.setOnClickListener(v -> showResultSummary());
-          resultActions.addView(resultSummaryButton);
-          tradeHistoryButton = actionButton("전체 거래내역 팝업", Color.rgb(30, 41, 59));
-          tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
-          resultActions.addView(tradeHistoryButton, marginTop(8));
-          chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
-          chartButton.setOnClickListener(v -> showBacktestChart());
-          resultActions.addView(chartButton, marginTop(8));
-          Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
-          savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
-          resultActions.addView(savedResultsButton, marginTop(8));
-          Button shareResultButton = actionButton("📤 최신 결과 JSON 공유", Color.rgb(30, 41, 59));
-          shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "BTC·ETH 백테스트 결과 공유"));
-          resultActions.addView(shareResultButton, marginTop(8));
-          Button shareOptimizationButton = actionButton("📤 전체 자동 결과 JSON 공유 (MDD 70% 초과 포함)", Color.rgb(30, 41, 59));
-          shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
-          resultActions.addView(shareOptimizationButton, marginTop(8));
-          Button shareCacheButton = actionButton("📦 현재 캐시 DB 공유", Color.rgb(30, 41, 59));
-          shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
-          resultActions.addView(shareCacheButton, marginTop(8));
-          enableResultActions(false);
-          '''
-          old = old.replace('\n          ', '\n').replace("'''\n", "'''")
-          new = '''        LinearLayout resultActions = panel();
-          root.addView(resultActions, marginTop(12));
-          resultActions.addView(sectionTitle("백테스트 결과"));
-
-          resultActions.addView(resultGroupTitle("① 결과 확인", "앱에서 바로 확인"));
-          resultSummaryButton = actionButton("결과 요약 보기", Color.rgb(30, 41, 59));
-          resultSummaryButton.setOnClickListener(v -> showResultSummary());
-          resultActions.addView(resultSummaryButton, marginTop(6));
-          tradeHistoryButton = actionButton("전체 거래내역 보기", Color.rgb(30, 41, 59));
-          tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
-          resultActions.addView(tradeHistoryButton, marginTop(6));
-          chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
-          chartButton.setOnClickListener(v -> showBacktestChart());
-          resultActions.addView(chartButton, marginTop(6));
-
-          resultActions.addView(resultGroupTitle("② 저장된 결과", "이전 백테스트 다시 불러오기"), marginTop(14));
-          Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
-          savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
-          resultActions.addView(savedResultsButton, marginTop(6));
-
-          resultActions.addView(resultGroupTitle("③ 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
-          resultActions.addView(stageExportButton("1차 전체 탐색 결과", "broad"), marginTop(6));
-          resultActions.addView(stageExportButton("2차 정밀 탐색 결과", "refined"), marginTop(6));
-          resultActions.addView(stageExportButton("3차 6개월 롤링 결과", "rolling6"), marginTop(6));
-          resultActions.addView(stageExportButton("4차 3개월 롤링 결과", "rolling3"), marginTop(6));
-          resultActions.addView(stageExportButton("5차 최종 선정 결과", "final"), marginTop(6));
-
-          resultActions.addView(resultGroupTitle("④ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
-          Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
-          shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
-          resultActions.addView(shareResultButton, marginTop(6));
-          Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공유", Color.rgb(30, 41, 59));
-          shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
-          resultActions.addView(shareOptimizationButton, marginTop(6));
-
-          resultActions.addView(resultGroupTitle("⑤ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
-          Button shareCacheButton = actionButton("현재 캐시 DB 공유", Color.rgb(30, 41, 59));
-          shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
-          resultActions.addView(shareCacheButton, marginTop(6));
-          enableResultActions(false);
-          '''
-          new = new.replace('\n          ', '\n').replace("'''\n", "'''")
 
           if 'stageExportButton("1차 전체 탐색 결과", "broad")' not in java:
-              if old not in java:
-                  raise SystemExit('target result action block not found')
-              java = java.replace(old, new, 1)
+              block = textwrap.dedent('''
+                      LinearLayout resultActions = panel();
+                      root.addView(resultActions, marginTop(12));
+                      resultActions.addView(sectionTitle("백테스트 결과"));
 
-          anchor = '    private void exportAndShareOptimizationResults() {\n'
-          methods = '''    private View resultGroupTitle(String title, String subtitle) {
-          LinearLayout wrap = new LinearLayout(this);
-          wrap.setOrientation(LinearLayout.VERTICAL);
-          wrap.addView(text(title, 13, ACCENT, true));
-          wrap.addView(text(subtitle, 11, MUTED, false), marginTop(2));
-          return wrap;
-          }
+                      resultActions.addView(resultGroupTitle("① 결과 확인", "앱에서 바로 확인"));
+                      resultSummaryButton = actionButton("결과 요약 보기", Color.rgb(30, 41, 59));
+                      resultSummaryButton.setOnClickListener(v -> showResultSummary());
+                      resultActions.addView(resultSummaryButton, marginTop(6));
+                      tradeHistoryButton = actionButton("전체 거래내역 보기", Color.rgb(30, 41, 59));
+                      tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
+                      resultActions.addView(tradeHistoryButton, marginTop(6));
+                      chartButton = actionButton("손익 차트 + 거래 표시", Color.rgb(30, 41, 59));
+                      chartButton.setOnClickListener(v -> showBacktestChart());
+                      resultActions.addView(chartButton, marginTop(6));
 
-          private Button stageExportButton(String label, String stage) {
-          Button button = actionButton("⬇ " + label + " JSON", Color.rgb(30, 41, 59));
-          button.setOnClickListener(v -> exportAndShareOptimizationStage(stage, label));
-          return button;
-          }
+                      resultActions.addView(resultGroupTitle("② 저장된 결과", "이전 백테스트 다시 불러오기"), marginTop(14));
+                      Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
+                      savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
+                      resultActions.addView(savedResultsButton, marginTop(6));
 
-          private void exportAndShareOptimizationStage(String stage, String label) {
-          if (lastResultPath == null || lastResultPath.trim().isEmpty()) {
-          toast("먼저 완료된 최적화 결과를 불러오세요.");
-          return;
-          }
-          statusText.setText(label + " 파일 생성 중");
-          executor.execute(() -> {
-          try {
-          PyObject bridge = Python.getInstance().getModule("mobile_bridge");
-          JSONObject exported = new JSONObject(bridge.callAttr("export_optimization_stage", lastResultPath, stage).toString());
-          String path = exported.getString("path");
-          int count = exported.optInt("count", 0);
-          main.post(() -> {
-          statusText.setText(label + " · " + count + "개");
-          shareBacktestFile(path, "application/json", label + " JSON 공유");
-          });
-          } catch (Exception e) {
-          main.post(() -> {
-          logText.append("\\nSTAGE EXPORT ERROR\\n" + stackMessage(e) + "\\n");
-          statusText.setText(label + " 생성 오류");
-          toast(label + " 파일 생성 실패");
-          });
-          }
-          });
-          }
+                      resultActions.addView(resultGroupTitle("③ 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
+                      resultActions.addView(stageExportButton("1차 전체 탐색 결과", "broad"), marginTop(6));
+                      resultActions.addView(stageExportButton("2차 정밀 탐색 결과", "refined"), marginTop(6));
+                      resultActions.addView(stageExportButton("3차 6개월 롤링 결과", "rolling6"), marginTop(6));
+                      resultActions.addView(stageExportButton("4차 3개월 롤링 결과", "rolling3"), marginTop(6));
+                      resultActions.addView(stageExportButton("5차 최종 선정 결과", "final"), marginTop(6));
 
-          '''
-          methods = methods.replace('\n          ', '\n').replace("'''\n", "'''")
+                      resultActions.addView(resultGroupTitle("④ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
+                      Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
+                      shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
+                      resultActions.addView(shareResultButton, marginTop(6));
+                      Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공유", Color.rgb(30, 41, 59));
+                      shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
+                      resultActions.addView(shareOptimizationButton, marginTop(6));
+
+                      resultActions.addView(resultGroupTitle("⑤ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
+                      Button shareCacheButton = actionButton("현재 캐시 DB 공유", Color.rgb(30, 41, 59));
+                      shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
+                      resultActions.addView(shareCacheButton, marginTop(6));
+                      enableResultActions(false);
+              ''').strip('\n')
+              pattern = re.compile(r'        LinearLayout resultActions = panel\(\);.*?        enableResultActions\(false\);', re.S)
+              java, count = pattern.subn(block, java, count=1)
+              if count != 1:
+                  raise SystemExit(f'result action block replacements={count}')
+
           if 'private void exportAndShareOptimizationStage(' not in java:
+              methods = textwrap.dedent('''
+                  private View resultGroupTitle(String title, String subtitle) {
+                      LinearLayout wrap = new LinearLayout(this);
+                      wrap.setOrientation(LinearLayout.VERTICAL);
+                      wrap.addView(text(title, 13, ACCENT, true));
+                      wrap.addView(text(subtitle, 11, MUTED, false), marginTop(2));
+                      return wrap;
+                  }
+
+                  private Button stageExportButton(String label, String stage) {
+                      Button button = actionButton("⬇ " + label + " JSON", Color.rgb(30, 41, 59));
+                      button.setOnClickListener(v -> exportAndShareOptimizationStage(stage, label));
+                      return button;
+                  }
+
+                  private void exportAndShareOptimizationStage(String stage, String label) {
+                      if (lastResultPath == null || lastResultPath.trim().isEmpty()) {
+                          toast("먼저 완료된 최적화 결과를 불러오세요.");
+                          return;
+                      }
+                      statusText.setText(label + " 파일 생성 중");
+                      executor.execute(() -> {
+                          try {
+                              PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                              JSONObject exported = new JSONObject(bridge.callAttr("export_optimization_stage", lastResultPath, stage).toString());
+                              String path = exported.getString("path");
+                              int count = exported.optInt("count", 0);
+                              main.post(() -> {
+                                  statusText.setText(label + " · " + count + "개");
+                                  shareBacktestFile(path, "application/json", label + " JSON 공유");
+                              });
+                          } catch (Exception e) {
+                              main.post(() -> {
+                                  logText.append("\\nSTAGE EXPORT ERROR\\n" + stackMessage(e) + "\\n");
+                                  statusText.setText(label + " 생성 오류");
+                                  toast(label + " 파일 생성 실패");
+                              });
+                          }
+                      });
+                  }
+
+              ''')
+              anchor = '    private void exportAndShareOptimizationResults() {\n'
               if anchor not in java:
                   raise SystemExit('java method anchor not found')
               java = java.replace(anchor, methods + anchor, 1)
+
           java_path.write_text(java, encoding='utf-8')
 
           py = py_path.read_text(encoding='utf-8')
           if 'def export_optimization_stage(' not in py:
-              py_anchor = '\ndef ensure_ssh_key(app_files_dir: str) -> str:\n'
-              py_methods = '''
-          def export_optimization_stage(result_path: str, stage: str) -> str:
-          stage_key = str(stage or "").strip().lower()
-          full_meta = json.loads(export_optimization_results(result_path))
-          full_path = Path(full_meta["path"])
-          payload = json.loads(full_path.read_text(encoding="utf-8"))
-          stage_map = {
-          "broad": ("01-broad-ranking", payload.get("broad"), "1차 전체 탐색"),
-          "refined": ("02-refined-ranking", payload.get("refined"), "2차 정밀 탐색"),
-          "rolling6": ("03-rolling-6m", payload.get("rolling_6m_report"), "3차 6개월 롤링"),
-          "rolling3": ("04-rolling-3m", payload.get("rolling_3m_report"), "4차 3개월 롤링"),
-          "final": ("05-final-selection", payload.get("rolling_final_selection"), "5차 최종 선정"),
-          }
-          if stage_key not in stage_map:
-          raise RuntimeError(f"지원하지 않는 결과 단계입니다: {stage}")
-          suffix, data, label = stage_map[stage_key]
-          if data is None:
-          raise RuntimeError(f"{label} 결과가 없습니다. 해당 단계까지 최적화를 완료했는지 확인하세요.")
-          stage_payload = {
-          "schema_version": 1,
-          "export_type": "optimization_stage",
-          "stage": stage_key,
-          "stage_label": label,
-          "source_result": payload.get("source_result"),
-          "symbol": payload.get("symbol"),
-          "timeframe": payload.get("timeframe"),
-          "requested_start": payload.get("requested_start"),
-          "requested_end": payload.get("requested_end"),
-          "risk_profile": payload.get("risk_profile"),
-          "constraints": payload.get("constraints"),
-          "ranking_rule": payload.get("ranking_rule"),
-          "mdd_policy": payload.get("mdd_policy"),
-          "result": data,
-          }
-          out = Path(result_path).with_name(Path(result_path).stem + f"-{suffix}.json")
-          _save_json_atomic(out, stage_payload)
-          if isinstance(data, dict) and "completed_trials" in data:
-          count = int(data.get("completed_trials") or 0)
-          elif isinstance(data, dict) and isinstance(data.get("ranking"), list):
-          count = len(data.get("ranking") or [])
-          elif isinstance(data, list):
-          count = len(data)
-          else:
-          count = 1
-          return json.dumps({"path": str(out), "stage": stage_key, "label": label, "count": count}, ensure_ascii=False)
-          '''
-              py_methods = py_methods.replace('\n          ', '\n').replace("'''\n", "'''")
-              if py_anchor not in py:
+              py_methods = textwrap.dedent('''
+                  def export_optimization_stage(result_path: str, stage: str) -> str:
+                      stage_key = str(stage or "").strip().lower()
+                      full_meta = json.loads(export_optimization_results(result_path))
+                      full_path = Path(full_meta["path"])
+                      payload = json.loads(full_path.read_text(encoding="utf-8"))
+                      stage_map = {
+                          "broad": ("01-broad-ranking", payload.get("broad"), "1차 전체 탐색"),
+                          "refined": ("02-refined-ranking", payload.get("refined"), "2차 정밀 탐색"),
+                          "rolling6": ("03-rolling-6m", payload.get("rolling_6m_report"), "3차 6개월 롤링"),
+                          "rolling3": ("04-rolling-3m", payload.get("rolling_3m_report"), "4차 3개월 롤링"),
+                          "final": ("05-final-selection", payload.get("rolling_final_selection"), "5차 최종 선정"),
+                      }
+                      if stage_key not in stage_map:
+                          raise RuntimeError(f"지원하지 않는 결과 단계입니다: {stage}")
+                      suffix, data, label = stage_map[stage_key]
+                      if data is None:
+                          raise RuntimeError(f"{label} 결과가 없습니다. 해당 단계까지 최적화를 완료했는지 확인하세요.")
+                      stage_payload = {
+                          "schema_version": 1,
+                          "export_type": "optimization_stage",
+                          "stage": stage_key,
+                          "stage_label": label,
+                          "source_result": payload.get("source_result"),
+                          "symbol": payload.get("symbol"),
+                          "timeframe": payload.get("timeframe"),
+                          "requested_start": payload.get("requested_start"),
+                          "requested_end": payload.get("requested_end"),
+                          "risk_profile": payload.get("risk_profile"),
+                          "constraints": payload.get("constraints"),
+                          "ranking_rule": payload.get("ranking_rule"),
+                          "mdd_policy": payload.get("mdd_policy"),
+                          "result": data,
+                      }
+                      out = Path(result_path).with_name(Path(result_path).stem + f"-{suffix}.json")
+                      _save_json_atomic(out, stage_payload)
+                      if isinstance(data, dict) and "completed_trials" in data:
+                          count = int(data.get("completed_trials") or 0)
+                      elif isinstance(data, dict) and isinstance(data.get("ranking"), list):
+                          count = len(data.get("ranking") or [])
+                      elif isinstance(data, list):
+                          count = len(data)
+                      else:
+                          count = 1
+                      return json.dumps({"path": str(out), "stage": stage_key, "label": label, "count": count}, ensure_ascii=False)
+
+              ''')
+              anchor = '\ndef ensure_ssh_key(app_files_dir: str) -> str:\n'
+              if anchor not in py:
                   raise SystemExit('python anchor not found')
-              py = py.replace(py_anchor, py_methods + py_anchor, 1)
+              py = py.replace(anchor, '\n' + py_methods + anchor, 1)
               py_path.write_text(py, encoding='utf-8')
           PY
 
