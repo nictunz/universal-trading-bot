@@ -1577,6 +1577,14 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
         )
         item = dict(row)
         item["rank"] = rank
+        result = dict(item.get("result") or {})
+        item["composite_score"] = round(
+            float(result.get("return_percent") or 0)
+            - float(result.get("max_drawdown_percent") or 0) * 2.0
+            + min(float(result.get("profit_factor") or 0), 5.0) * 10.0
+            + min(int(result.get("trades") or 0), 100) * 0.1,
+            3,
+        )
         item["effective_parameters"] = effective
         item["source_context"] = {
             "source_result": str(result_file),
@@ -1595,6 +1603,37 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
     }, ensure_ascii=False)
 
 
+
+
+
+def compare_recent_results(output_dir: str, limit: int = 5) -> str:
+    history_dir = Path(output_dir) / "BacktestResults"
+    paths = sorted(history_dir.glob("*-backtest.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    rows = []
+    keys = ("return_percent", "max_drawdown_percent", "win_rate", "profit_factor", "trades")
+    for path in paths[:max(2, min(int(limit), 5))]:
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+            rows.append({
+                "path": str(path), "created_at": summary.get("created_at"),
+                "symbol": summary.get("symbol"), "timeframe": summary.get("timeframe"),
+                "start": summary.get("requested_start"), "end": summary.get("requested_end"),
+                "quality": summary.get("quality"), "safety_gate": (summary.get("validation_suite") or {}).get("safety_gate"),
+                "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
+                **{key: summary.get(key) for key in keys},
+            })
+        except Exception:
+            continue
+    changes = {}
+    if len(rows) >= 2:
+        newest, previous = rows[0], rows[1]
+        for key in keys:
+            try:
+                changes[key] = float(newest.get(key) or 0) - float(previous.get(key) or 0)
+            except Exception:
+                pass
+        changes["same_run_signature"] = newest.get("run_signature") == previous.get("run_signature")
+    return json.dumps({"items": rows, "newest_vs_previous": changes}, ensure_ascii=False)
 
 
 def export_analysis_bundle(result_path: str) -> str:
@@ -1626,6 +1665,9 @@ def export_analysis_bundle(result_path: str) -> str:
         writer = csv.DictWriter(stream, fieldnames=["month", "trades", "wins", "win_rate", "pnl"], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(months)
+
+    validation_json = bundle_dir / "05-validation-suite.json"
+    validation_json.write_text(json.dumps(summary.get("validation_suite") or {}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     reproduction_json = bundle_dir / "04-reproducibility.json"
     reproduction_json.write_text(
