@@ -154,7 +154,7 @@ def run_backtest(
     regime_volatility = candle_range_s.to_numpy(dtype=float, copy=False)
     index = prepared.index
 
-    warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, 200)
+    warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, regime_lookback, 200)
     start_idx = min(warmup, total - 1)
     excluded_hours = {x.strip() for x in settings.excluded_hours.split(",") if x.strip()}
     start_date = settings.start_date
@@ -433,6 +433,7 @@ def run_backtest(
         can_pyramid = (
             sizing_equity > 0.0
             and entries < settings.max_pyramiding
+            and (volatility_regime != "고변동성" or entries < 1)
             and entry_notional + order_notional <= max_total_notional + 1e-9
         )
         same_direction = position_side is None or position_side == signal
