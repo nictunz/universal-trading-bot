@@ -92,9 +92,12 @@ public class BacktestChartView extends View {
         float left = dp(54);
         float right = getWidth() - dp(14);
         float top = dp(24);
+        float equityBottom = getHeight() * 0.66f;
+        float drawdownTop = equityBottom + dp(34);
         float bottom = getHeight() - dp(42);
         float width = Math.max(1f, right - left);
-        float height = Math.max(1f, bottom - top);
+        float height = Math.max(1f, equityBottom - top);
+        float drawdownHeight = Math.max(1f, bottom - drawdownTop);
 
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(dp(1));
@@ -126,7 +129,7 @@ public class BacktestChartView extends View {
         paint.setTextSize(dp(10));
         paint.setColor(Color.rgb(148, 163, 184));
         canvas.drawText(String.format(Locale.US, "%.2f", max), dp(4), top + dp(4), paint);
-        canvas.drawText(String.format(Locale.US, "%.2f", min), dp(4), bottom, paint);
+        canvas.drawText(String.format(Locale.US, "%.2f", min), dp(4), equityBottom, paint);
 
         Path line = new Path();
         boolean started = false;
@@ -134,7 +137,7 @@ public class BacktestChartView extends View {
             Point p = points.get(i);
             if (!Double.isFinite(p.equity)) continue;
             float x = left + width * i / (points.size() - 1f);
-            float y = bottom - (float) ((p.equity - min) / (max - min)) * height;
+            float y = equityBottom - (float) ((p.equity - min) / (max - min)) * height;
             if (!started) {
                 line.moveTo(x, y);
                 started = true;
@@ -151,6 +154,44 @@ public class BacktestChartView extends View {
             drawMarker(canvas, marker, marker.entryTime, true, left, top, width, height, min, max);
             drawMarker(canvas, marker, marker.exitTime, false, left, top, width, height, min, max);
         }
+
+        double peak = Double.NEGATIVE_INFINITY;
+        double maxDrawdown = 0.0;
+        Path drawdownArea = new Path();
+        drawdownArea.moveTo(left, drawdownTop);
+        for (int i = 0; i < points.size(); i++) {
+            Point p = points.get(i);
+            if (!Double.isFinite(p.equity)) continue;
+            peak = Math.max(peak, p.equity);
+            double drawdown = peak > 0.0 ? Math.max(0.0, (peak - p.equity) / peak * 100.0) : 0.0;
+            maxDrawdown = Math.max(maxDrawdown, drawdown);
+        }
+        double drawdownScale = Math.max(1.0, maxDrawdown);
+        peak = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < points.size(); i++) {
+            Point p = points.get(i);
+            if (!Double.isFinite(p.equity)) continue;
+            peak = Math.max(peak, p.equity);
+            double drawdown = peak > 0.0 ? Math.max(0.0, (peak - p.equity) / peak * 100.0) : 0.0;
+            float x = left + width * i / (points.size() - 1f);
+            float y = drawdownTop + (float) (drawdown / drawdownScale) * drawdownHeight;
+            drawdownArea.lineTo(x, y);
+        }
+        drawdownArea.lineTo(right, drawdownTop);
+        drawdownArea.close();
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.argb(105, 239, 68, 68));
+        canvas.drawPath(drawdownArea, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(dp(1));
+        paint.setColor(Color.rgb(239, 68, 68));
+        canvas.drawLine(left, drawdownTop, right, drawdownTop, paint);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setTextSize(dp(10));
+        canvas.drawText("낙폭 0%", dp(4), drawdownTop + dp(4), paint);
+        canvas.drawText(String.format(Locale.US, "최대 %.2f%%", maxDrawdown), dp(4), bottom, paint);
+        paint.setColor(Color.rgb(148, 163, 184));
+        canvas.drawText("Underwater · 아래로 깊을수록 위험", left, drawdownTop - dp(8), paint);
 
         paint.setStyle(Paint.Style.FILL);
         paint.setTextSize(dp(10));
