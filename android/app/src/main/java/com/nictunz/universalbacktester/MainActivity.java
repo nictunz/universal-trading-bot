@@ -66,6 +66,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView optimizationStageInput;
     private AutoCompleteTextView optimizationSpeedInput;
     private AutoCompleteTextView precheckInput;
+    private AutoCompleteTextView adaptiveRegimeInput;
     private AutoCompleteTextView broadTrialCountInput;
     private AutoCompleteTextView refineTrialCountInput;
     private AutoCompleteTextView threeTickModeInput;
@@ -276,6 +277,21 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
+        adaptiveRegimeInput = autocomplete(
+                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"},
+                "자동 전환 사용 · 추천"
+        );
+        backtestCard.addView(labeled("시장 국면별 전략 자동 전환", adaptiveRegimeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "국면 전략", adaptiveRegimeInput,
+                new String[]{"자동 전환(추천)", "고정 전략"},
+                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "과거 288개 마감봉으로 자동 판단: 상승장=롱 · 하락장=숏 · 횡보장=양방향 · 고변동성=진입 50%/추가진입 제한 · 저변동성=정상 진입",
+                11, MUTED, false
+        ), marginTop(7));
+
         precheckInput = autocomplete(
                 new String[]{"사용 · 추천", "사용 안 함"},
                 "사용 · 추천"
@@ -403,6 +419,9 @@ resultActions.addView(tradeHistoryButton, marginTop(6));
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
+Button regimeButton = actionButton("🌦 시장 국면별 성과·자동전환 확인", PRIMARY);
+regimeButton.setOnClickListener(v -> showMarketRegimePerformance());
+resultActions.addView(regimeButton, marginTop(6));
 Button validationButton = actionButton("🛡 다중 검증·실전 안전게이트", SUCCESS);
 validationButton.setOnClickListener(v -> showValidationSuite());
 resultActions.addView(validationButton, marginTop(6));
@@ -642,6 +661,7 @@ enableResultActions(false);
         }
         boolean allEntriesThreeTick = "모든 진입 3틱룰".equals(threeTickModeInput.getText().toString().trim());
         boolean precheckEnabled = !precheckInput.getText().toString().startsWith("사용 안");
+        boolean adaptiveRegimeEnabled = adaptiveRegimeInput.getText().toString().startsWith("자동");
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
         Calendar startCal = parseDate(start);
@@ -669,6 +689,7 @@ enableResultActions(false);
                     .setMessage("예상 핵심 조합 " + estimated + "회\n후속 후보 TOP" + topN
                             + "\n예상 시간 " + estimateText
                             + "\n사전검사 " + (precheckEnabled ? "사용" : "사용 안 함")
+                            + "\n시장 국면 자동 전환 " + (adaptiveRegimeEnabled ? "사용" : "고정 전략")
                             + "\n\n기기 성능과 거래 수에 따라 실제 시간은 달라집니다.")
                     .setPositiveButton("실행", (dialog, which) -> {
                         workloadConfirmed = true;
@@ -700,6 +721,7 @@ enableResultActions(false);
         intent.putExtra("execution_model", executionModel);
         intent.putExtra("optimization_speed", optimizationSpeed);
         intent.putExtra("precheck_enabled", precheckEnabled);
+        intent.putExtra("adaptive_regime_enabled", adaptiveRegimeEnabled);
         if (fixedParameters != null) {
             JSONObject replayPayload = new JSONObject();
             try {
@@ -1388,6 +1410,41 @@ private void exportAndShareOptimizationStage(String stage, String label) {
     }
 
 
+
+    private void showMarketRegimePerformance() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        JSONObject suite = lastSummary.optJSONObject("validation_suite");
+        JSONObject report = suite == null ? null : suite.optJSONObject("market_regimes");
+        JSONArray rows = report == null ? null : report.optJSONArray("regimes");
+        if (rows == null) {
+            showTextDialog("시장 국면별 성과", "시장 국면 분석 자료가 없습니다.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("자동 전환  ").append(report.optBoolean("adaptive_regime_enabled") ? "사용됨" : "사용 안 됨")
+                .append("\n판정 기준  과거 ").append(report.optInt("lookback_bars", 288)).append("개 마감봉")
+                .append("\n\n");
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null) continue;
+            sb.append("【").append(row.optString("regime")).append("】  ")
+                    .append(row.optInt("trades")).append("회 · 승률 ")
+                    .append(String.format(Locale.KOREA, "%.1f%%", row.optDouble("win_rate")))
+                    .append(" · 손익 ").append(String.format(Locale.KOREA, "%+.2f USDT", row.optDouble("pnl")))
+                    .append('\n');
+        }
+        sb.append("\n전환 규칙\n")
+                .append("상승장 → 롱만\n")
+                .append("하락장 → 숏만\n")
+                .append("횡보장 → 롱·숏\n")
+                .append("고변동성 → 진입 50%, 추가진입 제한\n")
+                .append("저변동성 → 정상 진입\n\n")
+                .append("현재 봉까지 마감된 데이터만 사용하고 다음 신호부터 적용합니다.");
+        showTextDialog("🌦 시장 국면별 성과", sb.toString());
+    }
 
     private void showValidationSuite() {
         if (lastSummary == null) {
