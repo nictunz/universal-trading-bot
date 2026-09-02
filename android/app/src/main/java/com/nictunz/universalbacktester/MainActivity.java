@@ -101,6 +101,7 @@ public class MainActivity extends android.app.Activity {
     private String privateKeyPath = "";
     private boolean lastUploadEligible = false;
     private String appliedServiceResultPath = "";
+    private String latestFullLog = "";
 
     private final Runnable backtestStatusPoller = new Runnable() {
         @Override
@@ -468,11 +469,11 @@ enableResultActions(false);
         logText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
         logText.setClickable(true);
         logText.setFocusable(true);
-        logText.setOnClickListener(v -> showTextDialog("전체 실행 로그", logText.getText().toString()));
+        logText.setOnClickListener(v -> showTextDialog("전체 실행 로그", latestFullLog));
         statusText.setClickable(true);
-        statusText.setOnClickListener(v -> showTextDialog("전체 실행 로그", logText.getText().toString()));
+        statusText.setOnClickListener(v -> showTextDialog("전체 실행 로그", latestFullLog));
         logCard.addView(logText, marginTop(8));
-        TextView logHint = text("🔎 실행 로그 또는 상태를 누르면 전체 화면으로 확대됩니다.", 11, ACCENT, false);
+        TextView logHint = text("최근 10줄만 표시 · 실행 로그 또는 상태를 누르면 전체 로그가 열립니다.", 11, ACCENT, false);
         logCard.addView(logHint, marginTop(7));
 
         return scroll;
@@ -664,7 +665,7 @@ enableResultActions(false);
         lastSummary = null;
         enableUpload(false);
         enableResultActions(false);
-        logText.setText((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
+        setFullLog((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
                 + " · 계산: " + sizingMode
                 + " · 체결: " + ("next_open".equals(executionModel) ? "다음 봉 시가" : "신호 봉 종가")
                 + " · 속도: " + (optimizationSpeed.equals("quick") ? "빠른" : (optimizationSpeed.equals("standard") ? "표준" : "정밀"))
@@ -723,27 +724,52 @@ enableResultActions(false);
         }
         if ("RUNNING".equals(state) || "PAUSED".equals(state) || "STOPPING".equals(state)) {
             String liveLog = readLiveBacktestLog();
-            if (!liveLog.isEmpty() && !logText.getText().toString().equals(liveLog)) {
-                logText.setText(liveLog);
+            if (!liveLog.isEmpty() && !latestFullLog.equals(liveLog)) {
+                setFullLog(liveLog);
             }
         }
         if ("ERROR".equals(state)) {
             String error = p.getString("backtest_error", "");
-            if (!error.isEmpty() && !logText.getText().toString().contains(error)) {
-                logText.append("\nBACKGROUND ERROR\n" + error + "\n");
+            if (!error.isEmpty() && !latestFullLog.contains(error)) {
+                appendFullLog("\nBACKGROUND ERROR\n" + error + "\n");
             }
         }
         if ("COMPLETE".equals(state)) {
             String path = p.getString("backtest_result", "");
             String logs = p.getString("backtest_log", "");
-            if (!logs.isEmpty() && !logText.getText().toString().equals(logs)) {
-                logText.setText(logs);
+            if (!logs.isEmpty() && !latestFullLog.equals(logs)) {
+                setFullLog(logs);
             }
             if (!path.isEmpty() && !path.equals(appliedServiceResultPath)) {
                 appliedServiceResultPath = path;
                 loadCompletedServiceResult(path);
             }
         }
+    }
+
+    private void setFullLog(String value) {
+        latestFullLog = value == null ? "" : value;
+        logText.setText(lastLogLines(latestFullLog, 10));
+    }
+
+    private void appendFullLog(String value) {
+        latestFullLog += value == null ? "" : value;
+        logText.setText(lastLogLines(latestFullLog, 10));
+    }
+
+    private String lastLogLines(String value, int maxLines) {
+        if (value == null || value.isEmpty()) return "";
+        String normalized = value.replace("\r\n", "\n").replace('\r', '\n');
+        String[] lines = normalized.split("\n", -1);
+        int end = lines.length;
+        while (end > 0 && lines[end - 1].isEmpty()) end--;
+        int start = Math.max(0, end - Math.max(1, maxLines));
+        StringBuilder preview = new StringBuilder();
+        for (int i = start; i < end; i++) {
+            if (preview.length() > 0) preview.append('\n');
+            preview.append(lines[i]);
+        }
+        return preview.toString();
     }
 
     private String readLiveBacktestLog() {
@@ -780,7 +806,7 @@ enableResultActions(false);
                     }
                 });
             } catch (Exception e) {
-                main.post(() -> logText.append("\nRESULT LOAD ERROR\n" + stackMessage(e) + "\n"));
+                main.post(() -> appendFullLog("\nRESULT LOAD ERROR\n" + stackMessage(e) + "\n"));
             }
         });
     }
@@ -831,7 +857,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             });
         } catch (Exception e) {
             main.post(() -> {
-                logText.append("\nSTAGE EXPORT ERROR\n" + stackMessage(e) + "\n");
+                appendFullLog("\nSTAGE EXPORT ERROR\n" + stackMessage(e) + "\n");
                 statusText.setText(label + " 생성 오류");
                 toast(label + " 파일 생성 실패");
             });
@@ -863,7 +889,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 });
             } catch (Exception e) {
                 main.post(() -> {
-                    logText.append("\nOPTIMIZATION EXPORT ERROR\n" + stackMessage(e) + "\n");
+                    appendFullLog("\nOPTIMIZATION EXPORT ERROR\n" + stackMessage(e) + "\n");
                     statusText.setText("전체 순위 내보내기 오류");
                     toast("전체 순위 생성 실패 - 실행 로그를 확인하세요.");
                 });
@@ -894,7 +920,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(Intent.createChooser(intent, chooserTitle));
         } catch (Exception e) {
-            logText.append("\nFILE SHARE ERROR\n" + stackMessage(e) + "\n");
+            appendFullLog("\nFILE SHARE ERROR\n" + stackMessage(e) + "\n");
             toast("파일 공유 실패 - 실행 로그를 확인하세요.");
         }
     }
@@ -970,14 +996,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 String result = bridge.callAttr("test_ssh", hostInput.getText().toString(), userInput.getText().toString(), privateKeyPath).toString();
                 main.post(() -> {
                     statusText.setText("SSH 연결 성공");
-                    logText.append("\nSSH TEST: " + result + "\n");
+                    appendFullLog("\nSSH TEST: " + result + "\n");
                     sshTestButton.setEnabled(true);
                     toast("SSH 연결 성공");
                 });
             } catch (Exception e) {
                 main.post(() -> {
                     statusText.setText("SSH 연결 실패");
-                    logText.append("\nSSH ERROR\n" + stackMessage(e) + "\n");
+                    appendFullLog("\nSSH ERROR\n" + stackMessage(e) + "\n");
                     sshTestButton.setEnabled(true);
                     toast("SSH 연결 실패");
                 });
@@ -1026,14 +1052,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     }
                 }
                 main.post(() -> {
-                    logText.append(sb.toString());
+                    appendFullLog(sb.toString());
                     statusText.setText("서버 캐시 연결 정상 · " + files.length() + "개");
                     button.setEnabled(true);
                     toast("서버 백테스트 캐시 확인 완료");
                 });
             } catch (Exception e) {
                 main.post(() -> {
-                    logText.append("\nSERVER CACHE ERROR\n" + stackMessage(e) + "\n");
+                    appendFullLog("\nSERVER CACHE ERROR\n" + stackMessage(e) + "\n");
                     statusText.setText("서버 캐시 연결 실패");
                     button.setEnabled(true);
                     toast("서버 캐시 연결 실패");
@@ -1070,14 +1096,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 StringBuilder sb = new StringBuilder("\n");
                 for (int i = 0; i < logs.length(); i++) sb.append(logs.getString(i)).append('\n');
                 main.post(() -> {
-                    logText.append(sb.toString());
+                    appendFullLog(sb.toString());
                     statusText.setText("서버 업로드 완료");
                     enableUpload(true);
                     toast("서버 업로드 완료");
                 });
             } catch (Exception e) {
                 main.post(() -> {
-                    logText.append("\nUPLOAD ERROR\n" + stackMessage(e) + "\n");
+                    appendFullLog("\nUPLOAD ERROR\n" + stackMessage(e) + "\n");
                     statusText.setText("업로드 실패");
                     enableUpload(true);
                     toast("업로드 실패 - 로그를 확인하세요.");
@@ -1120,7 +1146,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             } catch (Exception e) {
                 if (!restoreLatestOnly) {
                     main.post(() -> {
-                        logText.append("\nSAVED RESULT ERROR\n" + stackMessage(e) + "\n");
+                        appendFullLog("\nSAVED RESULT ERROR\n" + stackMessage(e) + "\n");
                         toast("저장된 결과 불러오기 실패");
                     });
                 }
@@ -1166,7 +1192,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         enableResultActions(true);
         enableUpload(lastUploadEligible && new File(lastDbPath).isFile() && new File(lastResultPath).isFile());
         statusText.setText(automatic ? "최근 백테스트 자동 복원됨" : "저장된 백테스트 불러옴");
-        logText.append("\n저장 결과 불러옴: " + item.optString("label", lastResultPath) + "\n");
+        appendFullLog("\n저장 결과 불러옴: " + item.optString("label", lastResultPath) + "\n");
         if (!automatic) toast("결과·차트·거래내역을 복원했습니다.");
     }
 
@@ -1237,7 +1263,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                         .show());
             } catch (Exception e) {
                 if (!automatic) main.post(() -> {
-                    logText.append("\nTOP10 ERROR\n" + stackMessage(e) + "\n");
+                    appendFullLog("\nTOP10 ERROR\n" + stackMessage(e) + "\n");
                     toast("TOP10 후보 불러오기 실패");
                 });
             }
@@ -1405,6 +1431,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(scroll)
+                .setPositiveButton("전체 복사", (dialog, which) -> {
+                    ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    clipboard.setPrimaryClip(ClipData.newPlainText(title, value));
+                    toast("전체 로그를 복사했습니다.");
+                })
                 .setNegativeButton("닫기", null)
                 .show();
     }
