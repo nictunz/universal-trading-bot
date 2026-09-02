@@ -1,0 +1,2 @@
+Manual build requested after applying organized stage-specific optimization result exports.
+User will install/update the APK manually.
