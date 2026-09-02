@@ -296,6 +296,8 @@ def _optimize_risk_profile(
     profile_name: str,
     trials: int,
     log,
+    precheck_enabled: bool = True,
+    early_stop_patience: int = 0,
 ) -> tuple[dict, dict]:
     profile = RISK_PROFILES[profile_name]
     checkpoint_path = _risk_checkpoint_path(
@@ -343,6 +345,40 @@ def _optimize_risk_profile(
     seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|coarse-buckets-v2"
     combinations = _profile_candidates(profile_name, trials, seed_material)
     checkpoint["requested_trials"] = trials
+    if precheck_enabled and not checkpoint.get("precheck_complete"):
+        precheck_start = max(_parse_day(start_text), _parse_day(end_text) - timedelta(days=29)).isoformat()
+        passed: list[str] = []
+        log(f"빠른 사전검사: 최근 30일 · {len(combinations)}개 후보의 명백한 탈락 조건 확인")
+        for pre_position, params in enumerate(combinations, 1):
+            _wait_for_optimization_control()
+            pre_overrides = dict(base_overrides)
+            pre_overrides.update({k: v for k, v in params.items() if k != "entry_multiplier"})
+            pre = run_cached_symbol_backtest(
+                symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
+                start=precheck_start, end=end_text, overrides=pre_overrides, database_path=db,
+                control_check=_wait_for_optimization_control, include_details=False,
+            )
+            identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
+            loose_mdd_limit = min(95.0, max(80.0, float(profile["mdd_limit_percent"]) * 1.5))
+            if int(pre.get("trades") or 0) > 0 and int(pre.get("liquidations") or 0) == 0 and float(pre.get("max_drawdown_percent") or 0) <= loose_mdd_limit:
+                passed.append(identity)
+            if pre_position % 25 == 0 or pre_position == len(combinations):
+                log(f"사전검사 {pre_position}/{len(combinations)} · 통과 {len(passed)}개")
+        if len(passed) >= min(10, max(3, len(combinations) // 10)):
+            checkpoint["precheck_passed"] = passed
+            log(f"사전검사 완료: {len(combinations)}개 중 {len(passed)}개만 전체 기간 검사")
+        else:
+            checkpoint["precheck_passed"] = []
+            log("사전검사 통과 후보가 너무 적어 안전하게 전체 후보를 검사합니다.")
+        checkpoint["precheck_complete"] = True
+        _save_json_atomic(checkpoint_path, checkpoint)
+    passed_set = set(checkpoint.get("precheck_passed") or [])
+    if passed_set:
+        combinations = [p for p in combinations if json.dumps(p, sort_keys=True, separators=(",", ":")) in passed_set]
+    checkpoint["screened_trials"] = len(combinations)
+    best_seen = float("-inf")
+    stale_trials = 0
+    stopped_early = False
     for position, params in enumerate(combinations, 1):
         _wait_for_optimization_control()
         param_identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
@@ -389,6 +425,23 @@ def _optimize_risk_profile(
                 f"수익률 {float(result.get('return_percent') or 0):.2f}% · "
                 f"MDD {float(result.get('max_drawdown_percent') or 0):.2f}%"
             )
+            eligible_now = (
+                int(result.get("trades") or 0) > 0
+                and int(result.get("liquidations") or 0) == 0
+                and float(result.get("max_drawdown_percent") or 0) <= profile["mdd_limit_percent"]
+            )
+            score_now = float(result.get("pnl") or 0) if eligible_now else float("-inf")
+            if score_now > best_seen:
+                best_seen = score_now
+                stale_trials = 0
+            else:
+                stale_trials += 1
+            if early_stop_patience and position >= max(30, early_stop_patience) and stale_trials >= early_stop_patience:
+                stopped_early = True
+                checkpoint["early_stopped_at"] = position
+                _save_json_atomic(checkpoint_path, checkpoint)
+                log(f"자동 조기 종료: {early_stop_patience}회 동안 상위 결과 개선 없음 · {position}회에서 종료")
+                break
         except Exception as exc:
             checkpoint["last_error"] = f"{key}: {type(exc).__name__}: {exc}"
             _save_json_atomic(checkpoint_path, checkpoint)
@@ -458,7 +511,10 @@ def _optimize_risk_profile(
                 base_overrides.get("backtest_compounding_enabled", True)
             ),
         },
-        "tested_combinations": len(combinations),
+        "tested_combinations": len(completed),
+        "screened_combinations": len(combinations),
+        "precheck_enabled": bool(precheck_enabled),
+        "early_stopped": stopped_early,
         "viable_combinations": len(viable),
         "parameters": best["parameters"],
     }
@@ -754,6 +810,84 @@ def _rolling_validate_candidates(
     return {**payload, "checkpoint": str(path), "report_path": str(report_path)}
 
 
+
+def _result_quality(summary: dict) -> dict:
+    trades = int(summary.get("trades") or 0)
+    win_rate = float(summary.get("win_rate") or 0)
+    pf = float(summary.get("profit_factor") or 0)
+    mdd = float(summary.get("max_drawdown_percent") or 0)
+    liquidations = int(summary.get("liquidations") or 0)
+    score = 100
+    warnings: list[str] = []
+    if trades < 30:
+        score -= 30
+        warnings.append("거래 수가 30회 미만이라 표본이 부족합니다.")
+    elif trades < 80:
+        score -= 12
+        warnings.append("거래 수가 80회 미만입니다.")
+    if pf < 1.2:
+        score -= 25
+        warnings.append("Profit Factor가 1.2 미만입니다.")
+    elif pf < 1.5:
+        score -= 10
+    if mdd > 50:
+        score -= 30
+        warnings.append("최대 낙폭이 50%를 초과합니다.")
+    elif mdd > 30:
+        score -= 15
+    if liquidations:
+        score -= 40
+        warnings.append("청산 기록이 있습니다.")
+    if win_rate < 45:
+        score -= 10
+    score = max(0, min(100, score))
+    grade = "A" if score >= 85 else ("B" if score >= 70 else ("C" if score >= 50 else "D"))
+    return {"grade": grade, "score": score, "warnings": warnings}
+
+
+def _monthly_performance(trades: list[dict]) -> list[dict]:
+    months: dict[str, dict] = {}
+    for trade in trades or []:
+        month = str(trade.get("exit_time") or trade.get("entry_time") or "")[:7]
+        if len(month) != 7:
+            continue
+        row = months.setdefault(month, {"month": month, "trades": 0, "wins": 0, "pnl": 0.0})
+        pnl = float(trade.get("pnl") or 0)
+        row["trades"] += 1
+        row["wins"] += int(pnl >= 0)
+        row["pnl"] += pnl
+    for row in months.values():
+        row["pnl"] = round(float(row["pnl"]), 6)
+        row["win_rate"] = round(row["wins"] / row["trades"] * 100, 2) if row["trades"] else 0.0
+    return [months[key] for key in sorted(months)]
+
+
+def _attach_result_insights(summary: dict, overrides: dict, speed_mode: str, stage: str) -> None:
+    summary["quality"] = _result_quality(summary)
+    summary["monthly_performance"] = _monthly_performance(list(summary.get("trades_log") or []))
+    reproducibility = {
+        "symbol": summary.get("symbol"),
+        "timeframe": summary.get("timeframe"),
+        "requested_start": summary.get("requested_start"),
+        "requested_end": summary.get("requested_end"),
+        "data_start": summary.get("data_start"),
+        "data_end": summary.get("data_end"),
+        "cache_sha256": summary.get("cache_sha256"),
+        "execution_model": summary.get("execution_model") or overrides.get("backtest_execution_model"),
+        "fee_percent_per_side": summary.get("fee_percent_per_side", 0.02),
+        "slippage_percent_per_side": summary.get("slippage_percent_per_side", 0.01),
+        "compounding_enabled": summary.get("compounding_enabled"),
+        "speed_mode": speed_mode,
+        "optimization_stage": stage,
+        "strategy_overrides": overrides,
+        "candidate_seed_rule": "sha256-deterministic",
+        "engine_schema": "mobile-backtest-v4",
+    }
+    encoded = json.dumps(reproducibility, sort_keys=True, separators=(",", ":"), default=str)
+    reproducibility["run_signature"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    summary["reproducibility"] = reproducibility
+
+
 def _ssh_bridge():
     from java import jclass
 
@@ -790,6 +924,7 @@ def run_backtest(
     selected_parameters_json: str = "",
     execution_model: str = "signal_close",
     optimization_speed: str = "quick",
+    precheck_enabled: bool = True,
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -848,6 +983,7 @@ def run_backtest(
     broad_optimization_trials = min(int(broad_optimization_trials), int(speed_preset["broad"]))
     refine_optimization_trials = min(int(refine_optimization_trials), int(speed_preset["refine"]))
     optimization_top_n = int(speed_preset["top_n"])
+    early_stop_patience = 40 if speed_mode == "quick" else (150 if speed_mode == "standard" else 0)
     if not 1 <= broad_optimization_trials <= 5000:
         raise ValueError("1차 최적화 조합 수는 1~5000이어야 합니다.")
     if not 1 <= refine_optimization_trials <= 5000:
@@ -904,6 +1040,7 @@ def run_backtest(
     log(f"최적화 단계: {stage_names[selected_stage]}")
     log(f"속도 모드: {speed_preset['label']} · 1차 {broad_optimization_trials}회 · 후속 TOP{optimization_top_n}×{refine_optimization_trials}회")
     log("재실행 가속: 동일 설정 체크포인트와 완료 결과를 자동 재사용합니다.")
+    log(f"빠른 사전검사: {'사용' if precheck_enabled else '사용 안 함'} · 자동 조기 종료: {early_stop_patience or '사용 안 함'}")
     log("기간은 사용자가 선택한 날짜를 그대로 사용합니다.")
     log("고정 비용: 수수료 편도 0.02% · 슬리피지 편도 0.01%")
     log(
@@ -960,6 +1097,7 @@ def run_backtest(
             "stage": "selected_strategy_retest",
             "paper_live_applied": False,
         }
+        _attach_result_insights(summary, overrides, speed_mode, "selected_strategy_retest")
         history_dir = Path(output_dir) / "BacktestResults"
         history_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -993,6 +1131,8 @@ def run_backtest(
         selected_profile,
         broad_trials,
         log,
+        bool(precheck_enabled),
+        early_stop_patience,
     )
     for key in (
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
@@ -1043,6 +1183,7 @@ def run_backtest(
         summary["rolling_final_selection"] = rolling_3m.get("selected")
         summary["rolling_report_path"] = rolling_3m.get("report_path")
     summary["optimization_pipeline"] = pipeline
+    _attach_result_insights(summary, overrides, speed_mode, selected_stage)
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
