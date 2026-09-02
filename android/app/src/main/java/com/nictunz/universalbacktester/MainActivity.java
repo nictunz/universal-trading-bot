@@ -521,11 +521,11 @@ enableResultActions(false);
         logText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
         logText.setClickable(true);
         logText.setFocusable(true);
-        logText.setOnClickListener(v -> showTextDialog("전체 실행 로그", latestFullLog));
+        logText.setOnClickListener(v -> showTextDialog("전체 실행 로그 · 최신순", newestLogFirst(latestFullLog)));
         statusText.setClickable(true);
-        statusText.setOnClickListener(v -> showTextDialog("전체 실행 로그", latestFullLog));
+        statusText.setOnClickListener(v -> showTextDialog("전체 실행 로그 · 최신순", newestLogFirst(latestFullLog)));
         logCard.addView(logText, marginTop(8));
-        TextView logHint = text("최근 10줄만 표시 · 실행 로그 또는 상태를 누르면 전체 로그가 열립니다.", 11, ACCENT, false);
+        TextView logHint = text("최근 10줄만 표시 · 누르면 최신 로그부터 전체 내용이 열립니다.", 11, ACCENT, false);
         logCard.addView(logHint, marginTop(7));
 
         return scroll;
@@ -838,6 +838,20 @@ enableResultActions(false);
     private void appendFullLog(String value) {
         latestFullLog += value == null ? "" : value;
         logText.setText(lastLogLines(latestFullLog, 10));
+    }
+
+    private String newestLogFirst(String value) {
+        if (value == null || value.isEmpty()) return "";
+        String normalized = value.replace("\r\n", "\n").replace('\r', '\n');
+        String[] lines = normalized.split("\n", -1);
+        int end = lines.length;
+        while (end > 0 && lines[end - 1].isEmpty()) end--;
+        StringBuilder newestFirst = new StringBuilder();
+        for (int i = end - 1; i >= 0; i--) {
+            if (newestFirst.length() > 0) newestFirst.append('\n');
+            newestFirst.append(lines[i]);
+        }
+        return newestFirst.toString();
     }
 
     private String lastLogLines(String value, int maxLines) {
