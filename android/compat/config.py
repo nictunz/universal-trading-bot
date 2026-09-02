@@ -57,6 +57,7 @@ _DEFAULTS = {
     "backtest_cross_liquidation_buffer_percent": 25.0,
     "backtest_max_total_multiplier": 15.0,
     "backtest_compounding_enabled": False,
+    "backtest_execution_model": "signal_close",
     "crypto_volume_provider": "none",
     "crypto_volume_fallback_exchanges": "binance,bybit",
     "allow_community_market_data_live": False,
