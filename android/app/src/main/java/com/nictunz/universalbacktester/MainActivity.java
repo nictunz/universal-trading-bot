@@ -65,6 +65,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView executionModelInput;
     private AutoCompleteTextView optimizationStageInput;
     private AutoCompleteTextView optimizationSpeedInput;
+    private AutoCompleteTextView precheckInput;
     private AutoCompleteTextView broadTrialCountInput;
     private AutoCompleteTextView refineTrialCountInput;
     private AutoCompleteTextView threeTickModeInput;
@@ -84,6 +85,7 @@ public class MainActivity extends android.app.Activity {
     private TextView logText;
     private TextView publicKeyText;
     private TextView tradesValue;
+    private TextView qualityValue;
     private TextView winRateValue;
     private TextView pfValue;
     private TextView returnValue;
@@ -100,6 +102,7 @@ public class MainActivity extends android.app.Activity {
     private String lastResultPath = "";
     private String privateKeyPath = "";
     private boolean lastUploadEligible = false;
+    private boolean workloadConfirmed = false;
     private String appliedServiceResultPath = "";
     private String latestFullLog = "";
 
@@ -273,6 +276,21 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
+        precheckInput = autocomplete(
+                new String[]{"사용 · 추천", "사용 안 함"},
+                "사용 · 추천"
+        );
+        backtestCard.addView(labeled("최근 30일 빠른 사전검사", precheckInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "사전검사", precheckInput,
+                new String[]{"사용(추천)", "사용 안 함"},
+                new String[]{"사용 · 추천", "사용 안 함"}
+        ), marginTop(8));
+        backtestCard.addView(text(
+                "거래 없음·청산·과도한 낙폭 후보만 먼저 제외합니다. 통과 후보가 너무 적으면 자동으로 전체 검사를 수행합니다.",
+                11, MUTED, false
+        ), marginTop(7));
+
         optimizationStageInput = autocomplete(
                 new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"},
                 "전체 자동 실행"
@@ -385,6 +403,12 @@ resultActions.addView(tradeHistoryButton, marginTop(6));
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
+Button monthlyButton = actionButton("🗓 월별 성과·손실 구간 보기", Color.rgb(30, 41, 59));
+monthlyButton.setOnClickListener(v -> showMonthlyPerformance());
+resultActions.addView(monthlyButton, marginTop(6));
+Button reproducibilityButton = actionButton("🔒 결과 재현 정보·실행 지문", Color.rgb(30, 41, 59));
+reproducibilityButton.setOnClickListener(v -> showReproducibility());
+resultActions.addView(reproducibilityButton, marginTop(6));
 
 resultActions.addView(resultGroupTitle("② 저장된 결과", "이전 백테스트 다시 불러오기"), marginTop(14));
 Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
@@ -402,6 +426,9 @@ resultActions.addView(resultGroupTitle("④ 전체 묶음", "모든 단계 + MDD
 Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
 shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
 resultActions.addView(shareResultButton, marginTop(6));
+Button bundleButton = actionButton("📦 요약·거래·월별 성과 전체 ZIP 공유", SUCCESS);
+bundleButton.setOnClickListener(v -> exportAndShareAnalysisBundle());
+resultActions.addView(bundleButton, marginTop(6));
 Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공유", Color.rgb(30, 41, 59));
 shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
 resultActions.addView(shareOptimizationButton, marginTop(6));
@@ -495,6 +522,7 @@ enableResultActions(false);
         winRateValue = metric(row, "승률");
         pfValue = metric(row, "Profit Factor");
         tradesValue = metric(row, "거래 수");
+        qualityValue = metric(row, "신뢰도");
         dashboard.addView(scroll, marginTop(10));
         return dashboard;
     }
@@ -607,6 +635,7 @@ enableResultActions(false);
             return;
         }
         boolean allEntriesThreeTick = "모든 진입 3틱룰".equals(threeTickModeInput.getText().toString().trim());
+        boolean precheckEnabled = !precheckInput.getText().toString().startsWith("사용 안");
         String start = startInput.getText().toString().trim();
         String end = endInput.getText().toString().trim();
         Calendar startCal = parseDate(start);
@@ -620,6 +649,30 @@ enableResultActions(false);
             toast("백테스트 기간은 1일 이상 최대 10년(3660일)까지 가능합니다.");
             return;
         }
+
+        if (fixedParameters == null && !workloadConfirmed) {
+            int topN = "quick".equals(optimizationSpeed) ? 3 : ("standard".equals(optimizationSpeed) ? 5 : 10);
+            int broadCount = "quick".equals(optimizationSpeed) ? Math.min(100, broadOptimizationTrials)
+                    : ("standard".equals(optimizationSpeed) ? Math.min(500, broadOptimizationTrials) : broadOptimizationTrials);
+            int refineCount = "quick".equals(optimizationSpeed) ? Math.min(100, refineOptimizationTrials)
+                    : ("standard".equals(optimizationSpeed) ? Math.min(300, refineOptimizationTrials) : refineOptimizationTrials);
+            int estimated = broadCount + (("broad".equals(optimizationStage)) ? 0 : topN * refineCount);
+            String estimateText = estimated < 500 ? "약 10~40분" : (estimated < 2500 ? "약 30분~2시간" : "수 시간 이상");
+            new AlertDialog.Builder(this)
+                    .setTitle("백테스트 실행 전 확인")
+                    .setMessage("예상 핵심 조합 " + estimated + "회\n후속 후보 TOP" + topN
+                            + "\n예상 시간 " + estimateText
+                            + "\n사전검사 " + (precheckEnabled ? "사용" : "사용 안 함")
+                            + "\n\n기기 성능과 거래 수에 따라 실제 시간은 달라집니다.")
+                    .setPositiveButton("실행", (dialog, which) -> {
+                        workloadConfirmed = true;
+                        startBacktest(null);
+                    })
+                    .setNegativeButton("설정 수정", null)
+                    .show();
+            return;
+        }
+        workloadConfirmed = false;
 
         Intent intent = new Intent(this, BacktestForegroundService.class);
         intent.setAction(BacktestForegroundService.ACTION_START);
@@ -640,6 +693,7 @@ enableResultActions(false);
         intent.putExtra("optimization_stage", optimizationStage);
         intent.putExtra("execution_model", executionModel);
         intent.putExtra("optimization_speed", optimizationSpeed);
+        intent.putExtra("precheck_enabled", precheckEnabled);
         if (fixedParameters != null) {
             JSONObject replayPayload = new JSONObject();
             try {
@@ -1326,6 +1380,90 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         sb.append('\n');
     }
 
+
+    private void showMonthlyPerformance() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        JSONArray months = lastSummary.optJSONArray("monthly_performance");
+        if (months == null || months.length() == 0) {
+            showTextDialog("월별 성과", "월별 거래 자료가 없습니다.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        double best = -Double.MAX_VALUE;
+        double worst = Double.MAX_VALUE;
+        String bestMonth = "—";
+        String worstMonth = "—";
+        for (int i = 0; i < months.length(); i++) {
+            JSONObject row = months.optJSONObject(i);
+            if (row == null) continue;
+            double pnl = row.optDouble("pnl", 0.0);
+            if (pnl > best) { best = pnl; bestMonth = row.optString("month"); }
+            if (pnl < worst) { worst = pnl; worstMonth = row.optString("month"); }
+            sb.append(row.optString("month")).append("  ")
+                    .append(String.format(Locale.KOREA, "%+.2f USDT", pnl))
+                    .append(" · ").append(row.optInt("trades")).append("회")
+                    .append(" · 승률 ").append(String.format(Locale.KOREA, "%.1f%%", row.optDouble("win_rate")))
+                    .append('\n');
+        }
+        sb.insert(0, "최고 " + bestMonth + "  " + String.format(Locale.KOREA, "%+.2f USDT", best)
+                + "\n최저 " + worstMonth + "  " + String.format(Locale.KOREA, "%+.2f USDT", worst) + "\n\n");
+        showTextDialog("월별 성과·손실 구간", sb.toString());
+    }
+
+    private void showReproducibility() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        JSONObject repro = lastSummary.optJSONObject("reproducibility");
+        if (repro == null) {
+            showTextDialog("결과 재현 정보", "이 결과는 이전 버전에서 생성되어 실행 지문이 없습니다.");
+            return;
+        }
+        String signature = repro.optString("run_signature", "—");
+        StringBuilder sb = new StringBuilder();
+        sb.append("실행 지문\n").append(signature).append("\n\n")
+                .append("종목  ").append(repro.optString("symbol")).append('\n')
+                .append("타임프레임  ").append(repro.optString("timeframe")).append('\n')
+                .append("요청 기간  ").append(repro.optString("requested_start")).append(" ~ ")
+                .append(repro.optString("requested_end")).append('\n')
+                .append("실제 데이터  ").append(repro.optString("data_start")).append(" ~ ")
+                .append(repro.optString("data_end")).append('\n')
+                .append("체결 모델  ").append(repro.optString("execution_model")).append('\n')
+                .append("수수료/슬리피지  ").append(repro.opt("fee_percent_per_side")).append("% / ")
+                .append(repro.opt("slippage_percent_per_side")).append("%\n")
+                .append("캐시 SHA256  ").append(repro.optString("cache_sha256")).append("\n\n")
+                .append("같은 실행 지문이어야 동일 조건 비교입니다.");
+        showTextDialog("🔒 결과 재현 잠금", sb.toString());
+    }
+
+    private void exportAndShareAnalysisBundle() {
+        if (lastResultPath == null || lastResultPath.isEmpty()) {
+            toast("먼저 완료된 결과를 불러오세요.");
+            return;
+        }
+        statusText.setText("전체 분석 ZIP 생성 중");
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject exported = new JSONObject(bridge.callAttr("export_analysis_bundle", lastResultPath).toString());
+                String path = exported.getString("path");
+                main.post(() -> {
+                    statusText.setText("전체 분석 ZIP 준비 완료");
+                    shareBacktestFile(path, "application/zip", "백테스트 전체 분석 ZIP 공유");
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    appendFullLog("\nANALYSIS BUNDLE ERROR\n" + stackMessage(e) + "\n");
+                    statusText.setText("전체 분석 ZIP 오류");
+                });
+            }
+        });
+    }
+
     private void showResultSummary() {
         if (lastSummary == null) {
             toast("백테스트를 먼저 실행하세요.");
@@ -1359,6 +1497,16 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .append("자산 계산  ").append(sizing.isEmpty() ? "—" : sizing)
                 .append(" · 복리 ").append(compounding ? "사용" : "미사용").append('\n')
                 .append("데이터 지문  ").append(lastSummary.optString("cache_sha256", "—"));
+        JSONObject quality = lastSummary.optJSONObject("quality");
+        if (quality != null) {
+            sb.append("\n\n【결과 신뢰도】\n")
+                    .append("등급 ").append(quality.optString("grade", "—"))
+                    .append(" · ").append(quality.optInt("score", 0)).append("/100");
+            JSONArray warnings = quality.optJSONArray("warnings");
+            if (warnings != null) for (int i = 0; i < warnings.length(); i++) {
+                sb.append("\n• ").append(warnings.optString(i));
+            }
+        }
         if (lastSummary.has("reproduction_comparison")) {
             sb.append("\n\n【TOP10 재검증 일치 확인】\n")
                     .append(lastSummary.opt("reproduction_comparison"));
@@ -1451,6 +1599,13 @@ private void exportAndShareOptimizationStage(String stage, String label) {
 
     private void updateMetrics(JSONObject summary) {
         tradesValue.setText(String.valueOf(summary.optInt("trades", 0)));
+        JSONObject quality = summary.optJSONObject("quality");
+        qualityValue.setText(quality == null ? "—" : quality.optString("grade", "—") + " · " + quality.optInt("score", 0));
+        if (quality != null) {
+            int score = quality.optInt("score", 0);
+            qualityValue.setTextColor(score >= 85 ? Color.rgb(34, 197, 94)
+                    : (score >= 70 ? Color.rgb(250, 204, 21) : Color.rgb(239, 68, 68)));
+        }
         winRateValue.setText(formatMetric(summary, "win_rate", "%"));
         pfValue.setText(formatMetric(summary, "profit_factor", ""));
         returnValue.setText(formatMetric(summary, "return_percent", "%"));
