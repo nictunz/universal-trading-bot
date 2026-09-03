@@ -1,0 +1,24 @@
+timeout: 1800s
+
+substitutions:
+  _REGION: asia-northeast3
+  _REPOSITORY: ci
+  _IMAGE: android-builder
+  _TAG: 35-v1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:${_TAG}
+      - --file
+      - cloudbuild/android-builder.Dockerfile
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:${_TAG}
+

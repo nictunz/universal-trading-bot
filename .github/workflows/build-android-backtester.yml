@@ -1,25 +1,10 @@
 # build-request: single-pass-signed-phone-build
 name: Build Android Backtester APK
 
+# Automatic Android builds moved to Google Cloud Build; GitHub Actions is the manual fallback.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build-android-backtester.yml'
-      - 'android/**'
-      - 'universal_bot/local_cache_core.py'
-      - 'universal_bot/archive_historical.py'
-      - 'universal_bot/historical.py'
-      - 'universal_bot/fast_backtest.py'
-      - 'universal_bot/backtest_service.py'
-      - 'universal_bot/providers/**'
-      - 'universal_bot/adapters/**'
-      - 'universal_bot/strategy/**'
-      - 'universal_bot/config.py'
-      - 'universal_bot/paper.py'
-      - 'tests/**'
-      - 'pyproject.toml'
+
 
 concurrency:
   group: android-backtester-main

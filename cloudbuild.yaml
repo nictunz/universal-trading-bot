@@ -1,0 +1,174 @@
+timeout: 5400s
+
+substitutions:
+  _ANDROID_BUILDER: asia-northeast3-docker.pkg.dev/$PROJECT_ID/ci/android-builder:35-v1
+  _UPDATE_HOST: 34.132.172.40
+  _UPDATE_USER: kpj3669
+  _UPDATE_DIR: /home/kpj3669/.cache/universal-trading-bot/android-updates
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  automapSubstitutions: true
+  diskSizeGb: 100
+
+steps:
+  - id: restore-build-cache
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        mkdir -p /cache/gradle /cache/pip
+        gcloud storage cp "gs://${PROJECT_ID}-cloudbuild-cache/android-cache.tar.gz" /tmp/android-cache.tar.gz || exit 0
+        tar -xzf /tmp/android-cache.tar.gz -C /cache
+    volumes:
+      - name: build-cache
+        path: /cache
+
+  - id: verify-and-build
+    name: ${_ANDROID_BUILDER}
+    entrypoint: bash
+    env:
+      - GRADLE_USER_HOME=/cache/gradle
+      - PIP_CACHE_DIR=/cache/pip
+      - PYTHONUNBUFFERED=1
+    args:
+      - -ceu
+      - |
+        python3 -m venv /workspace/.venv
+        /workspace/.venv/bin/python -m pip install --upgrade pip
+        /workspace/.venv/bin/pip install -e '.[dev]'
+        /workspace/.venv/bin/python -m compileall -q universal_bot
+        /workspace/.venv/bin/pytest -q
+
+        rm -rf android/app/src/main/python/universal_bot
+        cp -R universal_bot android/app/src/main/python/universal_bot
+        cp android/compat/config.py android/app/src/main/python/universal_bot/config.py
+        cp android/compat/historical.py android/app/src/main/python/universal_bot/historical.py
+        find android/app/src/main/python/universal_bot -type d -name __pycache__ -prune -exec rm -rf '{}' + || true
+
+        version_code="$$(date -u +%s)"
+        version_name="1.2.$$(date -u +%Y%m%d%H%M)"
+        printf 'ANDROID_VERSION_CODE=%s\nANDROID_VERSION_NAME=%s\n' "$${version_code}" "$${version_name}" > /workspace/cloudbuild-version.env
+        export ANDROID_VERSION_CODE="$${version_code}" ANDROID_VERSION_NAME="$${version_name}"
+
+        set -o pipefail
+        nice -n 10 gradle -p android :app:assembleRelease --stacktrace 2>&1 | tee /workspace/android-build.log
+        cp android/app/build/outputs/apk/release/app-release-unsigned.apk /workspace/UniversalTradingBacktester-Android-unsigned.apk
+    volumes:
+      - name: build-cache
+        path: /cache
+
+  - id: sign-and-create-manifest
+    name: ${_ANDROID_BUILDER}
+    entrypoint: bash
+    secretEnv:
+      - ANDROID_KEYSTORE_BASE64
+      - ANDROID_KEYSTORE_PASSWORD
+      - ANDROID_KEY_ALIAS
+      - ANDROID_KEY_PASSWORD
+    args:
+      - -ceu
+      - |
+        source /workspace/cloudbuild-version.env
+        export ANDROID_VERSION_CODE ANDROID_VERSION_NAME
+        keystore=/workspace/universal-release.jks
+        printf '%s' "$${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "$${keystore}"
+        chmod 600 "$${keystore}"
+        apksigner="$$(find "$${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+        test -x "$${apksigner}"
+        "$${apksigner}" sign \
+          --ks "$${keystore}" \
+          --ks-key-alias "$${ANDROID_KEY_ALIAS}" \
+          --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+          --key-pass env:ANDROID_KEY_PASSWORD \
+          --out /workspace/UniversalTradingBacktester-Android.apk \
+          /workspace/UniversalTradingBacktester-Android-unsigned.apk
+        "$${apksigner}" verify --verbose /workspace/UniversalTradingBacktester-Android.apk
+
+        apk_sha256="$$(sha256sum /workspace/UniversalTradingBacktester-Android.apk | awk '{print $$1}')"
+        export APK_SHA256="$${apk_sha256}"
+        /workspace/.venv/bin/python - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        data = {
+            "schema_version": 1,
+            "package_id": "com.nictunz.universalbacktester",
+            "version_code": int(os.environ["ANDROID_VERSION_CODE"]),
+            "version_name": os.environ["ANDROID_VERSION_NAME"],
+            "commit": os.environ.get("COMMIT_SHA") or "manual",
+            "apk_name": "UniversalTradingBacktester-Android.apk",
+            "sha256": os.environ["APK_SHA256"],
+            "verified": True,
+            "build_id": os.environ.get("BUILD_ID", ""),
+        }
+        Path("/workspace/android-update.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        PY
+        rm -f "$${keystore}"
+
+  - id: publish-private-update
+    name: ${_ANDROID_BUILDER}
+    entrypoint: bash
+    secretEnv:
+      - ANDROID_UPDATE_SSH_PRIVATE_KEY
+    args:
+      - -ceu
+      - |
+        keyfile=/workspace/android-update-ssh
+        printf '%s\n' "$${ANDROID_UPDATE_SSH_PRIVATE_KEY}" > "$${keyfile}"
+        chmod 600 "$${keyfile}"
+        mkdir -p /root/.ssh
+        ssh-keyscan -T 15 -H "${_UPDATE_HOST}" >> /root/.ssh/known_hosts
+        ssh_options=(-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+        ssh "$${ssh_options[@]}" -i "$${keyfile}" "${_UPDATE_USER}@${_UPDATE_HOST}" "mkdir -p '${_UPDATE_DIR}'"
+        scp "$${ssh_options[@]}" -i "$${keyfile}" /workspace/UniversalTradingBacktester-Android.apk "${_UPDATE_USER}@${_UPDATE_HOST}:${_UPDATE_DIR}/UniversalTradingBacktester-Android.apk.uploading"
+        scp "$${ssh_options[@]}" -i "$${keyfile}" /workspace/android-update.json "${_UPDATE_USER}@${_UPDATE_HOST}:${_UPDATE_DIR}/android-update.json.uploading"
+        ssh "$${ssh_options[@]}" -i "$${keyfile}" "${_UPDATE_USER}@${_UPDATE_HOST}" \
+          "mv '${_UPDATE_DIR}/UniversalTradingBacktester-Android.apk.uploading' '${_UPDATE_DIR}/UniversalTradingBacktester-Android.apk' && mv '${_UPDATE_DIR}/android-update.json.uploading' '${_UPDATE_DIR}/android-update.json'"
+        rm -f "$${keyfile}"
+
+  - id: upload-build-outputs
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        revision="$${SHORT_SHA:-manual-$${BUILD_ID}}"
+        destination="gs://${PROJECT_ID}-cloudbuild-artifacts/android/$${revision}"
+        gcloud storage cp \
+          /workspace/UniversalTradingBacktester-Android.apk \
+          /workspace/UniversalTradingBacktester-Android-unsigned.apk \
+          /workspace/android-update.json \
+          /workspace/android-build.log \
+          "$${destination}/"
+        printf 'Build outputs: %s/\n' "$${destination}"
+
+  - id: save-build-cache
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        tar -czf /tmp/android-cache.tar.gz -C /cache gradle pip
+        gcloud storage cp /tmp/android-cache.tar.gz "gs://${PROJECT_ID}-cloudbuild-cache/android-cache.tar.gz"
+    volumes:
+      - name: build-cache
+        path: /cache
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/android-keystore-base64/versions/latest
+      env: ANDROID_KEYSTORE_BASE64
+    - versionName: projects/$PROJECT_ID/secrets/android-keystore-password/versions/latest
+      env: ANDROID_KEYSTORE_PASSWORD
+    - versionName: projects/$PROJECT_ID/secrets/android-key-alias/versions/latest
+      env: ANDROID_KEY_ALIAS
+    - versionName: projects/$PROJECT_ID/secrets/android-key-password/versions/latest
+      env: ANDROID_KEY_PASSWORD
+    - versionName: projects/$PROJECT_ID/secrets/android-update-ssh-private-key/versions/latest
+      env: ANDROID_UPDATE_SSH_PRIVATE_KEY
+

@@ -1,12 +1,9 @@
 name: Organize backtest result actions
 
+# Automatic hosted-runner work moved to Google Cloud Build; keep this workflow as a manual fallback.
 on:
-  push:
-    paths:
-      - '.github/workflows/organize-backtest-result-actions.yml'
+  workflow_dispatch:
 
-permissions:
-  contents: write
 
 jobs:
   patch:

@@ -1,8 +1,9 @@
 name: tests
 
+# Automatic hosted-runner work moved to Google Cloud Build; keep this workflow as a manual fallback.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+
 
 jobs:
   test:

@@ -1,14 +1,9 @@
 name: apply-result-export-sections
 
+# Automatic hosted-runner work moved to Google Cloud Build; keep this workflow as a manual fallback.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/apply-result-export-sections.yml'
 
-permissions:
-  contents: write
 
 jobs:
   patch:
