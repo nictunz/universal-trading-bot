@@ -1319,7 +1319,7 @@ def run_backtest(
     if bool(overrides.get("backtest_compounding_enabled", True)):
         log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     else:
-        log("계산 방식: 고정식 · 최초자본 1,000 USDT 기준으로 주문 규모와 최대 총노출 유지")
+        log(f"계산 방식: 고정식 · 최초자본 {initial_capital:,.2f} USDT 기준으로 주문 규모와 최대 총노출 유지")
     log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
     log(f"3틱룰 적용: {'모든 진입' if all_entries_three_tick else '첫 진입만'}")
     log(f"자동 시장국면 전환: {'사용' if adaptive_regime_enabled else '사용 안 함'} · 상승=롱 · 하락=숏 · 횡보=양방향 · 고변동성=진입 50%")
@@ -1353,10 +1353,20 @@ def run_backtest(
         same_cache = str(source_context.get("cache_sha256") or "") == str(summary.get("cache_sha256") or "")
         source_execution_model = str(source_context.get("execution_model") or "signal_close")
         same_execution_model = source_execution_model == str(overrides.get("backtest_execution_model"))
+        source_initial_capital = float(source_context.get("initial_capital") or 1000.0)
+        source_compounding = bool(source_context.get("compounding_enabled", False))
+        same_initial_capital = abs(source_initial_capital - initial_capital) < 1e-9
+        same_compounding = source_compounding == bool(overrides.get("backtest_compounding_enabled"))
         summary["reproduction_comparison"] = {
             "same_requested_period": same_period,
             "same_cache_sha256": same_cache,
             "same_execution_model": same_execution_model,
+            "same_initial_capital": same_initial_capital,
+            "same_compounding": same_compounding,
+            "original_initial_capital": source_initial_capital,
+            "retest_initial_capital": initial_capital,
+            "original_compounding": source_compounding,
+            "retest_compounding": bool(overrides.get("backtest_compounding_enabled")),
             "original_execution_model": source_execution_model,
             "retest_execution_model": overrides.get("backtest_execution_model"),
             "original_return_percent": original_return,
@@ -1627,6 +1637,8 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
             "data_end": summary.get("data_end"),
             "cache_sha256": summary.get("cache_sha256"),
             "execution_model": summary.get("execution_model") or base_overrides.get("backtest_execution_model", "signal_close"),
+            "initial_capital": summary.get("initial_capital", base_overrides.get("initial_capital", 1000.0)),
+            "compounding_enabled": summary.get("compounding_enabled", base_overrides.get("backtest_compounding_enabled")),
         }
         items.append(item)
     return json.dumps({
@@ -1742,6 +1754,8 @@ def saved_result_replay_payload(result_path: str) -> str:
             "cache_sha256": stable_cache_sha,
             "cache_fingerprint_kind": "canonical-ohlcv-v1",
             "execution_model": summary.get("execution_model"),
+            "initial_capital": summary.get("initial_capital", effective.get("initial_capital", 1000.0)),
+            "compounding_enabled": summary.get("compounding_enabled", effective.get("backtest_compounding_enabled")),
             "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
         },
     }, ensure_ascii=False)
