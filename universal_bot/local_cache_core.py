@@ -204,6 +204,26 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def sha256_ohlcv_range(path: Path, start_text: str, end_text: str) -> str:
+    """Stable fingerprint of the candle values, independent of SQLite page layout."""
+    start_ms = int(parse_day(start_text).timestamp() * 1000)
+    end_ms = int(parse_day(end_text, end=True).timestamp() * 1000)
+    h = hashlib.sha256()
+    with sqlite3.connect(path) as con:
+        cursor = con.execute(
+            "SELECT asset_class, exchange, symbol, timeframe, timestamp, "
+            "open, high, low, close, volume FROM ohlcv "
+            "WHERE timestamp>=? AND timestamp<=? "
+            "ORDER BY asset_class, exchange, symbol, timeframe, timestamp",
+            (start_ms, end_ms),
+        )
+        for row in cursor:
+            encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            h.update(encoded.encode("utf-8"))
+            h.update(b"\n")
+    return h.hexdigest()
+
+
 def _downsample_equity(points: list[dict], max_points: int = 1200) -> list[dict]:
     if len(points) <= max_points:
         return points
@@ -363,7 +383,8 @@ def build_cache_and_backtest(
         "server_upload_eligible": upload_eligible,
         "database": str(db),
         "fast_cache": True,
-        "cache_sha256": sha256_file(db),
+        "cache_sha256": sha256_ohlcv_range(db, start_text, end_text),
+        "cache_fingerprint_kind": "canonical-ohlcv-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     result_path = output_dir / result_name
