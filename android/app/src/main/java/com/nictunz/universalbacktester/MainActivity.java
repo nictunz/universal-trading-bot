@@ -72,6 +72,7 @@ public class MainActivity extends android.app.Activity {
     private AutoCompleteTextView threeTickModeInput;
     private EditText startInput;
     private EditText endInput;
+    private EditText initialCapitalInput;
     private EditText hostInput;
     private EditText userInput;
     private EditText remoteInput;
@@ -233,6 +234,13 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
+        initialCapitalInput = edit("1000");
+        backtestCard.addView(labeled("초기자산 (USDT)", initialCapitalInput), marginTop(12));
+        backtestCard.addView(text(
+                "예: 1000 · 허용 범위 10~1,000,000,000 USDT",
+                11, MUTED, false
+        ), marginTop(7));
+
         sizingModeInput = autocomplete(new String[]{"복리식", "고정식"}, "복리식");
         backtestCard.addView(labeled("자산 계산 방식", sizingModeInput), marginTop(12));
         backtestCard.addView(quickChoiceRow(
@@ -242,7 +250,7 @@ public class MainActivity extends android.app.Activity {
                 new String[]{"복리식", "고정식"}
         ), marginTop(8));
         backtestCard.addView(text(
-                "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=최초 1,000 USDT 기준을 계속 사용",
+                "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=입력한 초기자산 기준을 계속 사용",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -635,6 +643,17 @@ enableResultActions(false);
         String sizingMode = sizingModeInput.getText().toString().trim();
         boolean compoundingEnabled = !"고정식".equals(sizingMode);
         sizingMode = compoundingEnabled ? "복리식" : "고정식";
+        double initialCapital;
+        try {
+            initialCapital = Double.parseDouble(initialCapitalInput.getText().toString().trim().replace(",", ""));
+        } catch (Exception ignored) {
+            toast("초기자산을 숫자로 입력하세요. 예: 1000");
+            return;
+        }
+        if (initialCapital < 10.0 || initialCapital > 1_000_000_000.0) {
+            toast("초기자산은 10~1,000,000,000 USDT 범위로 입력하세요.");
+            return;
+        }
         String executionModel = executionModelInput.getText().toString().contains("다음 봉")
                 ? "next_open" : "signal_close";
         String speedLabel = optimizationSpeedInput.getText().toString().trim();
@@ -717,6 +736,7 @@ enableResultActions(false);
         intent.putExtra("refine_optimization_trials", refineOptimizationTrials);
         intent.putExtra("all_entries_three_tick", allEntriesThreeTick);
         intent.putExtra("compounding_enabled", compoundingEnabled);
+        intent.putExtra("initial_capital", initialCapital);
         intent.putExtra("optimization_stage", optimizationStage);
         intent.putExtra("execution_model", executionModel);
         intent.putExtra("optimization_speed", optimizationSpeed);
@@ -728,7 +748,11 @@ enableResultActions(false);
                 replayPayload.put("parameters", fixedParameters);
                 replayPayload.put("execution_model_override", executionModel);
                 if (selectedStrategyRow != null) {
-                    replayPayload.put("original_result", selectedStrategyRow.optJSONObject("result"));
+                    JSONObject originalResult = selectedStrategyRow.optJSONObject("result");
+                    if (originalResult == null) {
+                        originalResult = selectedStrategyRow.optJSONObject("original_result");
+                    }
+                    replayPayload.put("original_result", originalResult == null ? new JSONObject() : originalResult);
                     replayPayload.put("source_context", selectedStrategyRow.optJSONObject("source_context"));
                     replayPayload.put("source_rank", selectedStrategyRow.optInt("rank", 0));
                 }
@@ -748,6 +772,7 @@ enableResultActions(false);
         enableUpload(false);
         enableResultActions(false);
         setFullLog((fixedParameters == null ? "백그라운드 최적화 시작\n" : "선택 전략 기간 재백테스트 시작\n") + "프로필: " + riskProfile
+                + " · 초기자산: " + String.format(Locale.KOREA, "%,.2f USDT", initialCapital)
                 + " · 계산: " + sizingMode
                 + " · 체결: " + ("next_open".equals(executionModel) ? "다음 봉 시가" : "신호 봉 종가")
                 + " · 속도: " + (optimizationSpeed.equals("quick") ? "빠른" : (optimizationSpeed.equals("standard") ? "표준" : "정밀"))
@@ -1265,6 +1290,9 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         String savedTimeframe = summary.optString("timeframe", "");
         if (!savedSymbol.isEmpty()) symbolInput.setText(savedSymbol, false);
         if (!savedTimeframe.isEmpty()) timeframeInput.setText(savedTimeframe, false);
+        if (summary.has("initial_capital")) {
+            initialCapitalInput.setText(String.valueOf(summary.optDouble("initial_capital", 1000.0)));
+        }
         String savedSizingMode = summary.optString("sizing_mode", "");
         if (!savedSizingMode.isEmpty()) {
             sizingModeInput.setText(
@@ -1764,8 +1792,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 ? "현실형 · 다음 봉 시가"
                 : "기존형 · 신호 봉 종가";
         String[] sizingKeys = {"sizing_mode", "compounding_enabled"};
-        String sizing = lastSummary.optString(sizingKeys[0], "");
-        boolean compounding = lastSummary.optBoolean(sizingKeys[1], false);
+        boolean compounding = lastSummary.optBoolean(sizingKeys[1],
+                "compound_current_equity".equals(lastSummary.optString(sizingKeys[0], "")));
+        String sizing = lastSummary.optString(sizingKeys[0],
+                compounding ? "compound_current_equity" : "fixed_initial_equity");
+        String sizingLabel = compounding ? "복리식 · 현재 순자산 기준" : "고정식 · 초기자산 기준";
+        double initialCapital = lastSummary.optDouble("initial_capital", 1000.0);
+        double finalEquity = lastSummary.optDouble("final_equity",
+                initialCapital + lastSummary.optDouble("pnl", 0.0));
         StringBuilder sb = new StringBuilder();
         sb.append("【성과】\n")
                 .append("총 수익률  ").append(formatMetric(lastSummary, "return_percent", "%")).append('\n')
@@ -1784,8 +1818,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .append(" ~ ").append(lastSummary.optString("data_end", "—")).append('\n')
                 .append("봉 수  ").append(lastSummary.optInt("bars", 0)).append('\n')
                 .append("체결 모델  ").append(executionLabel).append('\n')
-                .append("자산 계산  ").append(sizing.isEmpty() ? "—" : sizing)
+                .append("초기자산  ").append(String.format(Locale.KOREA, "%,.2f USDT", initialCapital)).append('\n')
+                .append("자산 계산  ").append(sizingLabel)
                 .append(" · 복리 ").append(compounding ? "사용" : "미사용").append('\n')
+                .append("최종자산  ").append(String.format(Locale.KOREA, "%,.2f USDT", finalEquity)).append('\n')
                 .append("데이터 지문  ").append(lastSummary.optString("cache_sha256", "—"));
         JSONObject quality = lastSummary.optJSONObject("quality");
         if (quality != null) {
