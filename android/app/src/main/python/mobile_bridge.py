@@ -1626,12 +1626,103 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
 
 
 
+
+def find_saved_results(output_dir: str, sort_mode: str = "return", symbol_filter: str = "", limit: int = 50) -> str:
+    history_dir = Path(output_dir) / "BacktestResults"
+    paths = list(history_dir.glob("*-backtest.json")) if history_dir.is_dir() else []
+    paths.extend(Path(output_dir).glob("*backtest.json"))
+    items: list[dict] = []
+    for path in sorted(set(paths), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+            symbol = str(summary.get("symbol") or "")
+            if symbol_filter and symbol_filter.upper() not in symbol.upper():
+                continue
+            db = Path(str(summary.get("database") or ""))
+            quality = summary.get("quality") or {}
+            gate = (summary.get("validation_suite") or {}).get("safety_gate") or {}
+            selection = summary.get("risk_profile_selection") or {}
+            params_available = isinstance(selection.get("parameters"), dict)
+            items.append({
+                "path": str(path),
+                "db": str(db),
+                "summary": _compact_saved_summary(summary),
+                "label": f"{symbol} · {summary.get('requested_start', '-')}~{summary.get('requested_end', '-')}",
+                "created_at": summary.get("created_at") or datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "return_percent": float(summary.get("return_percent") or 0),
+                "max_drawdown_percent": float(summary.get("max_drawdown_percent") or 0),
+                "profit_factor": float(summary.get("profit_factor") or 0),
+                "trades": int(summary.get("trades") or 0),
+                "quality_grade": quality.get("grade") or "—",
+                "quality_score": quality.get("score"),
+                "safety_status": gate.get("status") or "—",
+                "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
+                "parameters_available": params_available,
+                "file_exists": path.is_file(),
+                "database_exists": db.is_file(),
+            })
+        except Exception:
+            continue
+    mode = str(sort_mode or "return").lower()
+    if mode == "recent":
+        items.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    elif mode == "mdd":
+        items.sort(key=lambda row: (float(row.get("max_drawdown_percent") or 0), -float(row.get("return_percent") or 0)))
+    elif mode == "quality":
+        items.sort(key=lambda row: (float(row.get("quality_score") or -1), float(row.get("return_percent") or 0)), reverse=True)
+    else:
+        items.sort(key=lambda row: (float(row.get("return_percent") or 0), -float(row.get("max_drawdown_percent") or 0)), reverse=True)
+    return json.dumps({"items": items[:max(1, min(int(limit), 50))], "sort_mode": mode}, ensure_ascii=False)
+
+
+def saved_result_replay_payload(result_path: str) -> str:
+    path = Path(result_path)
+    if not path.is_file():
+        raise RuntimeError(f"결과 파일이 없습니다: {result_path}")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    selection = summary.get("risk_profile_selection") or {}
+    parameters = selection.get("parameters")
+    parameter_source = "대표 결과"
+    if not isinstance(parameters, dict):
+        final_selection = summary.get("rolling_final_selection") or {}
+        parameters = final_selection.get("parameters")
+        parameter_source = "롤링 최종 선정"
+    if not isinstance(parameters, dict):
+        raise RuntimeError("이 결과에는 동일 수치 재검증용 전략 파라미터가 없습니다.")
+    effective = dict(summary.get("optimization_base_overrides") or FIXED_BACKTEST)
+    effective.update(parameters)
+    entry = float(parameters.get("entry_multiplier", effective.get("entry_multiplier", 1.0)))
+    effective["entry_multiplier"] = entry
+    effective["order_percent_of_equity"] = float(parameters.get("order_percent_of_equity", entry * 100.0))
+    return json.dumps({
+        "parameters": effective,
+        "parameter_source": parameter_source,
+        "original_result": {
+            "return_percent": summary.get("return_percent"),
+            "max_drawdown_percent": summary.get("max_drawdown_percent"),
+            "win_rate": summary.get("win_rate"),
+            "profit_factor": summary.get("profit_factor"),
+            "trades": summary.get("trades"),
+        },
+        "source_context": {
+            "source_result": str(path),
+            "requested_start": summary.get("requested_start"),
+            "requested_end": summary.get("requested_end"),
+            "data_start": summary.get("data_start"),
+            "data_end": summary.get("data_end"),
+            "cache_sha256": summary.get("cache_sha256"),
+            "execution_model": summary.get("execution_model"),
+            "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
+        },
+    }, ensure_ascii=False)
+
+
 def compare_recent_results(output_dir: str, limit: int = 5) -> str:
     history_dir = Path(output_dir) / "BacktestResults"
     paths = sorted(history_dir.glob("*-backtest.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     rows = []
     keys = ("return_percent", "max_drawdown_percent", "win_rate", "profit_factor", "trades")
-    for path in paths[:max(2, min(int(limit), 5))]:
+    for path in paths[:max(2, min(int(limit), 50))]:
         try:
             summary = json.loads(path.read_text(encoding="utf-8"))
             rows.append({
