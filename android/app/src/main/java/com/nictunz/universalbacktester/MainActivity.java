@@ -720,6 +720,21 @@ enableResultActions(false);
         }
         workloadConfirmed = false;
 
+        if (fixedParameters != null && selectedStrategyRow != null) {
+            JSONObject sourceContext = selectedStrategyRow.optJSONObject("source_context");
+            String originalExecutionModel = sourceContext == null ? ""
+                    : sourceContext.optString("execution_model", "");
+            if ("next_open".equals(originalExecutionModel) || "signal_close".equals(originalExecutionModel)) {
+                executionModel = originalExecutionModel;
+                executionModelInput.setText(
+                        "next_open".equals(executionModel)
+                                ? "현실형 · 다음 봉 시가 체결"
+                                : "기존형 · 신호 봉 종가 체결",
+                        false
+                );
+            }
+        }
+
         Intent intent = new Intent(this, BacktestForegroundService.class);
         intent.setAction(BacktestForegroundService.ACTION_START);
         intent.putExtra("symbol", symbol);
@@ -1431,9 +1446,17 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         String period = comparison.optBoolean("same_requested_period", false) ? "동일" : "다름";
         String cache = comparison.optBoolean("same_cache_sha256", false) ? "동일" : "변경됨";
         String model = comparison.optBoolean("same_execution_model", false) ? "동일" : "다름";
+        String originalModel = "next_open".equals(comparison.optString("original_execution_model"))
+                ? "현실형 · 다음 봉 시가" : "기존형 · 신호 봉 종가";
+        String retestModel = "next_open".equals(comparison.optString("retest_execution_model"))
+                ? "현실형 · 다음 봉 시가" : "기존형 · 신호 봉 종가";
+        String capital = comparison.has("same_initial_capital")
+                ? (comparison.optBoolean("same_initial_capital") ? "동일" : "다름") : "확인 불가";
+        String compound = comparison.has("same_compounding")
+                ? (comparison.optBoolean("same_compounding") ? "동일" : "다름") : "확인 불가";
         String message = String.format(
                 Locale.KOREA,
-                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n체결 모델: %s\n\n기간·캐시·체결 모델이 모두 같으면 같은 결과가 재현됩니다.",
+                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n체결 모델: %s\n  원본: %s\n  재검증: %s\n초기자산: %s\n복리 설정: %s\n\n전략 재현은 기간·캐시·체결 모델이 같아야 합니다. 초기자산이나 복리 설정을 바꾸면 수익 금액과 수익률 경로가 달라질 수 있습니다.",
                 comparison.optDouble("original_return_percent", 0.0),
                 comparison.optDouble("retest_return_percent", 0.0),
                 comparison.optDouble("return_difference_percent_points", 0.0),
@@ -1442,7 +1465,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 comparison.optDouble("mdd_difference_percent_points", 0.0),
                 period,
                 cache,
-                model
+                model,
+                originalModel,
+                retestModel,
+                capital,
+                compound
         );
         showTextDialog("TOP10 원본 ↔ 재백테스트 비교", message);
     }
@@ -1682,7 +1709,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                         String capital = initialCapitalInput.getText().toString().trim();
                         new AlertDialog.Builder(this)
                                 .setTitle("현재 자산설정으로 재검증")
-                                .setMessage("저장된 전략 수치와 원래 기간을 사용하고, 현재 화면의 자산설정을 적용합니다.\n\n기간: "
+                                .setMessage("저장된 전략 수치·기간·체결 모델은 원본 그대로 사용하고, 현재 화면의 초기자산과 복리 설정만 적용합니다.\n\n기간: "
                                         + period + "\n초기자산: " + capital + " USDT\n계산 방식: " + moneyMode
                                         + "\n\n복리식이면 매 진입마다 현재 순자산으로 주문 규모를 다시 계산합니다."
                                         + "\n장시간 걸릴 수 있으며 실행 중에도 앱을 닫지 마세요.")
