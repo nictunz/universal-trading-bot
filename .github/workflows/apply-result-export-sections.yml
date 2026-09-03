@@ -4,6 +4,8 @@ name: apply-result-export-sections
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
 
 jobs:
   patch:

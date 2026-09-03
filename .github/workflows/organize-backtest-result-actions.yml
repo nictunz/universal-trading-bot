@@ -4,6 +4,8 @@ name: Organize backtest result actions
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
 
 jobs:
   patch:
