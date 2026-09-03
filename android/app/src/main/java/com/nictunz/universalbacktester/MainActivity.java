@@ -99,6 +99,7 @@ public class MainActivity extends android.app.Activity {
     private JSONObject selectedStrategyParameters;
     private JSONObject selectedStrategyRow;
     private TextView selectedStrategyText;
+    private TextView pinnedResultText;
 
     private String lastDbPath = "";
     private String lastResultPath = "";
@@ -123,6 +124,7 @@ public class MainActivity extends android.app.Activity {
             Python.start(new AndroidPlatform(this));
         }
         setContentView(buildUi());
+        restorePinnedSelections();
         loadPhoneKey();
         loadSavedResults(true);
     }
@@ -243,12 +245,6 @@ public class MainActivity extends android.app.Activity {
 
         sizingModeInput = autocomplete(new String[]{"복리식", "고정식"}, "복리식");
         backtestCard.addView(labeled("자산 계산 방식", sizingModeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "계산 방식 선택",
-                sizingModeInput,
-                new String[]{"복리식", "고정식"},
-                new String[]{"복리식", "고정식"}
-        ), marginTop(8));
         backtestCard.addView(text(
                 "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=입력한 초기자산 기준을 계속 사용",
                 11, MUTED, false
@@ -259,12 +255,6 @@ public class MainActivity extends android.app.Activity {
                 "현실형 · 다음 봉 시가 체결"
         );
         backtestCard.addView(labeled("백테스트 체결 모델", executionModelInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "체결 방식",
-                executionModelInput,
-                new String[]{"현실형(추천)", "기존형(비교)"},
-                new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"}
-        ), marginTop(8));
         backtestCard.addView(text(
                 "현실형=신호 확정 후 다음 봉 시가 진입 · 기존형=예전 결과와 비교하기 위한 신호 봉 종가 진입",
                 11, MUTED, false
@@ -290,11 +280,6 @@ public class MainActivity extends android.app.Activity {
                 "자동 전환 사용 · 추천"
         );
         backtestCard.addView(labeled("시장 국면별 전략 자동 전환", adaptiveRegimeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "국면 전략", adaptiveRegimeInput,
-                new String[]{"자동 전환(추천)", "고정 전략"},
-                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"}
-        ), marginTop(8));
         backtestCard.addView(text(
                 "과거 288개 마감봉으로 자동 판단: 상승장=롱 · 하락장=숏 · 횡보장=양방향 · 고변동성=진입 50%/추가진입 제한 · 저변동성=정상 진입",
                 11, MUTED, false
@@ -305,11 +290,6 @@ public class MainActivity extends android.app.Activity {
                 "사용 · 추천"
         );
         backtestCard.addView(labeled("최근 30일 빠른 사전검사", precheckInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "사전검사", precheckInput,
-                new String[]{"사용(추천)", "사용 안 함"},
-                new String[]{"사용 · 추천", "사용 안 함"}
-        ), marginTop(8));
         backtestCard.addView(text(
                 "거래 없음·청산·과도한 낙폭 후보만 먼저 제외합니다. 통과 후보가 너무 적으면 자동으로 전체 검사를 수행합니다.",
                 11, MUTED, false
@@ -353,11 +333,6 @@ public class MainActivity extends android.app.Activity {
 
         threeTickModeInput = autocomplete(new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}, "첫 진입만 3틱룰");
         backtestCard.addView(labeled("3틱룰 적용 범위", threeTickModeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "3틱룰", threeTickModeInput,
-                new String[]{"첫 진입만", "모든 진입"},
-                new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}
-        ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
@@ -436,6 +411,11 @@ resultActions.addView(validationButton, marginTop(6));
 Button comparisonButton = actionButton("🔎 저장 결과 찾기·비교·재검증", Color.rgb(30, 41, 59));
 comparisonButton.setOnClickListener(v -> showRecentResultComparison());
 resultActions.addView(comparisonButton, marginTop(6));
+pinnedResultText = text("고정된 저장 결과 없음", 12, MUTED, false);
+resultActions.addView(pinnedResultText, marginTop(6));
+Button reopenPinnedButton = actionButton("📌 고정된 결과 다시 열기", Color.rgb(30, 41, 59));
+reopenPinnedButton.setOnClickListener(v -> reopenPinnedResult());
+resultActions.addView(reopenPinnedButton, marginTop(6));
 Button monthlyButton = actionButton("🗓 월별 성과·손실 구간 보기", Color.rgb(30, 41, 59));
 monthlyButton.setOnClickListener(v -> showMonthlyPerformance());
 resultActions.addView(monthlyButton, marginTop(6));
@@ -443,19 +423,14 @@ Button reproducibilityButton = actionButton("🔒 결과 재현 정보·실행 �
 reproducibilityButton.setOnClickListener(v -> showReproducibility());
 resultActions.addView(reproducibilityButton, marginTop(6));
 
-resultActions.addView(resultGroupTitle("② 저장된 결과", "이전 백테스트 다시 불러오기"), marginTop(14));
-Button savedResultsButton = actionButton("저장된 백테스트 기록 불러오기", Color.rgb(30, 41, 59));
-savedResultsButton.setOnClickListener(v -> loadSavedResults(false));
-resultActions.addView(savedResultsButton, marginTop(6));
-
-resultActions.addView(resultGroupTitle("③ 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
+resultActions.addView(resultGroupTitle("② 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
 resultActions.addView(stageExportButton("1차 전체 탐색 결과", "broad"), marginTop(6));
 resultActions.addView(stageExportButton("2차 정밀 탐색 결과", "refined"), marginTop(6));
 resultActions.addView(stageExportButton("3차 6개월 롤링 결과", "rolling6"), marginTop(6));
 resultActions.addView(stageExportButton("4차 3개월 롤링 결과", "rolling3"), marginTop(6));
 resultActions.addView(stageExportButton("5차 최종 선정 결과", "final"), marginTop(6));
 
-resultActions.addView(resultGroupTitle("④ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
+resultActions.addView(resultGroupTitle("③ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
 Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
 shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
 resultActions.addView(shareResultButton, marginTop(6));
@@ -1398,7 +1373,9 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                                     selectedStrategyParameters.optDouble("min_sl_percent", 0.0),
                                     selectedStrategyParameters.optDouble("max_sl_percent", 0.0)
                             ));
-                            toast("전략 수치가 자동 입력됐습니다. 기간을 고른 뒤 재백테스트하세요.");
+                            selectedStrategyText.setTextColor(ACCENT);
+                            persistSelectedStrategy();
+                            toast("전략 수치를 저장했습니다. 앱을 나가도 선택이 유지됩니다.");
                         })
                         .setNegativeButton("닫기", null)
                         .show());
@@ -1617,7 +1594,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                             .setTitle(title + " · " + items.length() + "개")
                             .setItems(labels, (dialog, which) -> {
                                 JSONObject selected = items.optJSONObject(which);
-                                if (selected != null) showSavedResultActions(selected);
+                                if (selected != null) {
+                                    pinSavedResult(selected);
+                                    showSavedResultActions(selected);
+                                }
                             })
                             .setNegativeButton("닫기", null)
                             .show();
@@ -1701,6 +1681,8 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                                     + "\n" + item.optString("label", path)
                     );
                     selectedStrategyText.setTextColor(ACCENT);
+                    pinSavedResult(item);
+                    persistSelectedStrategy();
                     statusText.setText("동일 수치 재검증 준비 완료");
                     if (runNow) {
                         String period = startInput.getText().toString().trim() + " ~ "
@@ -1728,6 +1710,80 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 });
             }
         });
+    }
+
+    private void persistSelectedStrategy() {
+        if (selectedStrategyParameters == null || selectedStrategyRow == null) return;
+        getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                .putString("pinned_strategy_parameters", selectedStrategyParameters.toString())
+                .putString("pinned_strategy_row", selectedStrategyRow.toString())
+                .putString("pinned_strategy_label", selectedStrategyText.getText().toString())
+                .apply();
+    }
+
+    private void pinSavedResult(JSONObject item) {
+        if (item == null) return;
+        String label = item.optString("label", "저장 결과");
+        JSONObject summary = item.optJSONObject("summary");
+        String display = label;
+        if (summary != null) {
+            display = String.format(
+                    Locale.KOREA,
+                    "📌 고정됨 · %s\n수익률 %.2f%% · MDD %.2f%% · PF %.2f",
+                    label,
+                    summary.optDouble("return_percent"),
+                    summary.optDouble("max_drawdown_percent"),
+                    summary.optDouble("profit_factor")
+            );
+        }
+        getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                .putString("pinned_result_item", item.toString())
+                .putString("pinned_result_label", display)
+                .apply();
+        if (pinnedResultText != null) {
+            pinnedResultText.setText(display);
+            pinnedResultText.setTextColor(ACCENT);
+        }
+    }
+
+    private void reopenPinnedResult() {
+        String raw = getSharedPreferences("universal_bot", MODE_PRIVATE)
+                .getString("pinned_result_item", "");
+        if (raw == null || raw.isEmpty()) {
+            toast("먼저 저장 결과 찾기에서 결과를 선택하세요.");
+            return;
+        }
+        try {
+            showSavedResultActions(new JSONObject(raw));
+        } catch (Exception e) {
+            toast("고정된 결과를 읽지 못했습니다. 다시 선택하세요.");
+        }
+    }
+
+    private void restorePinnedSelections() {
+        SharedPreferences prefs = getSharedPreferences("universal_bot", MODE_PRIVATE);
+        String parameters = prefs.getString("pinned_strategy_parameters", "");
+        String row = prefs.getString("pinned_strategy_row", "");
+        String strategyLabel = prefs.getString("pinned_strategy_label", "");
+        try {
+            if (parameters != null && !parameters.isEmpty() && row != null && !row.isEmpty()) {
+                selectedStrategyParameters = new JSONObject(parameters);
+                selectedStrategyRow = new JSONObject(row);
+                selectedStrategyText.setText(
+                        strategyLabel == null || strategyLabel.isEmpty()
+                                ? "저장된 전략 수치 복원 완료" : strategyLabel
+                );
+                selectedStrategyText.setTextColor(ACCENT);
+            }
+        } catch (Exception ignored) {
+            prefs.edit().remove("pinned_strategy_parameters")
+                    .remove("pinned_strategy_row").remove("pinned_strategy_label").apply();
+        }
+        String pinnedLabel = prefs.getString("pinned_result_label", "");
+        if (pinnedResultText != null && pinnedLabel != null && !pinnedLabel.isEmpty()) {
+            pinnedResultText.setText(pinnedLabel);
+            pinnedResultText.setTextColor(ACCENT);
+        }
     }
 
     private void showMonthlyPerformance() {
