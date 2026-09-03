@@ -1248,13 +1248,15 @@ def run_backtest(
         raise ValueError("정밀 최적화 후보당 조합 수는 1~5000이어야 합니다.")
     if selected_profile not in RISK_PROFILES:
         selected_profile = "공격형"
-    if selected_parameters:
-        overrides.update({
-            key: value for key, value in selected_parameters.items()
-            if key != "entry_multiplier"
-        })
     overrides.update(FIXED_BACKTEST)
-    overrides["adaptive_regime_enabled"] = bool(adaptive_regime_enabled)
+    if selected_parameters:
+        # Exact replay values must win over app defaults. The previous order
+        # applied FIXED_BACKTEST last and silently reset many selected values.
+        overrides.update(selected_parameters)
+    overrides["adaptive_regime_enabled"] = bool(
+        selected_parameters.get("adaptive_regime_enabled", adaptive_regime_enabled)
+        if selected_parameters else adaptive_regime_enabled
+    )
     if selected_parameters:
         overrides["backtest_compounding_enabled"] = bool(
             selected_parameters.get("backtest_compounding_enabled", compounding_enabled)
@@ -1645,6 +1647,7 @@ def find_saved_results(output_dir: str, sort_mode: str = "return", symbol_filter
             params_available = (
                 isinstance(selection.get("parameters"), dict)
                 or isinstance((summary.get("rolling_final_selection") or {}).get("parameters"), dict)
+                or isinstance(summary.get("selected_strategy_parameters"), dict)
             )
             items.append({
                 "path": str(path),
@@ -1690,6 +1693,9 @@ def saved_result_replay_payload(result_path: str) -> str:
         final_selection = summary.get("rolling_final_selection") or {}
         parameters = final_selection.get("parameters")
         parameter_source = "롤링 최종 선정"
+    if not isinstance(parameters, dict):
+        parameters = summary.get("selected_strategy_parameters")
+        parameter_source = "이전 재검증 전략"
     if not isinstance(parameters, dict):
         raise RuntimeError("이 결과에는 동일 수치 재검증용 전략 파라미터가 없습니다.")
     effective = dict(summary.get("optimization_base_overrides") or FIXED_BACKTEST)
