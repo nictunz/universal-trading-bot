@@ -1642,7 +1642,10 @@ def find_saved_results(output_dir: str, sort_mode: str = "return", symbol_filter
             quality = summary.get("quality") or {}
             gate = (summary.get("validation_suite") or {}).get("safety_gate") or {}
             selection = summary.get("risk_profile_selection") or {}
-            params_available = isinstance(selection.get("parameters"), dict)
+            params_available = (
+                isinstance(selection.get("parameters"), dict)
+                or isinstance((summary.get("rolling_final_selection") or {}).get("parameters"), dict)
+            )
             items.append({
                 "path": str(path),
                 "db": str(db),
