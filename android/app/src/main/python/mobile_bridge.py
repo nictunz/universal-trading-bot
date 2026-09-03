@@ -22,6 +22,7 @@ from universal_bot.local_cache_core import (
     DEFAULT_USER,
     build_cache_and_backtest,
     server_upload_eligible,
+    sha256_ohlcv_range,
 )
 
 
@@ -1183,6 +1184,7 @@ def run_backtest(
     optimization_speed: str = "quick",
     precheck_enabled: bool = True,
     adaptive_regime_enabled: bool = True,
+    initial_capital: float = 1000.0,
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -1257,10 +1259,14 @@ def run_backtest(
         selected_parameters.get("adaptive_regime_enabled", adaptive_regime_enabled)
         if selected_parameters else adaptive_regime_enabled
     )
+    initial_capital = float(initial_capital)
+    if not 10.0 <= initial_capital <= 1_000_000_000.0:
+        raise ValueError("초기자산은 10~1,000,000,000 USDT 범위여야 합니다.")
+    overrides["initial_capital"] = initial_capital
     if selected_parameters:
-        overrides["backtest_compounding_enabled"] = bool(
-            selected_parameters.get("backtest_compounding_enabled", compounding_enabled)
-        )
+        # Money settings are explicit app inputs. Strategy signals stay identical,
+        # while the user can intentionally compare fixed vs compound sizing.
+        overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
         requested_replay_model = str(
             replay_payload.get("execution_model_override")
             or selected_parameters.get("backtest_execution_model")
@@ -1309,6 +1315,7 @@ def run_backtest(
         + ("현실형 · 신호 확정 후 다음 봉 시가" if overrides.get("backtest_execution_model") == "next_open"
            else "기존형 · 신호 봉 종가")
     )
+    log(f"초기자산: {initial_capital:,.2f} USDT")
     if bool(overrides.get("backtest_compounding_enabled", True)):
         log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     else:
@@ -1327,6 +1334,10 @@ def run_backtest(
         strategy_overrides=overrides,
         control_check=_wait_for_optimization_control,
     )
+    summary["initial_capital"] = initial_capital
+    summary["final_equity"] = initial_capital + float(summary.get("pnl") or 0)
+    summary["sizing_mode"] = "compound_current_equity" if bool(overrides.get("backtest_compounding_enabled")) else "fixed_initial_equity"
+    summary["compounding_enabled"] = bool(overrides.get("backtest_compounding_enabled"))
     if selected_parameters:
         summary["risk_profile"] = selected_profile
         summary["selected_strategy_retest"] = True
@@ -1703,6 +1714,15 @@ def saved_result_replay_payload(result_path: str) -> str:
     entry = float(parameters.get("entry_multiplier", effective.get("entry_multiplier", 1.0)))
     effective["entry_multiplier"] = entry
     effective["order_percent_of_equity"] = float(parameters.get("order_percent_of_equity", entry * 100.0))
+    database = Path(str(summary.get("database") or ""))
+    stable_cache_sha = str(summary.get("cache_sha256") or "")
+    if database.is_file() and summary.get("requested_start") and summary.get("requested_end"):
+        try:
+            stable_cache_sha = sha256_ohlcv_range(
+                database, str(summary["requested_start"]), str(summary["requested_end"])
+            )
+        except Exception:
+            pass
     return json.dumps({
         "parameters": effective,
         "parameter_source": parameter_source,
@@ -1719,7 +1739,8 @@ def saved_result_replay_payload(result_path: str) -> str:
             "requested_end": summary.get("requested_end"),
             "data_start": summary.get("data_start"),
             "data_end": summary.get("data_end"),
-            "cache_sha256": summary.get("cache_sha256"),
+            "cache_sha256": stable_cache_sha,
+            "cache_fingerprint_kind": "canonical-ohlcv-v1",
             "execution_model": summary.get("execution_model"),
             "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
         },
