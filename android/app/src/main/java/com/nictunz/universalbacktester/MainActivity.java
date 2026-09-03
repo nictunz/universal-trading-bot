@@ -1236,7 +1236,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                         .setTitle("저장된 백테스트 기록 · " + items.length() + "개")
                         .setItems(labels, (dialog, which) -> {
                             JSONObject selected = items.optJSONObject(which);
-                            if (selected != null) applySavedResult(selected, false);
+                            if (selected != null) showSavedResultActions(selected);
                         })
                         .setNegativeButton("닫기", null)
                         .show());
@@ -1387,6 +1387,12 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 new String[][]{{"ADX 사용","use_adx_filter"},{"ADX 기간","adx_length"},{"ADX 최소","adx_min"},{"ADX 최대","adx_max"},{"쿨다운 봉","cooldown_bars"},{"재진입 대기 봉","reentry_bars"}});
         appendSettingGroup(sb, "시간·계산", p,
                 new String[][]{{"체결 모델","backtest_execution_model"},{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"}});
+        try {
+            sb.append("【원본 전체 수치 · 누락 없이 확인】\n")
+                    .append(p.toString(2));
+        } catch (Exception ignored) {
+            sb.append("【원본 전체 수치】\n").append(p.toString());
+        }
         showTextDialog("선택된 전략 전체 수치", sb.toString());
     }
 
@@ -1540,8 +1546,8 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                             Locale.KOREA,
                             "%d. %s · %s~%s\n수익률 %.2f%% · MDD %.2f%% · PF %.2f · 거래 %d\n신뢰도 %s · 안전 %s%s",
                             i + 1,
-                            row.optString("summary").isEmpty() ? row.optString("label") :
-                                    row.optJSONObject("summary").optString("symbol", row.optString("label")),
+                            row.optJSONObject("summary") == null ? row.optString("label")
+                                    : row.optJSONObject("summary").optString("symbol", row.optString("label")),
                             row.optJSONObject("summary") == null ? "—" : row.optJSONObject("summary").optString("requested_start", "—"),
                             row.optJSONObject("summary") == null ? "—" : row.optJSONObject("summary").optString("requested_end", "—"),
                             row.optDouble("return_percent"), row.optDouble("max_drawdown_percent"),
@@ -1642,7 +1648,15 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     selectedStrategyText.setTextColor(ACCENT);
                     statusText.setText("동일 수치 재검증 준비 완료");
                     if (runNow) {
-                        startBacktest(parameters);
+                        String period = startInput.getText().toString().trim() + " ~ "
+                                + endInput.getText().toString().trim();
+                        new AlertDialog.Builder(this)
+                                .setTitle("동일 조건 재검증")
+                                .setMessage("저장된 전략 수치와 원래 기간을 그대로 실행합니다.\n\n기간: "
+                                        + period + "\n\n장시간 걸릴 수 있으며 실행 중에도 앱을 닫지 마세요.")
+                                .setPositiveButton("재검증 시작", (dialog, which) -> startBacktest(parameters))
+                                .setNegativeButton("취소", null)
+                                .show();
                     } else {
                         showSelectedStrategyDetails();
                     }
