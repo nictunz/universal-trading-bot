@@ -245,6 +245,12 @@ public class MainActivity extends android.app.Activity {
 
         sizingModeInput = autocomplete(new String[]{"복리식", "고정식"}, "복리식");
         backtestCard.addView(labeled("자산 계산 방식", sizingModeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "계산 방식 선택",
+                sizingModeInput,
+                new String[]{"복리식", "고정식"},
+                new String[]{"복리식", "고정식"}
+        ), marginTop(8));
         backtestCard.addView(text(
                 "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=입력한 초기자산 기준을 계속 사용",
                 11, MUTED, false
@@ -255,6 +261,12 @@ public class MainActivity extends android.app.Activity {
                 "현실형 · 다음 봉 시가 체결"
         );
         backtestCard.addView(labeled("백테스트 체결 모델", executionModelInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "체결 방식",
+                executionModelInput,
+                new String[]{"현실형(추천)", "기존형(비교)"},
+                new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"}
+        ), marginTop(8));
         backtestCard.addView(text(
                 "현실형=신호 확정 후 다음 봉 시가 진입 · 기존형=예전 결과와 비교하기 위한 신호 봉 종가 진입",
                 11, MUTED, false
@@ -280,6 +292,11 @@ public class MainActivity extends android.app.Activity {
                 "자동 전환 사용 · 추천"
         );
         backtestCard.addView(labeled("시장 국면별 전략 자동 전환", adaptiveRegimeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "국면 전략", adaptiveRegimeInput,
+                new String[]{"자동 전환(추천)", "고정 전략"},
+                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"}
+        ), marginTop(8));
         backtestCard.addView(text(
                 "과거 288개 마감봉으로 자동 판단: 상승장=롱 · 하락장=숏 · 횡보장=양방향 · 고변동성=진입 50%/추가진입 제한 · 저변동성=정상 진입",
                 11, MUTED, false
@@ -290,6 +307,11 @@ public class MainActivity extends android.app.Activity {
                 "사용 · 추천"
         );
         backtestCard.addView(labeled("최근 30일 빠른 사전검사", precheckInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "사전검사", precheckInput,
+                new String[]{"사용(추천)", "사용 안 함"},
+                new String[]{"사용 · 추천", "사용 안 함"}
+        ), marginTop(8));
         backtestCard.addView(text(
                 "거래 없음·청산·과도한 낙폭 후보만 먼저 제외합니다. 통과 후보가 너무 적으면 자동으로 전체 검사를 수행합니다.",
                 11, MUTED, false
@@ -333,6 +355,11 @@ public class MainActivity extends android.app.Activity {
 
         threeTickModeInput = autocomplete(new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}, "첫 진입만 3틱룰");
         backtestCard.addView(labeled("3틱룰 적용 범위", threeTickModeInput), marginTop(12));
+        backtestCard.addView(quickChoiceRow(
+                "3틱룰", threeTickModeInput,
+                new String[]{"첫 진입만", "모든 진입"},
+                new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}
+        ), marginTop(8));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
