@@ -14,6 +14,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -244,13 +246,11 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(7));
 
         sizingModeInput = autocomplete(new String[]{"복리식", "고정식"}, "복리식");
-        backtestCard.addView(labeled("자산 계산 방식", sizingModeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "계산 방식 선택",
-                sizingModeInput,
+        backtestCard.addView(binaryChoiceRow(
+                "자산 계산 방식", sizingModeInput,
                 new String[]{"복리식", "고정식"},
                 new String[]{"복리식", "고정식"}
-        ), marginTop(8));
+        ), marginTop(12));
         backtestCard.addView(text(
                 "복리식=현재 순자산 기준으로 다음 진입 규모를 재계산 · 고정식=입력한 초기자산 기준을 계속 사용",
                 11, MUTED, false
@@ -260,13 +260,11 @@ public class MainActivity extends android.app.Activity {
                 new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"},
                 "현실형 · 다음 봉 시가 체결"
         );
-        backtestCard.addView(labeled("백테스트 체결 모델", executionModelInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "체결 방식",
-                executionModelInput,
+        backtestCard.addView(binaryChoiceRow(
+                "백테스트 체결 모델", executionModelInput,
                 new String[]{"현실형(추천)", "기존형(비교)"},
                 new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"}
-        ), marginTop(8));
+        ), marginTop(12));
         backtestCard.addView(text(
                 "현실형=신호 확정 후 다음 봉 시가 진입 · 기존형=예전 결과와 비교하기 위한 신호 봉 종가 진입",
                 11, MUTED, false
@@ -291,12 +289,11 @@ public class MainActivity extends android.app.Activity {
                 new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"},
                 "자동 전환 사용 · 추천"
         );
-        backtestCard.addView(labeled("시장 국면별 전략 자동 전환", adaptiveRegimeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "국면 전략", adaptiveRegimeInput,
+        backtestCard.addView(binaryChoiceRow(
+                "시장 국면별 전략 자동 전환", adaptiveRegimeInput,
                 new String[]{"자동 전환(추천)", "고정 전략"},
                 new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"}
-        ), marginTop(8));
+        ), marginTop(12));
         backtestCard.addView(text(
                 "과거 288개 마감봉으로 자동 판단: 상승장=롱 · 하락장=숏 · 횡보장=양방향 · 고변동성=진입 50%/추가진입 제한 · 저변동성=정상 진입",
                 11, MUTED, false
@@ -306,12 +303,11 @@ public class MainActivity extends android.app.Activity {
                 new String[]{"사용 · 추천", "사용 안 함"},
                 "사용 · 추천"
         );
-        backtestCard.addView(labeled("최근 30일 빠른 사전검사", precheckInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "사전검사", precheckInput,
+        backtestCard.addView(binaryChoiceRow(
+                "최근 30일 빠른 사전검사", precheckInput,
                 new String[]{"사용(추천)", "사용 안 함"},
                 new String[]{"사용 · 추천", "사용 안 함"}
-        ), marginTop(8));
+        ), marginTop(12));
         backtestCard.addView(text(
                 "거래 없음·청산·과도한 낙폭 후보만 먼저 제외합니다. 통과 후보가 너무 적으면 자동으로 전체 검사를 수행합니다.",
                 11, MUTED, false
@@ -354,12 +350,11 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(7));
 
         threeTickModeInput = autocomplete(new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}, "첫 진입만 3틱룰");
-        backtestCard.addView(labeled("3틱룰 적용 범위", threeTickModeInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "3틱룰", threeTickModeInput,
+        backtestCard.addView(binaryChoiceRow(
+                "3틱룰 적용 범위", threeTickModeInput,
                 new String[]{"첫 진입만", "모든 진입"},
                 new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}
-        ), marginTop(8));
+        ), marginTop(12));
 
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
@@ -2090,6 +2085,59 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.addView(text(label, 12, TEXT, true));
         wrap.addView(field, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        return wrap;
+    }
+
+    private View binaryChoiceRow(
+            String title,
+            AutoCompleteTextView target,
+            String[] labels,
+            String[] values
+    ) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(text(title, 12, TEXT, true));
+
+        TextView current = text("현재 선택: " + target.getText(), 11, ACCENT, true);
+        wrap.addView(current, marginTop(5));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button[] buttons = new Button[Math.min(labels.length, values.length)];
+        Runnable refresh = () -> {
+            String selected = target.getText().toString();
+            current.setText("현재 선택: " + selected);
+            for (int i = 0; i < buttons.length; i++) {
+                boolean active = values[i].equals(selected);
+                buttons[i].setBackground(rounded(
+                        active ? PRIMARY : Color.rgb(30, 41, 59),
+                        10,
+                        active ? ACCENT : BORDER
+                ));
+                buttons[i].setTextColor(Color.WHITE);
+            }
+        };
+        for (int i = 0; i < buttons.length; i++) {
+            final String value = values[i];
+            Button button = smallButton(labels[i], v -> {
+                target.setText(value, false);
+                refresh.run();
+            });
+            buttons[i] = button;
+            LinearLayout.LayoutParams params =
+                    new LinearLayout.LayoutParams(0, dp(46), 1f);
+            params.setMargins(i == 0 ? 0 : dp(6), 0, 0, 0);
+            row.addView(button, params);
+        }
+        wrap.addView(row, marginTop(6));
+        target.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                refresh.run();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        refresh.run();
         return wrap;
     }
 
