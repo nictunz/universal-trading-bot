@@ -10,6 +10,16 @@ This repository uses Cloud Build for the signed Android build while keeping GitH
 
 ## One-time Google Cloud setup
 
+On the existing `trading-bot-new` server, the signing and deployment secret files are already stored outside the repository. After installing/authenticating `gcloud`, the helper performs the API, bucket, service-account, Secret Manager, and reusable builder-image setup without printing secret values:
+
+```bash
+cd ~/universal-trading-bot
+git pull --ff-only origin main
+bash scripts/setup_google_cloud_build.sh YOUR_GOOGLE_CLOUD_PROJECT_ID
+```
+
+The commands below are the manual equivalent and are retained for auditing or troubleshooting.
+
 Set the project and region from a terminal with `gcloud` already authenticated:
 
 ```bash
