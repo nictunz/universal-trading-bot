@@ -441,7 +441,7 @@ Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공�
 shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
 resultActions.addView(shareOptimizationButton, marginTop(6));
 
-resultActions.addView(resultGroupTitle("⑤ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
+resultActions.addView(resultGroupTitle("④ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
 Button shareCacheButton = actionButton("현재 캐시 DB 공유", Color.rgb(30, 41, 59));
 shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
 resultActions.addView(shareCacheButton, marginTop(6));
