@@ -1290,11 +1290,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         String savedTimeframe = summary.optString("timeframe", "");
         if (!savedSymbol.isEmpty()) symbolInput.setText(savedSymbol, false);
         if (!savedTimeframe.isEmpty()) timeframeInput.setText(savedTimeframe, false);
-        if (summary.has("initial_capital")) {
+        if (!automatic && summary.has("initial_capital")) {
             initialCapitalInput.setText(String.valueOf(summary.optDouble("initial_capital", 1000.0)));
         }
         String savedSizingMode = summary.optString("sizing_mode", "");
-        if (!savedSizingMode.isEmpty()) {
+        if (!automatic && !savedSizingMode.isEmpty()) {
             sizingModeInput.setText(
                     "compound_current_equity".equals(savedSizingMode) ? "복리식" : "고정식",
                     false
@@ -1613,7 +1613,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 "📌 이 결과 불러오기",
                 "📊 성과·검증 조건 전체 보기",
                 "⚙ 저장된 전략 수치 전체 보기",
-                "▶ 동일 수치로 기간 재검증",
+                "▶ 전략 수치 + 현재 자산설정으로 재검증",
                 "🏆 이 결과의 TOP10 후보 보기",
                 "📤 원본 JSON 공유"
         };
@@ -1678,10 +1678,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     if (runNow) {
                         String period = startInput.getText().toString().trim() + " ~ "
                                 + endInput.getText().toString().trim();
+                        String moneyMode = sizingModeInput.getText().toString().trim();
+                        String capital = initialCapitalInput.getText().toString().trim();
                         new AlertDialog.Builder(this)
-                                .setTitle("동일 조건 재검증")
-                                .setMessage("저장된 전략 수치와 원래 기간을 그대로 실행합니다.\n\n기간: "
-                                        + period + "\n\n장시간 걸릴 수 있으며 실행 중에도 앱을 닫지 마세요.")
+                                .setTitle("현재 자산설정으로 재검증")
+                                .setMessage("저장된 전략 수치와 원래 기간을 사용하고, 현재 화면의 자산설정을 적용합니다.\n\n기간: "
+                                        + period + "\n초기자산: " + capital + " USDT\n계산 방식: " + moneyMode
+                                        + "\n\n복리식이면 매 진입마다 현재 순자산으로 주문 규모를 다시 계산합니다."
+                                        + "\n장시간 걸릴 수 있으며 실행 중에도 앱을 닫지 마세요.")
                                 .setPositiveButton("재검증 시작", (dialog, which) -> startBacktest(parameters))
                                 .setNegativeButton("취소", null)
                                 .show();
