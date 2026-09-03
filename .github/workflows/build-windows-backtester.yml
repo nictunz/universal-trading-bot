@@ -1,9 +1,14 @@
 name: Build Windows Backtester EXE
 
-# Windows builds remain available manually to avoid consuming hosted-runner minutes.
 on:
   workflow_dispatch:
-
+  push:
+    branches: [main]
+    paths:
+      - 'universal_bot/local_cache_gui.py'
+      - 'universal_bot/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-windows-backtester.yml'
 
 jobs:
   build:
