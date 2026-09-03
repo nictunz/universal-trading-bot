@@ -425,7 +425,7 @@ resultActions.addView(regimeButton, marginTop(6));
 Button validationButton = actionButton("🛡 다중 검증·실전 안전게이트", SUCCESS);
 validationButton.setOnClickListener(v -> showValidationSuite());
 resultActions.addView(validationButton, marginTop(6));
-Button comparisonButton = actionButton("⚖ 최근 결과 최대 5개 비교", Color.rgb(30, 41, 59));
+Button comparisonButton = actionButton("🔎 저장 결과 찾기·비교·재검증", Color.rgb(30, 41, 59));
 comparisonButton.setOnClickListener(v -> showRecentResultComparison());
 resultActions.addView(comparisonButton, marginTop(6));
 Button monthlyButton = actionButton("🗓 월별 성과·손실 구간 보기", Color.rgb(30, 41, 59));
@@ -1504,41 +1504,155 @@ private void exportAndShareOptimizationStage(String stage, String label) {
     }
 
     private void showRecentResultComparison() {
-        statusText.setText("최근 결과 비교 중");
+        String[] modes = {
+                "수익률 높은 순", "최신 결과 순", "MDD 낮은 순",
+                "신뢰도 높은 순", "현재 종목만 · 수익률 순"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("저장 결과 찾기")
+                .setItems(modes, (dialog, which) -> {
+                    String mode = which == 1 ? "recent" : (which == 2 ? "mdd" : (which == 3 ? "quality" : "return"));
+                    String symbolFilter = which == 4 ? symbolInput.getText().toString().trim() : "";
+                    loadResultFinder(mode, symbolFilter, modes[which]);
+                })
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void loadResultFinder(String sortMode, String symbolFilter, String title) {
+        statusText.setText("저장 결과 검색 중");
         executor.execute(() -> {
             try {
                 File output = new File(getFilesDir(), "UniversalTradingBotCache");
                 PyObject bridge = Python.getInstance().getModule("mobile_bridge");
-                JSONObject response = new JSONObject(bridge.callAttr("compare_recent_results", output.getAbsolutePath(), 5).toString());
+                JSONObject response = new JSONObject(
+                        bridge.callAttr("find_saved_results", output.getAbsolutePath(), sortMode, symbolFilter, 50).toString()
+                );
                 JSONArray items = response.optJSONArray("items");
-                JSONObject changes = response.optJSONObject("newest_vs_previous");
-                StringBuilder sb = new StringBuilder();
-                if (items != null) for (int i = 0; i < items.length(); i++) {
-                    JSONObject row = items.optJSONObject(i);
-                    if (row == null) continue;
-                    JSONObject q = row.optJSONObject("quality");
-                    JSONObject g = row.optJSONObject("safety_gate");
-                    sb.append(i + 1).append(". ").append(row.optString("symbol")).append(" · ")
-                            .append(row.optString("start")).append("~").append(row.optString("end"))
-                            .append("\n수익률 ").append(String.format(Locale.KOREA, "%.2f%%", row.optDouble("return_percent")))
-                            .append(" · MDD ").append(String.format(Locale.KOREA, "%.2f%%", row.optDouble("max_drawdown_percent")))
-                            .append(" · PF ").append(String.format(Locale.KOREA, "%.2f", row.optDouble("profit_factor")))
-                            .append("\n신뢰도 ").append(q == null ? "—" : q.optString("grade") + " " + q.optInt("score"))
-                            .append(" · 안전 ").append(g == null ? "—" : g.optString("status")).append("\n\n");
+                if (items == null || items.length() == 0) {
+                    main.post(() -> toast("조건에 맞는 저장 결과가 없습니다."));
+                    return;
                 }
-                if (changes != null) {
-                    sb.append("【최신 - 직전 변화】\n")
-                            .append("수익률 ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("return_percent")))
-                            .append("\nMDD ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("max_drawdown_percent")))
-                            .append("\n승률 ").append(String.format(Locale.KOREA, "%+.2f%%p", changes.optDouble("win_rate")))
-                            .append("\n동일 실행 지문 ").append(changes.optBoolean("same_run_signature") ? "예" : "아니오");
+                String[] labels = new String[items.length()];
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject row = items.optJSONObject(i);
+                    labels[i] = String.format(
+                            Locale.KOREA,
+                            "%d. %s · %s~%s\n수익률 %.2f%% · MDD %.2f%% · PF %.2f · 거래 %d\n신뢰도 %s · 안전 %s%s",
+                            i + 1,
+                            row.optString("summary").isEmpty() ? row.optString("label") :
+                                    row.optJSONObject("summary").optString("symbol", row.optString("label")),
+                            row.optJSONObject("summary") == null ? "—" : row.optJSONObject("summary").optString("requested_start", "—"),
+                            row.optJSONObject("summary") == null ? "—" : row.optJSONObject("summary").optString("requested_end", "—"),
+                            row.optDouble("return_percent"), row.optDouble("max_drawdown_percent"),
+                            row.optDouble("profit_factor"), row.optInt("trades"),
+                            row.optString("quality_grade", "—"), row.optString("safety_status", "—"),
+                            row.optBoolean("parameters_available") ? " · 재검증 가능" : ""
+                    );
                 }
                 main.post(() -> {
-                    statusText.setText("최근 결과 비교 완료");
-                    showTextDialog("⚖ 최근 백테스트 비교", sb.length() == 0 ? "비교할 결과가 부족합니다." : sb.toString());
+                    statusText.setText("저장 결과 " + items.length() + "개");
+                    new AlertDialog.Builder(this)
+                            .setTitle(title + " · " + items.length() + "개")
+                            .setItems(labels, (dialog, which) -> {
+                                JSONObject selected = items.optJSONObject(which);
+                                if (selected != null) showSavedResultActions(selected);
+                            })
+                            .setNegativeButton("닫기", null)
+                            .show();
                 });
             } catch (Exception e) {
-                main.post(() -> appendFullLog("\nRESULT COMPARISON ERROR\n" + stackMessage(e) + "\n"));
+                main.post(() -> {
+                    appendFullLog("\nRESULT FINDER ERROR\n" + stackMessage(e) + "\n");
+                    statusText.setText("결과 검색 오류");
+                });
+            }
+        });
+    }
+
+    private void showSavedResultActions(JSONObject item) {
+        JSONObject summary = item.optJSONObject("summary");
+        String title = summary == null ? item.optString("label", "저장 결과")
+                : String.format(Locale.KOREA, "%.2f%% · MDD %.2f%%",
+                summary.optDouble("return_percent"), summary.optDouble("max_drawdown_percent"));
+        String[] actions = {
+                "📌 이 결과 불러오기",
+                "📊 성과·검증 조건 전체 보기",
+                "⚙ 저장된 전략 수치 전체 보기",
+                "▶ 동일 수치로 기간 재검증",
+                "🏆 이 결과의 TOP10 후보 보기",
+                "📤 원본 JSON 공유"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        applySavedResult(item, false);
+                    } else if (which == 1) {
+                        applySavedResult(item, true);
+                        showResultSummary();
+                    } else if (which == 2) {
+                        prepareSavedResultReplay(item, false);
+                    } else if (which == 3) {
+                        prepareSavedResultReplay(item, true);
+                    } else if (which == 4) {
+                        applySavedResult(item, true);
+                        showTopStrategies(false);
+                    } else {
+                        shareBacktestFile(item.optString("path"), "application/json", "저장 백테스트 원본 공유");
+                    }
+                })
+                .setNeutralButton("실행 지문 복사", (dialog, which) -> {
+                    String signature = item.optString("run_signature", "");
+                    if (signature.isEmpty() && summary != null) {
+                        JSONObject repro = summary.optJSONObject("reproducibility");
+                        signature = repro == null ? "" : repro.optString("run_signature", "");
+                    }
+                    ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    clipboard.setPrimaryClip(ClipData.newPlainText("백테스트 실행 지문", signature));
+                    toast(signature.isEmpty() ? "이전 결과라 실행 지문이 없습니다." : "실행 지문을 복사했습니다.");
+                })
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void prepareSavedResultReplay(JSONObject item, boolean runNow) {
+        String path = item.optString("path", "");
+        statusText.setText(runNow ? "재검증 수치 준비 중" : "전략 수치 불러오는 중");
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject replay = new JSONObject(
+                        bridge.callAttr("saved_result_replay_payload", path).toString()
+                );
+                JSONObject parameters = replay.getJSONObject("parameters");
+                JSONObject row = new JSONObject();
+                row.put("parameters", parameters);
+                row.put("effective_parameters", parameters);
+                row.put("original_result", replay.optJSONObject("original_result"));
+                row.put("source_context", replay.optJSONObject("source_context"));
+                main.post(() -> {
+                    applySavedResult(item, true);
+                    selectedStrategyParameters = parameters;
+                    selectedStrategyRow = row;
+                    selectedStrategyText.setText(
+                            "저장 결과 수치 선택됨 · " + replay.optString("parameter_source", "대표 결과")
+                                    + "\n" + item.optString("label", path)
+                    );
+                    selectedStrategyText.setTextColor(ACCENT);
+                    statusText.setText("동일 수치 재검증 준비 완료");
+                    if (runNow) {
+                        startBacktest(parameters);
+                    } else {
+                        showSelectedStrategyDetails();
+                    }
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    appendFullLog("\nSAVED REPLAY ERROR\n" + stackMessage(e) + "\n");
+                    statusText.setText("재검증 수치 복원 오류");
+                    toast("이 결과에서 전략 수치를 복원하지 못했습니다.");
+                });
             }
         });
     }
