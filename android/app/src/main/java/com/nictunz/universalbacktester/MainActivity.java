@@ -47,6 +47,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends android.app.Activity {
+    private static final String ENGINE_SCHEMA = "universal-vector-event-v5";
     private static final int BG = Color.rgb(11, 18, 32);
     private static final int PANEL = Color.rgb(17, 24, 39);
     private static final int CARD = Color.rgb(23, 32, 51);
@@ -164,6 +165,16 @@ public class MainActivity extends android.app.Activity {
         root.addView(title);
         TextView subtitle = text("Android 폰에서 4개 거래소 캐시 생성 · 로컬 백테스트 · 서버 업로드", 13, MUTED, false);
         root.addView(subtitle, marginTop(4));
+        Button engineStatusButton = actionButton(
+                "⚡ Universal Vector Engine 5 · 상태 확인",
+                SUCCESS
+        );
+        engineStatusButton.setOnClickListener(v -> showEngineStatus());
+        root.addView(engineStatusButton, marginTop(10));
+        root.addView(text(
+                "동일 데이터·전체 설정·엔진 코드가 모두 같을 때만 TOP10 체크포인트를 재사용합니다.",
+                11, MUTED, false
+        ), marginTop(5));
 
         LinearLayout backtestCard = panel();
         root.addView(backtestCard, marginTop(16));
@@ -1355,7 +1366,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     JSONObject result = row == null ? null : row.optJSONObject("result");
                     labels[i] = String.format(
                             Locale.KOREA,
-                            "%d위 · 수익률 %.2f%% · MDD %.2f%% · 승률 %.1f%% · PF %.2f · 종합 %.1f",
+                            "🔒 %d위 · 수익률 %.2f%% · MDD %.2f%% · 승률 %.1f%% · PF %.2f · 종합 %.1f",
                             i + 1,
                             result == null ? 0.0 : result.optDouble("return_percent", 0.0),
                             result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
@@ -1404,7 +1415,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             } catch (Exception e) {
                 if (!automatic) main.post(() -> {
                     appendFullLog("\nTOP10 ERROR\n" + stackMessage(e) + "\n");
-                    toast("TOP10 후보 불러오기 실패");
+                    showTextDialog("TOP10 후보 불러오기 실패", stackMessage(e));
                 });
             }
         });
@@ -1453,9 +1464,25 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 ? (comparison.optBoolean("same_initial_capital") ? "동일" : "다름") : "확인 불가";
         String compound = comparison.has("same_compounding")
                 ? (comparison.optBoolean("same_compounding") ? "동일" : "다름") : "확인 불가";
+        String dataRange = comparison.optBoolean("same_data_range", false) ? "동일" : "다름";
+        String engine = comparison.optBoolean("same_engine", false) ? "동일" : "다름";
+        String parameters = comparison.optBoolean("same_strategy_parameters", false) ? "동일" : "다름";
+        String candidate = comparison.optBoolean("source_candidate_verified", false) ? "정상" : "검증 실패";
+        boolean exact = comparison.optBoolean("exact_reproduction", false);
+        JSONArray reasons = comparison.optJSONArray("mismatch_reasons");
+        StringBuilder reasonText = new StringBuilder();
+        if (reasons != null) {
+            for (int i = 0; i < reasons.length(); i++) {
+                if (i > 0) reasonText.append(", ");
+                reasonText.append(reasons.optString(i));
+            }
+        }
+        if (reasonText.length() == 0) reasonText.append("없음");
         String message = String.format(
                 Locale.KOREA,
-                "원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n캐시 데이터: %s\n체결 모델: %s\n  원본: %s\n  재검증: %s\n초기자산: %s\n복리 설정: %s\n\n전략 재현은 기간·캐시·체결 모델이 같아야 합니다. 초기자산이나 복리 설정을 바꾸면 수익 금액과 수익률 경로가 달라질 수 있습니다.",
+                "재현 판정: %s\n불일치 항목: %s\n\n원래 TOP10 수익률: %.2f%%\n재백테스트 수익률: %.2f%%\n차이: %+.2f%%p\n\n원래 MDD: %.2f%%\n재백테스트 MDD: %.2f%%\n차이: %+.2f%%p\n\n요청 기간: %s\n실제 데이터 범위·봉 수: %s\n캐시 데이터: %s\n엔진 코드: %s\n전체 전략 수치: %s\nTOP10 후보 서명: %s\n체결 모델: %s\n  원본: %s\n  재검증: %s\n초기자산: %s\n복리 설정: %s\n\n모든 항목이 동일한데 결과가 다르면 엔진 무결성 실패로 표시됩니다. 이전 엔진 결과는 새 최적화 후 다시 선택해야 합니다.",
+                exact ? "PASS · 완전 일치" : "FAIL · 조건 또는 결과 불일치",
+                reasonText.toString(),
                 comparison.optDouble("original_return_percent", 0.0),
                 comparison.optDouble("retest_return_percent", 0.0),
                 comparison.optDouble("return_difference_percent_points", 0.0),
@@ -1463,7 +1490,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 comparison.optDouble("retest_mdd_percent", 0.0),
                 comparison.optDouble("mdd_difference_percent_points", 0.0),
                 period,
+                dataRange,
                 cache,
+                engine,
+                parameters,
+                candidate,
                 model,
                 originalModel,
                 retestModel,
@@ -1728,7 +1759,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 main.post(() -> {
                     appendFullLog("\nSAVED REPLAY ERROR\n" + stackMessage(e) + "\n");
                     statusText.setText("재검증 수치 복원 오류");
-                    toast("이 결과에서 전략 수치를 복원하지 못했습니다.");
+                    showTextDialog("재검증 수치 복원 오류", stackMessage(e));
                 });
             }
         });
@@ -1789,13 +1820,25 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         String strategyLabel = prefs.getString("pinned_strategy_label", "");
         try {
             if (parameters != null && !parameters.isEmpty() && row != null && !row.isEmpty()) {
-                selectedStrategyParameters = new JSONObject(parameters);
-                selectedStrategyRow = new JSONObject(row);
-                selectedStrategyText.setText(
-                        strategyLabel == null || strategyLabel.isEmpty()
-                                ? "저장된 전략 수치 복원 완료" : strategyLabel
-                );
-                selectedStrategyText.setTextColor(ACCENT);
+                JSONObject restoredRow = new JSONObject(row);
+                JSONObject sourceContext = restoredRow.optJSONObject("source_context");
+                JSONObject sourceEngine = sourceContext == null ? null : sourceContext.optJSONObject("engine");
+                if (sourceEngine == null || !ENGINE_SCHEMA.equals(sourceEngine.optString("schema", ""))) {
+                    selectedStrategyParameters = null;
+                    selectedStrategyRow = null;
+                    selectedStrategyText.setText(
+                            "이전 엔진의 저장 전략은 안전을 위해 해제되었습니다. 현재 엔진으로 최적화 후 TOP10을 다시 선택하세요."
+                    );
+                    selectedStrategyText.setTextColor(Color.rgb(251, 191, 36));
+                } else {
+                    selectedStrategyParameters = new JSONObject(parameters);
+                    selectedStrategyRow = restoredRow;
+                    selectedStrategyText.setText(
+                            strategyLabel == null || strategyLabel.isEmpty()
+                                    ? "저장된 전략 수치 복원 완료" : strategyLabel
+                    );
+                    selectedStrategyText.setTextColor(ACCENT);
+                }
             }
         } catch (Exception ignored) {
             prefs.edit().remove("pinned_strategy_parameters")
@@ -1840,6 +1883,34 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         showTextDialog("월별 성과·손실 구간", sb.toString());
     }
 
+    private void showEngineStatus() {
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject response = new JSONObject(bridge.callAttr("engine_status").toString());
+                JSONObject engine = response.optJSONObject("engine");
+                JSONObject cache = response.optJSONObject("feature_cache");
+                String code = engine == null ? "—" : engine.optString("code_sha256", "—");
+                if (code.length() > 16) code = code.substring(0, 16) + "…";
+                String message = String.format(
+                        Locale.KOREA,
+                        "엔진  %s %s\n방식  %s\n스키마  %s\n코드 지문  %s\n의존성  NumPy + Pandas만 사용\n\n재현 잠금\n• 엔진 코드\n• 캐시 SHA256\n• 요청 기간·실제 봉 수\n• 전체 전략 수치\n• TOP10 후보 서명\n\n가속 상태\n• 재사용 지표 %d개\n• 캐시 적중 %d회 / 계산 %d회\n• 상세 거래·차트는 최종 결과에서만 생성",
+                        engine == null ? "Universal Vector Engine" : engine.optString("name", "Universal Vector Engine"),
+                        engine == null ? "5" : engine.optString("version", "5"),
+                        engine == null ? "벡터 지표 + 이벤트 체결" : engine.optString("execution", "벡터 지표 + 이벤트 체결"),
+                        engine == null ? "—" : engine.optString("schema", "—"),
+                        code,
+                        cache == null ? 0 : cache.optInt("features", 0),
+                        cache == null ? 0 : cache.optInt("hits", 0),
+                        cache == null ? 0 : cache.optInt("misses", 0)
+                );
+                main.post(() -> showTextDialog("⚡ 백테스트 엔진 상태", message));
+            } catch (Exception e) {
+                main.post(() -> showTextDialog("엔진 상태 오류", stackMessage(e)));
+            }
+        });
+    }
+
     private void showReproducibility() {
         if (lastSummary == null) {
             toast("백테스트를 먼저 실행하세요.");
@@ -1851,8 +1922,12 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             return;
         }
         String signature = repro.optString("run_signature", "—");
+        JSONObject engine = repro.optJSONObject("engine");
         StringBuilder sb = new StringBuilder();
         sb.append("실행 지문\n").append(signature).append("\n\n")
+                .append("엔진  ").append(engine == null ? "이전 엔진" : engine.optString("name", "—"))
+                .append(" ").append(engine == null ? "" : engine.optString("version", "")).append('\n')
+                .append("엔진 코드  ").append(engine == null ? "—" : engine.optString("code_sha256", "—")).append('\n')
                 .append("종목  ").append(repro.optString("symbol")).append('\n')
                 .append("타임프레임  ").append(repro.optString("timeframe")).append('\n')
                 .append("요청 기간  ").append(repro.optString("requested_start")).append(" ~ ")
@@ -1862,8 +1937,9 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .append("체결 모델  ").append(repro.optString("execution_model")).append('\n')
                 .append("수수료/슬리피지  ").append(repro.opt("fee_percent_per_side")).append("% / ")
                 .append(repro.opt("slippage_percent_per_side")).append("%\n")
-                .append("캐시 SHA256  ").append(repro.optString("cache_sha256")).append("\n\n")
-                .append("같은 실행 지문이어야 동일 조건 비교입니다.");
+                .append("캐시 SHA256  ").append(repro.optString("cache_sha256")).append('\n')
+                .append("전체 설정 SHA256  ").append(repro.optString("effective_parameters_sha256", "—")).append("\n\n")
+                .append("엔진·캐시·기간·전체 설정 지문이 모두 같아야 동일 조건 비교입니다.");
         showTextDialog("🔒 결과 재현 잠금", sb.toString());
     }
 
@@ -1909,6 +1985,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         double initialCapital = lastSummary.optDouble("initial_capital", 1000.0);
         double finalEquity = lastSummary.optDouble("final_equity",
                 initialCapital + lastSummary.optDouble("pnl", 0.0));
+        JSONObject engineInfo = lastSummary.optJSONObject("engine");
+        String engineLabel = engineInfo == null
+                ? "이전 엔진"
+                : engineInfo.optString("name", "Universal Vector Engine") + " "
+                + engineInfo.optString("version", "");
         StringBuilder sb = new StringBuilder();
         sb.append("【성과】\n")
                 .append("총 수익률  ").append(formatMetric(lastSummary, "return_percent", "%")).append('\n')
@@ -1926,6 +2007,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .append("데이터  ").append(lastSummary.optString("data_start", "—"))
                 .append(" ~ ").append(lastSummary.optString("data_end", "—")).append('\n')
                 .append("봉 수  ").append(lastSummary.optInt("bars", 0)).append('\n')
+                .append("엔진  ").append(engineLabel).append('\n')
                 .append("체결 모델  ").append(executionLabel).append('\n')
                 .append("초기자산  ").append(String.format(Locale.KOREA, "%,.2f USDT", initialCapital)).append('\n')
                 .append("자산 계산  ").append(sizingLabel)

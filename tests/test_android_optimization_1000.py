@@ -12,7 +12,7 @@ def test_android_allows_five_thousand_trials_per_stage_and_top10_refine():
     assert "refine_optimization_trials <= 5000" in bridge
     assert '"5000회"' in java
     assert '"3봉 분할형"' in java
-    assert "top10-independent-refine-v3" in bridge
+    assert "top10-independent-refine-v4-engine-locked" in bridge
     assert "bases = top_rows[:10]" in bridge
     assert "trials_per_seed = min(5000" in bridge
     assert "expected_trials = len(top_rows) * trials_per_seed" in bridge

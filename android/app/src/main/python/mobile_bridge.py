@@ -3,18 +3,26 @@ from __future__ import annotations
 import csv
 import gc
 import hashlib
-import statistics
 import json
 import os
 import random
-import sqlite3
 import re
+import sqlite3
+import statistics
 import threading
 import zipfile
-import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from universal_bot.backtest_engine import (
+    ENGINE_SCHEMA,
+    build_run_identity,
+    candidate_signature,
+    engine_manifest,
+    feature_cache_info,
+    parameter_signature,
+    verify_candidate_signature,
+)
 from universal_bot.fast_backtest import run_cached_symbol_backtest
 from universal_bot.local_cache_core import (
     DEFAULT_REMOTE_DIR,
@@ -22,10 +30,7 @@ from universal_bot.local_cache_core import (
     DEFAULT_USER,
     build_cache_and_backtest,
     server_upload_eligible,
-    sha256_ohlcv_range,
 )
-
-
 
 _CONTROL = threading.Condition()
 _CONTROL_PAUSED = False
@@ -113,6 +118,10 @@ FIXED_BACKTEST = {
     "backtest_compounding_enabled": True,
 }
 
+OPTIMIZATION_CANDIDATE_SCHEMA = "coarse-buckets-v3-engine-locked"
+REFINEMENT_SCHEMA = "top10-independent-refine-v4-engine-locked"
+ROLLING_SCHEMA = "rolling-validation-v3-engine-locked"
+
 
 OPTIMIZED_STRATEGY_FIELDS = (
     "allow_long",
@@ -158,8 +167,11 @@ def _risk_checkpoint_path(
     start_text: str,
     end_text: str,
     profile: str,
+    run_identity: str = "",
 ) -> Path:
-    raw = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile}".encode("utf-8")
+    raw = (
+        f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile}|{run_identity}"
+    ).encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()[:16]
     return output_dir / "Checkpoints" / f"risk-{digest}.json"
 
@@ -243,7 +255,6 @@ def _profile_candidates(
         entry = rng.randint(profile["entry_multiplier_min"], profile["entry_multiplier_max"])
         allow_long, allow_short = rng.choice([(True, True), (True, False), (False, True)])
         params = {
-            **FIXED_BACKTEST,
             "allow_long": allow_long,
             "allow_short": allow_short,
             "first_entry_consecutive_candles": int(profile.get("first_entry_consecutive_candles", 1)),
@@ -302,34 +313,46 @@ def _optimize_risk_profile(
     log,
     precheck_enabled: bool = True,
     early_stop_patience: int = 0,
+    run_identity: str = "",
 ) -> tuple[dict, dict]:
     profile = RISK_PROFILES[profile_name]
     checkpoint_path = _risk_checkpoint_path(
-        output_dir, symbol, timeframe, start_text, end_text, profile_name
+        output_dir, symbol, timeframe, start_text, end_text, profile_name,
+        run_identity,
     )
     journal_path = checkpoint_path.with_suffix(".journal.jsonl")
     strategy_fingerprint = hashlib.sha256(
         json.dumps(
-            {"base_overrides": base_overrides, "candidate_schema": "coarse-buckets-v2"},
+            {
+                "run_identity": run_identity,
+                "base_overrides": base_overrides,
+                "candidate_schema": OPTIMIZATION_CANDIDATE_SCHEMA,
+                "precheck_enabled": bool(precheck_enabled),
+                "requested_trials": int(trials),
+                "early_stop_patience": int(early_stop_patience),
+            },
             sort_keys=True,
             default=str,
         ).encode("utf-8")
     ).hexdigest()
     checkpoint = {
-        "version": 2,
-        "candidate_schema": "coarse-buckets-v2",
+        "version": 3,
+        "candidate_schema": OPTIMIZATION_CANDIDATE_SCHEMA,
         "profile": profile_name,
         "constraints": profile,
         "strategy_fingerprint": strategy_fingerprint,
+        "run_identity": run_identity,
+        "engine": engine_manifest(),
         "completed": {},
     }
     if checkpoint_path.is_file():
         try:
             loaded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             if (
-                loaded.get("version") == 2
+                loaded.get("version") == 3
                 and loaded.get("profile") == profile_name
                 and loaded.get("strategy_fingerprint") == strategy_fingerprint
+                and loaded.get("run_identity") == run_identity
             ):
                 checkpoint = loaded
                 log(f"위험 프로필 체크포인트 재개: {len(checkpoint.get('completed', {}))}개 조합 완료")
@@ -346,7 +369,10 @@ def _optimize_risk_profile(
     journal_rows = _load_checkpoint_journal(journal_path, strategy_fingerprint, completed)
     if journal_rows:
         log(f"증분 체크포인트 복구: {journal_rows}개 기록 · 총 {len(completed)}개 완료")
-    seed_material = f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|coarse-buckets-v2"
+    seed_material = (
+        f"{symbol}|{timeframe}|{start_text}|{end_text}|{profile_name}|"
+        f"{OPTIMIZATION_CANDIDATE_SCHEMA}|{run_identity}"
+    )
     combinations = _profile_candidates(profile_name, trials, seed_material)
     checkpoint["requested_trials"] = trials
     if precheck_enabled and not checkpoint.get("precheck_complete"):
@@ -411,11 +437,18 @@ def _optimize_risk_profile(
                 raise RuntimeError("수수료 고정값 불일치")
             if float(result.get("slippage_percent_per_side", -1)) != 0.01:
                 raise RuntimeError("슬리피지 고정값 불일치")
+            compact_result = _compact_risk_result(result)
             completed[key] = {
                 "entry_multiplier": entry,
                 "max_entries": entries,
                 "parameters": params,
-                "result": _compact_risk_result(result),
+                "result": compact_result,
+                "run_identity": run_identity,
+                "candidate_signature": candidate_signature(
+                    run_identity=run_identity,
+                    parameters=params,
+                    result=compact_result,
+                ),
             }
             checkpoint["last_completed"] = key
             checkpoint["last_error"] = None
@@ -466,6 +499,7 @@ def _optimize_risk_profile(
         if int(row["result"].get("trades") or 0) > 0
         and int(row["result"].get("liquidations") or 0) == 0
         and float(row["result"].get("max_drawdown_percent") or 0) <= profile["mdd_limit_percent"]
+        and verify_candidate_signature(row, run_identity)
     ]
     if not viable:
         raise RuntimeError(
@@ -504,6 +538,8 @@ def _optimize_risk_profile(
     selection = {
         "profile": profile_name,
         "constraints": profile,
+        "run_identity": run_identity,
+        "engine": engine_manifest(),
         "entry_multiplier": best["entry_multiplier"],
         "max_entries": best["max_entries"],
         "checkpoint": str(checkpoint_path),
@@ -511,8 +547,14 @@ def _optimize_risk_profile(
         "optimized_strategy_fields": list(OPTIMIZED_STRATEGY_FIELDS),
         "fixed_values": {
             **FIXED_BACKTEST,
+            "initial_capital": float(
+                base_overrides.get("initial_capital", FIXED_BACKTEST["initial_capital"])
+            ),
             "backtest_compounding_enabled": bool(
                 base_overrides.get("backtest_compounding_enabled", True)
+            ),
+            "backtest_execution_model": str(
+                base_overrides.get("backtest_execution_model", "signal_close")
             ),
         },
         "tested_combinations": len(completed),
@@ -521,16 +563,23 @@ def _optimize_risk_profile(
         "early_stopped": stopped_early,
         "viable_combinations": len(viable),
         "parameters": best["parameters"],
+        "candidate_signature": best.get("candidate_signature"),
+        "candidate_verified": verify_candidate_signature(best, run_identity),
     }
     return full_result, selection
 
 
-def _rank_completed_rows(completed: dict, mdd_limit: float) -> list[dict]:
+def _rank_completed_rows(
+    completed: dict,
+    mdd_limit: float,
+    run_identity: str,
+) -> list[dict]:
     rows = [
         row for row in completed.values()
         if int((row.get("result") or {}).get("trades") or 0) > 0
         and int((row.get("result") or {}).get("liquidations") or 0) == 0
         and float((row.get("result") or {}).get("max_drawdown_percent") or 0) <= mdd_limit
+        and verify_candidate_signature(row, run_identity)
     ]
     rows.sort(
         key=lambda row: (
@@ -618,11 +667,14 @@ def _refine_top_candidates(
     trials: int,
     log,
     top_n: int = 10,
+    run_identity: str = "",
 ) -> dict:
     broad_checkpoint = Path(str(broad_selection["checkpoint"]))
     broad = json.loads(broad_checkpoint.read_text(encoding="utf-8"))
     mdd_limit = float((broad_selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
-    top_rows = _rank_completed_rows(broad.get("completed") or {}, mdd_limit)[:top_n]
+    top_rows = _rank_completed_rows(
+        broad.get("completed") or {}, mdd_limit, run_identity
+    )[:top_n]
     if not top_rows:
         raise RuntimeError(f"1차 탐색에서 정밀 탐색에 사용할 TOP{top_n} 후보가 없습니다.")
     trials_per_seed = min(5000, max(1, int(trials)))
@@ -632,20 +684,44 @@ def _refine_top_candidates(
         "broad_checkpoint": str(broad_checkpoint),
         "broad_top10": [row.get("parameters") for row in top_rows],
         "trials_per_seed": trials_per_seed,
-        "schema": "top10-independent-refine-v3",
+        "run_identity": run_identity,
+        "schema": REFINEMENT_SCHEMA,
     }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     path = broad_checkpoint.with_name(broad_checkpoint.stem + "-refined.json")
-    state = {"version": 3, "strategy_fingerprint": fingerprint, "completed": {}}
+    state = {
+        "version": 4,
+        "strategy_fingerprint": fingerprint,
+        "run_identity": run_identity,
+        "engine": engine_manifest(),
+        "completed": {},
+    }
     if path.is_file():
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        if loaded.get("strategy_fingerprint") == fingerprint:
-            state = loaded
-            log(f"정밀 탐색 체크포인트 재개: {len(state.get('completed') or {})}/{expected_trials}")
-        else:
-            stale = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
-            path.replace(stale)
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                loaded.get("strategy_fingerprint") == fingerprint
+                and loaded.get("run_identity") == run_identity
+            ):
+                state = loaded
+                log(f"정밀 탐색 체크포인트 재개: {len(state.get('completed') or {})}/{expected_trials}")
+            else:
+                stale = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
+                path.replace(stale)
+                log(f"조건이 다른 정밀 탐색 체크포인트 보존: {stale.name}")
+        except Exception:
+            damaged = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".damaged-%Y%m%dT%H%M%SZ"))
+            path.replace(damaged)
+            log(f"손상된 정밀 탐색 체크포인트 보존: {damaged.name}")
     completed = state.setdefault("completed", {})
     candidates = _refinement_candidates(top_rows[:top_n], trials_per_seed, f"{symbol}|{timeframe}|{start_text}|{end_text}|{fingerprint}")
+    candidates.sort(key=lambda item: (
+        int(item[1].get("volume_lookback", 0)),
+        int(item[1].get("volatility_bars", 0)),
+        int(item[1].get("nbar_volatility_bars", 0)),
+        int(item[1].get("adx_length", 0)),
+        int(item[1].get("rsi_length", 0)),
+        item[0],
+    ))
     for position, (seed_index, params) in enumerate(candidates, 1):
         _wait_for_optimization_control()
         identity = json.dumps(params, sort_keys=True, separators=(",", ":"))
@@ -657,20 +733,28 @@ def _refine_top_candidates(
         result = run_cached_symbol_backtest(symbol=symbol, asset_class="crypto", exchange="bitget", timeframe=timeframe,
             start=start_text, end=end_text, overrides=overrides, database_path=db,
             control_check=_wait_for_optimization_control, include_details=False)
+        compact_result = _compact_risk_result(result)
         completed[key] = {
             "broad_seed_rank": seed_index,
             "entry_multiplier": params.get("entry_multiplier"),
             "max_entries": params.get("max_pyramiding"),
             "parameters": params,
-            "result": _compact_risk_result(result),
+            "result": compact_result,
+            "run_identity": run_identity,
+            "candidate_signature": candidate_signature(
+                run_identity=run_identity,
+                parameters=params,
+                result=compact_result,
+            ),
         }
         state["last_completed"] = key
         if position % 25 == 0 or position == len(candidates):
             _save_json_atomic(path, state)
             log(f"정밀 탐색 {position}/{expected_trials} · TOP10 후보별 {trials_per_seed}회")
         del result, overrides
-        gc.collect()
-    ranked = _rank_completed_rows(completed, mdd_limit)
+        if position % 50 == 0:
+            gc.collect()
+    ranked = _rank_completed_rows(completed, mdd_limit, run_identity)
     if not ranked:
         raise RuntimeError("정밀 탐색에서 MDD·청산 조건을 통과한 후보가 없습니다.")
     state["stage"] = "COMPLETE"
@@ -685,6 +769,7 @@ def _refine_top_candidates(
         "requested_trials": expected_trials,
         "completed_trials": len(completed),
         "eligible_trials": len(ranked),
+        "run_identity": run_identity,
         "top_candidates": ranked[:10],
     }
 
@@ -732,6 +817,7 @@ def _rolling_validate_candidates(
     months: int,
     log,
     top_n: int = 10,
+    run_identity: str = "",
 ) -> dict:
     windows = _month_windows(start_text, end_text, months)
     if not windows:
@@ -744,20 +830,42 @@ def _rolling_validate_candidates(
     fingerprint = hashlib.sha256(json.dumps({
         "source": str(source), "months": months, "windows": windows,
         "candidate_parameters": [row.get("parameters") for row in candidates],
+        "run_identity": run_identity,
+        "schema": ROLLING_SCHEMA,
     }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-    state = {"version": 2, "strategy_fingerprint": fingerprint, "completed": {}}
+    state = {
+        "version": 3,
+        "strategy_fingerprint": fingerprint,
+        "run_identity": run_identity,
+        "engine": engine_manifest(),
+        "completed": {},
+    }
     if path.is_file():
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        if loaded.get("strategy_fingerprint") == fingerprint:
-            state = loaded
-            log(f"{months}개월 롤링 체크포인트 재개: {len(state.get('completed') or {})}개 구간 완료")
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                loaded.get("strategy_fingerprint") == fingerprint
+                and loaded.get("run_identity") == run_identity
+            ):
+                state = loaded
+                log(f"{months}개월 롤링 체크포인트 재개: {len(state.get('completed') or {})}개 구간 완료")
+            else:
+                stale = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".stale-%Y%m%dT%H%M%SZ"))
+                path.replace(stale)
+                log(f"조건이 다른 {months}개월 롤링 체크포인트 보존: {stale.name}")
+        except Exception:
+            damaged = path.with_suffix(path.suffix + datetime.now(timezone.utc).strftime(".damaged-%Y%m%dT%H%M%SZ"))
+            path.replace(damaged)
+            log(f"손상된 {months}개월 롤링 체크포인트 보존: {damaged.name}")
     completed = state.setdefault("completed", {})
-    for candidate_index, row in enumerate(candidates, 1):
-        params = dict(row.get("parameters") or {})
-        overrides = dict(base_overrides)
-        overrides.update({k: v for k, v in params.items() if k != "entry_multiplier"})
-        identity = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:10]
-        for window_index, (window_start, window_end) in enumerate(windows, 1):
+    # Keep one rolling window hot while all candidates run. The previous
+    # candidate-first order reopened the same SQLite slice once per candidate.
+    for window_index, (window_start, window_end) in enumerate(windows, 1):
+        for candidate_index, row in enumerate(candidates, 1):
+            params = dict(row.get("parameters") or {})
+            overrides = dict(base_overrides)
+            overrides.update({k: v for k, v in params.items() if k != "entry_multiplier"})
+            identity = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()[:10]
             _wait_for_optimization_control()
             key = f"candidate-{candidate_index:02d}-{identity}-window-{window_index:02d}"
             if key in completed:
@@ -771,7 +879,8 @@ def _rolling_validate_candidates(
                 _save_json_atomic(path, state)
                 log(f"{months}개월 롤링 검증 {len(completed)}/{len(candidates) * len(windows)}")
             del result
-            gc.collect()
+            if len(completed) % 50 == 0:
+                gc.collect()
     summaries: list[dict] = []
     for candidate_index, row in enumerate(candidates, 1):
         params = dict(row.get("parameters") or {})
@@ -797,7 +906,8 @@ def _rolling_validate_candidates(
     ), reverse=True)
     selected = summaries[0] if summaries else None
     payload = {
-        "schema_version": 2, "symbol": symbol, "timeframe": timeframe, "requested_start": start_text, "requested_end": end_text,
+        "schema_version": 3, "symbol": symbol, "timeframe": timeframe, "requested_start": start_text, "requested_end": end_text,
+        "run_identity": run_identity, "engine": engine_manifest(),
         "window_months": months, "window_rule": f"{months} calendar months, shifted by 1 month",
         "selection_rule": "positive windows, median return, worst return, median PF, lower worst MDD, median trades",
         "candidate_count": len(candidates), "window_count": len(windows), "completed_validations": len(completed),
@@ -901,9 +1011,10 @@ def _monte_carlo_report(summary: dict, simulations: int = 1000) -> dict:
     drawdowns: list[float] = []
     max_loss_streaks: list[int] = []
     ruins = 0
+    starting_equity = float(summary.get("initial_capital") or 1000.0)
     for _ in range(max(100, simulations)):
         sample = [pnls[rng.randrange(len(pnls))] for _ in pnls]
-        equity = 1000.0
+        equity = starting_equity
         peak = equity
         max_dd = 0.0
         streak = 0
@@ -935,6 +1046,7 @@ def _monte_carlo_report(summary: dict, simulations: int = 1000) -> dict:
 def _cost_stress_report(summary: dict) -> dict:
     gross = float(summary.get("gross_pnl") or 0)
     base_cost = float(summary.get("estimated_costs") or 0)
+    initial_capital = float(summary.get("initial_capital") or 1000.0)
     base_total = 0.03
     rows = []
     for label, fee, slip in (("기본", 0.02, 0.01), ("보통 악화", 0.03, 0.03), ("강한 악화", 0.05, 0.05)):
@@ -942,7 +1054,8 @@ def _cost_stress_report(summary: dict) -> dict:
         pnl = gross - cost
         rows.append({"label": label, "fee_percent": fee, "slippage_percent": slip,
                      "estimated_costs": round(cost, 6), "pnl": round(pnl, 6),
-                     "return_percent": round(pnl / 1000.0 * 100, 6), "profitable": pnl > 0})
+                     "return_percent": round(pnl / initial_capital * 100, 6) if initial_capital else 0.0,
+                     "profitable": pnl > 0})
     return {"status": "PASS" if rows[-1]["profitable"] else "WARN", "scenarios": rows}
 
 
@@ -1139,7 +1252,9 @@ def _attach_result_insights(summary: dict, overrides: dict, speed_mode: str, sta
         "optimization_stage": stage,
         "strategy_overrides": overrides,
         "candidate_seed_rule": "sha256-deterministic",
-        "engine_schema": "mobile-backtest-v4",
+        "engine": engine_manifest(),
+        "engine_schema": ENGINE_SCHEMA,
+        "effective_parameters_sha256": parameter_signature(overrides),
     }
     encoded = json.dumps(reproducibility, sort_keys=True, separators=(",", ":"), default=str)
     reproducibility["run_signature"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1158,6 +1273,18 @@ def defaults() -> str:
             "server": DEFAULT_SERVER,
             "user": DEFAULT_USER,
             "remote_dir": DEFAULT_REMOTE_DIR,
+        },
+        ensure_ascii=False,
+    )
+
+
+def engine_status() -> str:
+    return json.dumps(
+        {
+            "engine": engine_manifest(),
+            "feature_cache": feature_cache_info(),
+            "checkpoint_lock": "engine-code + cache-sha256 + period + all settings",
+            "exact_replay": "signed TOP10 candidate + full context comparison",
         },
         ensure_ascii=False,
     )
@@ -1281,6 +1408,34 @@ def run_backtest(
             selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
         )
         overrides["max_pyramiding"] = int(selected_parameters.get("max_pyramiding", 1))
+        source_engine = dict(source_context.get("engine") or {})
+        installed_engine = engine_manifest()
+        if (
+            not source_engine.get("code_sha256")
+            or source_engine.get("schema") != installed_engine.get("schema")
+            or source_engine.get("code_sha256") != installed_engine.get("code_sha256")
+        ):
+            raise RuntimeError(
+                "선택한 TOP10은 이전 백테스트 엔진 결과입니다. "
+                "현재 엔진으로 최적화를 한 번 실행한 뒤 새 TOP10을 선택하세요."
+            )
+        source_run_identity = str(source_context.get("optimization_run_identity") or "")
+        expected_candidate_signature = str(source_context.get("candidate_signature") or "")
+        actual_candidate_signature = candidate_signature(
+            run_identity=source_run_identity,
+            parameters=selected_parameters,
+            result=original_candidate_result,
+        )
+        if (
+            not source_run_identity
+            or not bool(source_context.get("candidate_verified", False))
+            or not expected_candidate_signature
+            or expected_candidate_signature != actual_candidate_signature
+        ):
+            raise RuntimeError(
+                "선택한 TOP10 후보의 결과 서명이 일치하지 않습니다. "
+                "저장된 결과에서 후보를 다시 선택하세요."
+            )
         log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
     else:
         overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
@@ -1334,6 +1489,25 @@ def run_backtest(
         strategy_overrides=overrides,
         control_check=_wait_for_optimization_control,
     )
+    current_engine = engine_manifest()
+    run_candidate_schema = (
+        f"{OPTIMIZATION_CANDIDATE_SCHEMA}|profile={selected_profile}|"
+        f"trials={broad_optimization_trials}|precheck={int(bool(precheck_enabled))}|"
+        f"early_stop={early_stop_patience}"
+    )
+    current_run_identity = build_run_identity(
+        cache_sha256=str(summary.get("cache_sha256") or ""),
+        symbol=symbol.strip(),
+        timeframe=timeframe.strip(),
+        requested_start=start_text.strip(),
+        requested_end=end_text.strip(),
+        strategy_overrides=overrides,
+        candidate_schema=run_candidate_schema,
+    )
+    summary["engine"] = current_engine
+    summary["optimization_run_identity"] = current_run_identity
+    summary["optimization_candidate_schema"] = run_candidate_schema
+    summary["effective_parameters_sha256"] = parameter_signature(overrides)
     summary["initial_capital"] = initial_capital
     summary["final_equity"] = initial_capital + float(summary.get("pnl") or 0)
     summary["sizing_mode"] = "compound_current_equity" if bool(overrides.get("backtest_compounding_enabled")) else "fixed_initial_equity"
@@ -1357,12 +1531,71 @@ def run_backtest(
         source_compounding = bool(source_context.get("compounding_enabled", False))
         same_initial_capital = abs(source_initial_capital - initial_capital) < 1e-9
         same_compounding = source_compounding == bool(overrides.get("backtest_compounding_enabled"))
+        same_data_range = (
+            str(source_context.get("data_start") or "") == str(summary.get("data_start") or "")
+            and str(source_context.get("data_end") or "") == str(summary.get("data_end") or "")
+            and int(source_context.get("bars") or 0) == int(summary.get("bars") or 0)
+        )
+        source_engine = dict(source_context.get("engine") or {})
+        same_engine = (
+            str(source_engine.get("schema") or "") == str(current_engine.get("schema") or "")
+            and str(source_engine.get("code_sha256") or "") == str(current_engine.get("code_sha256") or "")
+        )
+        current_parameters_sha = parameter_signature(overrides)
+        same_strategy_parameters = (
+            str(source_context.get("effective_parameters_sha256") or "")
+            == current_parameters_sha
+        )
+        source_candidate_verified = bool(source_context.get("candidate_verified", False))
+        return_difference = float(summary.get("return_percent") or 0) - original_return
+        mdd_difference = float(summary.get("max_drawdown_percent") or 0) - original_mdd
+        metrics_match = abs(return_difference) <= 1e-9 and abs(mdd_difference) <= 1e-9
+        context_match = all((
+            same_period,
+            same_cache,
+            same_data_range,
+            same_execution_model,
+            same_initial_capital,
+            same_compounding,
+            same_engine,
+            same_strategy_parameters,
+            source_candidate_verified,
+        ))
+        mismatch_reasons: list[str] = []
+        for matched, reason in (
+            (same_period, "요청 기간"),
+            (same_cache, "캐시 SHA256"),
+            (same_data_range, "실제 데이터 범위/봉 수"),
+            (same_execution_model, "체결 모델"),
+            (same_initial_capital, "초기자산"),
+            (same_compounding, "복리 설정"),
+            (same_engine, "엔진 코드"),
+            (same_strategy_parameters, "전체 전략 수치"),
+            (source_candidate_verified, "TOP10 후보 서명"),
+        ):
+            if not matched:
+                mismatch_reasons.append(reason)
+        if context_match and not metrics_match:
+            mismatch_reasons.append("동일 조건 결과 무결성")
         summary["reproduction_comparison"] = {
+            "status": "PASS" if context_match and metrics_match else "FAIL",
+            "exact_reproduction": bool(context_match and metrics_match),
+            "context_match": bool(context_match),
+            "metrics_match": bool(metrics_match),
+            "mismatch_reasons": mismatch_reasons,
             "same_requested_period": same_period,
             "same_cache_sha256": same_cache,
+            "same_data_range": same_data_range,
             "same_execution_model": same_execution_model,
             "same_initial_capital": same_initial_capital,
             "same_compounding": same_compounding,
+            "same_engine": same_engine,
+            "same_strategy_parameters": same_strategy_parameters,
+            "source_candidate_verified": source_candidate_verified,
+            "original_engine": source_engine,
+            "retest_engine": current_engine,
+            "original_effective_parameters_sha256": source_context.get("effective_parameters_sha256"),
+            "retest_effective_parameters_sha256": current_parameters_sha,
             "original_initial_capital": source_initial_capital,
             "retest_initial_capital": initial_capital,
             "original_compounding": source_compounding,
@@ -1371,10 +1604,10 @@ def run_backtest(
             "retest_execution_model": overrides.get("backtest_execution_model"),
             "original_return_percent": original_return,
             "retest_return_percent": float(summary.get("return_percent") or 0),
-            "return_difference_percent_points": float(summary.get("return_percent") or 0) - original_return,
+            "return_difference_percent_points": return_difference,
             "original_mdd_percent": original_mdd,
             "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
-            "mdd_difference_percent_points": float(summary.get("max_drawdown_percent") or 0) - original_mdd,
+            "mdd_difference_percent_points": mdd_difference,
         }
         summary["optimization_pipeline"] = {
             "stage": "selected_strategy_retest",
@@ -1419,6 +1652,7 @@ def run_backtest(
         log,
         bool(precheck_enabled),
         early_stop_patience,
+        current_run_identity,
     )
     for key in (
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl",
@@ -1430,11 +1664,14 @@ def run_backtest(
         "execution_model",
     ):
         summary[key] = optimized_result.get(key)
+    summary["final_equity"] = initial_capital + float(summary.get("pnl") or 0)
     summary["risk_profile"] = selected_profile
     summary["risk_profile_selection"] = risk_selection
     summary["optimization_base_overrides"] = overrides
     pipeline: dict = {
         "stage": selected_stage,
+        "run_identity": current_run_identity,
+        "engine": current_engine,
         "broad": {
             "tested_combinations": risk_selection.get("tested_combinations"),
             "viable_combinations": risk_selection.get("viable_combinations"),
@@ -1446,7 +1683,7 @@ def run_backtest(
         refined = _refine_top_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
             Path(db), Path(output_dir), overrides, risk_selection,
-            refine_trials_per_seed, log, optimization_top_n,
+            refine_trials_per_seed, log, optimization_top_n, current_run_identity,
         )
         pipeline["refined"] = {
             key: value for key, value in refined.items() if key != "top_candidates"
@@ -1455,12 +1692,12 @@ def run_backtest(
         rolling_6m = _rolling_validate_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
             Path(db), Path(output_dir), overrides, list(refined.get("top_candidates") or [])[:optimization_top_n],
-            str(refined.get("checkpoint") or ""), 6, log, optimization_top_n,
+            str(refined.get("checkpoint") or ""), 6, log, optimization_top_n, current_run_identity,
         )
         rolling_3m = _rolling_validate_candidates(
             symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(),
             Path(db), Path(output_dir), overrides, list(rolling_6m.get("ranking") or [])[:optimization_top_n],
-            str(rolling_6m.get("checkpoint") or ""), 3, log, optimization_top_n,
+            str(rolling_6m.get("checkpoint") or ""), 3, log, optimization_top_n, current_run_identity,
         )
         pipeline["rolling_6m"] = {key: value for key, value in rolling_6m.items() if key != "ranking"}
         pipeline["rolling_3m"] = {key: value for key, value in rolling_3m.items() if key != "ranking"}
@@ -1469,12 +1706,15 @@ def run_backtest(
         summary["rolling_final_selection"] = rolling_3m.get("selected")
         summary["rolling_report_path"] = rolling_3m.get("report_path")
     summary["optimization_pipeline"] = pipeline
-    _attach_result_insights(summary, overrides, speed_mode, selected_stage)
     final_validation_overrides = dict(overrides)
     final_validation_overrides.update({
         k: v for k, v in dict(risk_selection.get("parameters") or {}).items()
         if k != "entry_multiplier"
     })
+    summary["effective_parameters_sha256"] = parameter_signature(final_validation_overrides)
+    _attach_result_insights(
+        summary, final_validation_overrides, speed_mode, selected_stage
+    )
     _attach_validation_suite(summary, Path(db), symbol.strip(), timeframe.strip(), start_text.strip(), end_text.strip(), final_validation_overrides, log)
     history_dir = Path(output_dir) / "BacktestResults"
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -1585,7 +1825,24 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
     if not checkpoint_path.is_file():
         raise RuntimeError("TOP10 후보 체크포인트가 없습니다.")
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    run_identity = str(summary.get("optimization_run_identity") or "")
+    if not run_identity:
+        raise RuntimeError(
+            "이 결과는 이전 엔진에서 생성되어 재현 잠금 정보가 없습니다. "
+            "현재 엔진으로 최적화를 다시 실행하세요."
+        )
+    if str(checkpoint.get("run_identity") or "") != run_identity:
+        raise RuntimeError(
+            "결과 파일과 TOP10 체크포인트의 엔진·캐시 지문이 다릅니다. "
+            "현재 조건으로 최적화를 다시 실행하세요."
+        )
     rows = list((checkpoint.get("completed") or {}).values())
+    signed_rows = [row for row in rows if verify_candidate_signature(row, run_identity)]
+    if rows and not signed_rows:
+        raise RuntimeError(
+            "TOP10 후보 서명 검증에 실패했습니다. 오래되거나 변경된 체크포인트는 사용할 수 없습니다."
+        )
+    rows = signed_rows
     mdd_limit = float((selection.get("constraints") or {}).get("mdd_limit_percent", 100.0))
     eligible = [
         row for row in rows
@@ -1618,6 +1875,7 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
         effective["order_percent_of_equity"] = float(
             parameters.get("order_percent_of_equity", entry * 100.0)
         )
+        effective_parameters_sha256 = parameter_signature(effective)
         item = dict(row)
         item["rank"] = rank
         result = dict(item.get("result") or {})
@@ -1635,10 +1893,30 @@ def list_top_strategies(result_path: str, limit: int = 10) -> str:
             "requested_end": summary.get("requested_end"),
             "data_start": summary.get("data_start"),
             "data_end": summary.get("data_end"),
+            "bars": summary.get("bars"),
             "cache_sha256": summary.get("cache_sha256"),
-            "execution_model": summary.get("execution_model") or base_overrides.get("backtest_execution_model", "signal_close"),
-            "initial_capital": summary.get("initial_capital", base_overrides.get("initial_capital", 1000.0)),
-            "compounding_enabled": summary.get("compounding_enabled", base_overrides.get("backtest_compounding_enabled")),
+            "engine": summary.get("engine") or engine_manifest(),
+            "optimization_run_identity": run_identity,
+            "checkpoint_candidate_signature": row.get("candidate_signature"),
+            "candidate_signature": candidate_signature(
+                run_identity=run_identity,
+                parameters=effective,
+                result=result,
+            ),
+            "candidate_verified": True,
+            "effective_parameters_sha256": effective_parameters_sha256,
+            "candidate_schema": checkpoint.get("candidate_schema"),
+            "execution_model": effective.get(
+                "backtest_execution_model",
+                summary.get("execution_model") or "signal_close",
+            ),
+            "initial_capital": effective.get(
+                "initial_capital", summary.get("initial_capital", 1000.0)
+            ),
+            "compounding_enabled": effective.get(
+                "backtest_compounding_enabled",
+                summary.get("compounding_enabled"),
+            ),
         }
         items.append(item)
     return json.dumps({
@@ -1721,41 +1999,64 @@ def saved_result_replay_payload(result_path: str) -> str:
         parameter_source = "이전 재검증 전략"
     if not isinstance(parameters, dict):
         raise RuntimeError("이 결과에는 동일 수치 재검증용 전략 파라미터가 없습니다.")
+    current_engine = engine_manifest()
+    source_engine = dict(summary.get("engine") or {})
+    if (
+        not source_engine.get("code_sha256")
+        or source_engine.get("schema") != current_engine.get("schema")
+        or source_engine.get("code_sha256") != current_engine.get("code_sha256")
+    ):
+        raise RuntimeError(
+            "이 저장 결과는 이전 백테스트 엔진으로 생성되었습니다. "
+            "현재 엔진으로 새 최적화를 실행하세요."
+        )
+    source_run_identity = str(summary.get("optimization_run_identity") or "")
+    if not source_run_identity:
+        raise RuntimeError("저장 결과에 엔진·캐시 재현 잠금 정보가 없습니다.")
     effective = dict(summary.get("optimization_base_overrides") or FIXED_BACKTEST)
     effective.update(parameters)
     entry = float(parameters.get("entry_multiplier", effective.get("entry_multiplier", 1.0)))
     effective["entry_multiplier"] = entry
     effective["order_percent_of_equity"] = float(parameters.get("order_percent_of_equity", entry * 100.0))
-    database = Path(str(summary.get("database") or ""))
+    # Keep the fingerprint captured when the original result was produced.
+    # Re-hashing today's mutable DB here would make changed candle data look
+    # identical to the historical run and was the source of false "same cache"
+    # reports during replay.
     stable_cache_sha = str(summary.get("cache_sha256") or "")
-    if database.is_file() and summary.get("requested_start") and summary.get("requested_end"):
-        try:
-            stable_cache_sha = sha256_ohlcv_range(
-                database, str(summary["requested_start"]), str(summary["requested_end"])
-            )
-        except Exception:
-            pass
+    original_result = {
+        "return_percent": summary.get("return_percent"),
+        "max_drawdown_percent": summary.get("max_drawdown_percent"),
+        "win_rate": summary.get("win_rate"),
+        "profit_factor": summary.get("profit_factor"),
+        "trades": summary.get("trades"),
+    }
+    effective_parameters_sha256 = parameter_signature(effective)
+    selection_signature = candidate_signature(
+        run_identity=source_run_identity,
+        parameters=effective,
+        result=original_result,
+    )
     return json.dumps({
         "parameters": effective,
         "parameter_source": parameter_source,
-        "original_result": {
-            "return_percent": summary.get("return_percent"),
-            "max_drawdown_percent": summary.get("max_drawdown_percent"),
-            "win_rate": summary.get("win_rate"),
-            "profit_factor": summary.get("profit_factor"),
-            "trades": summary.get("trades"),
-        },
+        "original_result": original_result,
         "source_context": {
             "source_result": str(path),
             "requested_start": summary.get("requested_start"),
             "requested_end": summary.get("requested_end"),
             "data_start": summary.get("data_start"),
             "data_end": summary.get("data_end"),
+            "bars": summary.get("bars"),
             "cache_sha256": stable_cache_sha,
             "cache_fingerprint_kind": "canonical-ohlcv-v1",
-            "execution_model": summary.get("execution_model"),
-            "initial_capital": summary.get("initial_capital", effective.get("initial_capital", 1000.0)),
-            "compounding_enabled": summary.get("compounding_enabled", effective.get("backtest_compounding_enabled")),
+            "engine": source_engine,
+            "optimization_run_identity": source_run_identity,
+            "candidate_signature": selection_signature,
+            "candidate_verified": True,
+            "effective_parameters_sha256": effective_parameters_sha256,
+            "execution_model": effective.get("backtest_execution_model", summary.get("execution_model")),
+            "initial_capital": effective.get("initial_capital", summary.get("initial_capital", 1000.0)),
+            "compounding_enabled": effective.get("backtest_compounding_enabled", summary.get("compounding_enabled")),
             "run_signature": (summary.get("reproducibility") or {}).get("run_signature"),
         },
     }, ensure_ascii=False)

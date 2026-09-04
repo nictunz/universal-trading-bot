@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from universal_bot.backtest import run_backtest
+from universal_bot.backtest_engine import (
+    FourExchangeVolumeCache,
+    engine_manifest,
+    feature_cache_info,
+)
 from universal_bot.config import Settings
 from universal_bot.historical import DataRequest, HistoricalDataManager
-from universal_bot.paper import normalize_exchange_volume
 
 FOUR_EXCHANGES = ("binance", "bitget", "okx", "bybit")
 
@@ -117,7 +123,7 @@ def run_cached_symbol_backtest(
     )
     global _PREPARED_CACHE_KEY, _PREPARED_CACHE_VALUE
     if _PREPARED_CACHE_KEY == prepared_key and _PREPARED_CACHE_VALUE is not None:
-        df, volumes, source_bars, source_status = _PREPARED_CACHE_VALUE
+        df, volume_cache, source_bars, source_status = _PREPARED_CACHE_VALUE
     else:
         manager = HistoricalDataManager(f"sqlite:///{path}", fallback_exchanges=[])
         base_request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", exchange.lower())
@@ -138,13 +144,14 @@ def run_cached_symbol_backtest(
             source_bars[ex] = len(source)
             volumes[ex] = source["volume"].astype(float)
             source_status[ex] = {"mode": "CACHE_ONLY", "status": "OK"}
+        volume_cache = FourExchangeVolumeCache(volumes, df.index)
         _PREPARED_CACHE_KEY = prepared_key
-        _PREPARED_CACHE_VALUE = (df, volumes, source_bars, source_status)
+        _PREPARED_CACHE_VALUE = (df, volume_cache, source_bars, source_status)
 
     if control_check is not None:
         control_check()
-    normalized = normalize_exchange_volume(volumes, settings.volume_lookback, required_sources=4)
-    common_count = int(normalized.reindex(df.index).notna().sum())
+    normalized = volume_cache.ratio(settings.volume_lookback)
+    common_count = int(np.isfinite(normalized).sum())
     if common_count < max(settings.volume_lookback, 10):
         raise ValueError("insufficient common four-exchange cached volume history")
 
@@ -153,6 +160,8 @@ def run_cached_symbol_backtest(
         settings,
         normalized_volume_ratio=normalized,
         control_check=control_check,
+        include_details=include_details,
+        feature_cache_key=prepared_key,
     )
     payload = {
         "strategy": "Volume Strategy FINAL Universal v15",
@@ -190,6 +199,11 @@ def run_cached_symbol_backtest(
         "compounding_enabled": settings.backtest_compounding_enabled,
         "sizing_mode": "compound_current_equity" if settings.backtest_compounding_enabled else "fixed_initial_capital",
         "execution_model": settings.backtest_execution_model,
+        "engine": engine_manifest(),
+        "engine_cache": {
+            "features": feature_cache_info(),
+            "four_exchange_volume": volume_cache.info(),
+        },
     }
     if include_details:
         payload["trades_log"] = result.trades_log

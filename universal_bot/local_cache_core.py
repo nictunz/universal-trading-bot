@@ -371,7 +371,7 @@ def build_cache_and_backtest(
         "symbol", "bars", "four_exchange_volume", "volume_source_bars", "volume_source_status",
         "trades", "wins", "win_rate", "profit_factor", "pnl", "gross_pnl", "estimated_costs",
         "return_percent", "max_drawdown_percent", "data_start", "data_end",
-        "execution_model",
+        "execution_model", "engine",
     )
     summary = {k: result.get(k) for k in keys}
     summary.update({

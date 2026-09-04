@@ -1,3 +1,6 @@
+import json
+import sqlite3
+
 from android.app.src.main.python.mobile_bridge import (
     FIXED_BACKTEST,
     OPTIMIZED_STRATEGY_FIELDS,
@@ -5,6 +8,10 @@ from android.app.src.main.python.mobile_bridge import (
     _append_checkpoint_journal,
     _load_checkpoint_journal,
     _profile_candidates,
+    candidate_signature,
+    engine_manifest,
+    list_top_strategies,
+    saved_result_replay_payload,
 )
 
 
@@ -78,10 +85,112 @@ def test_every_effective_v15_strategy_field_is_sampled():
     candidate = _profile_candidates("중간형", 1, "coverage")[0]
     assert not (candidate["allow_long"] is False and candidate["allow_short"] is False)
     assert set(OPTIMIZED_STRATEGY_FIELDS).issubset(candidate)
-    assert candidate["initial_capital"] == 1000.0
-    assert candidate["leverage"] == 50
-    assert candidate["backtest_fee_percent"] == 0.02
-    assert candidate["backtest_slippage_percent"] == 0.01
+    # Money and execution settings come from the user's authoritative base
+    # settings. Candidates must never silently reset them to defaults.
+    assert set(FIXED_BACKTEST).isdisjoint(candidate)
+
+
+def test_saved_replay_keeps_original_cache_fingerprint(tmp_path):
+    database = tmp_path / "mutable.db"
+    with sqlite3.connect(database) as con:
+        con.execute(
+            "CREATE TABLE ohlcv (asset_class TEXT, exchange TEXT, symbol TEXT, "
+            "timeframe TEXT, timestamp INTEGER, open REAL, high REAL, low REAL, "
+            "close REAL, volume REAL)"
+        )
+        con.execute(
+            "INSERT INTO ohlcv VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("crypto", "bitget", "BTC/USDT:USDT", "5m", 1735689600000,
+             100.0, 101.0, 99.0, 100.5, 42.0),
+        )
+    result_file = tmp_path / "saved-backtest.json"
+    result_file.write_text(json.dumps({
+        "database": str(database),
+        "cache_sha256": "original-run-cache-sha",
+        "engine": engine_manifest(),
+        "optimization_run_identity": "original-run-id",
+        "optimization_base_overrides": dict(FIXED_BACKTEST),
+        "risk_profile_selection": {"parameters": {"volume_lookback": 20}},
+        "requested_start": "2025-01-01",
+        "requested_end": "2025-01-01",
+        "return_percent": 12.5,
+        "max_drawdown_percent": 4.0,
+        "win_rate": 50.0,
+        "profit_factor": 1.5,
+        "trades": 2,
+    }), encoding="utf-8")
+
+    replay = json.loads(saved_result_replay_payload(str(result_file)))
+
+    assert replay["source_context"]["cache_sha256"] == "original-run-cache-sha"
+
+
+def test_top10_replay_uses_full_effective_settings_and_signed_result(tmp_path):
+    run_identity = "locked-run-id"
+    parameters = _profile_candidates("중간형", 1, "signed-top10")[0]
+    result = {
+        "trades": 12,
+        "wins": 7,
+        "win_rate": 58.333333,
+        "profit_factor": 1.8,
+        "pnl": 250.0,
+        "gross_pnl": 270.0,
+        "estimated_costs": 20.0,
+        "return_percent": 10.0,
+        "max_drawdown_percent": 8.0,
+        "liquidations": 0,
+    }
+    row = {
+        "parameters": parameters,
+        "result": result,
+        "run_identity": run_identity,
+        "candidate_signature": candidate_signature(
+            run_identity=run_identity,
+            parameters=parameters,
+            result=result,
+        ),
+    }
+    checkpoint = tmp_path / "risk.json"
+    checkpoint.write_text(json.dumps({
+        "run_identity": run_identity,
+        "candidate_schema": "test-engine-locked",
+        "completed": {"trial-1": row},
+    }), encoding="utf-8")
+    base = {
+        **FIXED_BACKTEST,
+        "initial_capital": 2500.0,
+        "backtest_compounding_enabled": False,
+        "backtest_execution_model": "next_open",
+        "adaptive_regime_enabled": True,
+    }
+    saved = tmp_path / "saved-backtest.json"
+    saved.write_text(json.dumps({
+        "optimization_run_identity": run_identity,
+        "optimization_base_overrides": base,
+        "risk_profile_selection": {
+            "checkpoint": str(checkpoint),
+            "constraints": {"mdd_limit_percent": 25.0},
+        },
+        "requested_start": "2025-01-01",
+        "requested_end": "2025-12-31",
+        "data_start": "2025-01-01T00:00:00+00:00",
+        "data_end": "2025-12-31T23:55:00+00:00",
+        "bars": 105120,
+        "cache_sha256": "cache-locked",
+        "engine": engine_manifest(),
+    }), encoding="utf-8")
+
+    item = json.loads(list_top_strategies(str(saved), 10))["items"][0]
+    effective = item["effective_parameters"]
+
+    assert effective["initial_capital"] == 2500.0
+    assert effective["backtest_compounding_enabled"] is False
+    assert effective["backtest_execution_model"] == "next_open"
+    assert item["source_context"]["candidate_signature"] == candidate_signature(
+        run_identity=run_identity,
+        parameters=effective,
+        result=result,
+    )
 
 
 def test_three_candle_split_profile_is_unique_and_capped():

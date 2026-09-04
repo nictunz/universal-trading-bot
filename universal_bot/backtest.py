@@ -1,12 +1,15 @@
 from __future__ import annotations
+
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timezone
-import math
-from typing import Callable
+
 import numpy as np
 import pandas as pd
+
+from universal_bot.backtest_engine import prepare_engine_arrays
 from universal_bot.config import Settings
-from universal_bot.indicators import dmi_adx, rolling_range_percent, rsi, sma
 
 
 @dataclass
@@ -114,54 +117,55 @@ def _consecutive_candle_direction_ok(
 def run_backtest(
     df: pd.DataFrame,
     settings: Settings,
-    normalized_volume_ratio: pd.Series | None = None,
+    normalized_volume_ratio: pd.Series | np.ndarray | None = None,
     control_check: Callable[[], None] | None = None,
+    include_details: bool = True,
+    feature_cache_key: object | None = None,
 ) -> BacktestResult:
-    """Fast deterministic v15 bar simulation."""
+    """Fast deterministic v15 simulation on the native Android-safe engine."""
     if len(df) == 0:
         return BacktestResult(0, 0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [])
 
-    prepared = df.sort_index().loc[~df.index.duplicated(keep="last")].copy()
-    total = len(prepared)
-    close_s = prepared["close"].astype(float)
-    high_s = prepared["high"].astype(float)
-    low_s = prepared["low"].astype(float)
-    volume_s = prepared["volume"].astype(float)
-
-    if normalized_volume_ratio is not None:
-        volume_ratio_s = normalized_volume_ratio.reindex(prepared.index)
-    else:
-        vol_avg = sma(volume_s, settings.volume_lookback)
-        volume_ratio_s = volume_s / vol_avg.replace(0, math.nan)
-    n_range_s = rolling_range_percent(high_s, low_s, settings.volatility_bars)
-    block_range_s = rolling_range_percent(high_s, low_s, settings.nbar_volatility_bars)
-    _, _, adx_s = dmi_adx(high_s, low_s, close_s, settings.adx_length)
-    rsi_s = rsi(close_s, settings.rsi_length)
-
-    opens = prepared["open"].to_numpy(dtype=float, copy=False)
-    highs = high_s.to_numpy(dtype=float, copy=False)
-    lows = low_s.to_numpy(dtype=float, copy=False)
-    closes = close_s.to_numpy(dtype=float, copy=False)
-    volume_ratio = volume_ratio_s.to_numpy(dtype=float, copy=False)
-    n_range = n_range_s.to_numpy(dtype=float, copy=False)
-    block_range = block_range_s.to_numpy(dtype=float, copy=False)
-    adx = adx_s.to_numpy(dtype=float, copy=False)
-    rsi_values = rsi_s.to_numpy(dtype=float, copy=False)
+    engine_arrays = prepare_engine_arrays(
+        df,
+        settings,
+        normalized_volume_ratio,
+        cache_token=feature_cache_key,
+    )
+    market = engine_arrays.market
+    total = len(market.index)
+    opens = market.opens
+    highs = market.highs
+    lows = market.lows
+    closes = market.closes
+    one_bar_volatility = market.one_bar_volatility
+    volume_ratio = engine_arrays.volume_ratio
+    n_range = engine_arrays.range_percent
+    block_range = engine_arrays.block_range_percent
+    adx = engine_arrays.adx
+    rsi_values = engine_arrays.rsi
     regime_lookback = max(20, int(getattr(settings, "regime_lookback_bars", 288)))
-    regime_trend_s = (close_s / close_s.shift(regime_lookback) - 1.0) * 100.0
-    candle_range_s = ((prepared["high"] - prepared["low"]) / close_s.replace(0, np.nan) * 100.0).rolling(regime_lookback).mean()
-    regime_trend = regime_trend_s.to_numpy(dtype=float, copy=False)
-    regime_volatility = candle_range_s.to_numpy(dtype=float, copy=False)
-    index = prepared.index
+    regime_trend = engine_arrays.regime_trend
+    regime_volatility = engine_arrays.regime_volatility
+    index = market.index
 
     warmup = max(settings.volume_lookback, settings.volatility_bars, settings.nbar_volatility_bars, settings.adx_length * 3, settings.rsi_length + 10, regime_lookback if bool(getattr(settings, "adaptive_regime_enabled", False)) else 0, 200)
     start_idx = min(warmup, total - 1)
-    excluded_hours = {x.strip() for x in settings.excluded_hours.split(",") if x.strip()}
+    excluded_hours = {x.strip().zfill(2) for x in settings.excluded_hours.split(",") if x.strip()}
     start_date = settings.start_date
     if start_date.tzinfo is None:
         start_date = start_date.replace(tzinfo=timezone.utc)
     else:
         start_date = start_date.astimezone(timezone.utc)
+    start_timestamp_ns = int(pd.Timestamp(start_date).value)
+    use_start_date = bool(settings.use_start_date)
+    block_weekend = bool(settings.block_weekend)
+    adaptive_regime = bool(getattr(settings, "adaptive_regime_enabled", False))
+    trend_threshold = float(getattr(settings, "regime_trend_threshold_percent", 2.0))
+    high_vol_threshold = float(getattr(settings, "regime_high_volatility_percent", 0.8))
+    high_vol_risk_multiplier = float(
+        getattr(settings, "regime_high_volatility_risk_multiplier", 0.5)
+    )
 
     initial_capital = float(settings.initial_capital)
     compounding_enabled = bool(settings.backtest_compounding_enabled)
@@ -200,6 +204,8 @@ def run_backtest(
     position_volatility_regime = "미분류"
     trade_log: list[dict] = []
     equity_curve: list[dict] = []
+    streaming_peak = initial_capital
+    streaming_max_dd = 0.0
 
     for i in range(start_idx, total):
         # Mobile stop/pause must be observed inside a long multi-year trial,
@@ -218,37 +224,28 @@ def run_backtest(
         br = block_range[i]
         av = adx[i]
         rv = rsi_values[i]
-        adaptive_regime = bool(getattr(settings, "adaptive_regime_enabled", False))
         trend_value = regime_trend[i]
         regime_vol_value = regime_volatility[i]
-        trend_threshold = float(getattr(settings, "regime_trend_threshold_percent", 2.0))
-        high_vol_threshold = float(getattr(settings, "regime_high_volatility_percent", 0.8))
         market_regime = (
             "상승장" if np.isfinite(trend_value) and trend_value >= trend_threshold
             else ("하락장" if np.isfinite(trend_value) and trend_value <= -trend_threshold else "횡보장")
         )
         volatility_regime = "고변동성" if np.isfinite(regime_vol_value) and regime_vol_value >= high_vol_threshold else "저변동성"
         regime_risk_multiplier = (
-            float(getattr(settings, "regime_high_volatility_risk_multiplier", 0.5))
+            high_vol_risk_multiplier
             if adaptive_regime and volatility_regime == "고변동성" else 1.0
         )
 
-        one_bar_vol = abs(c - o) / o * 100.0 if o else 0.0
+        one_bar_vol = one_bar_volatility[i]
         raw_tp = nr * float(settings.tp_vol_multiplier) if np.isfinite(nr) else math.nan
         raw_sl = nr * float(settings.sl_vol_multiplier) if np.isfinite(nr) else math.nan
         final_tp = max(settings.min_tp_percent, min(settings.max_tp_percent, raw_tp)) if np.isfinite(raw_tp) else math.nan
         final_sl = max(settings.min_sl_percent, min(settings.max_sl_percent, raw_sl)) if np.isfinite(raw_sl) else math.nan
 
-        ts = index[i]
-        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-        current_time = ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else ts
-        if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=timezone.utc)
-        else:
-            current_time = current_time.astimezone(timezone.utc)
-        time_ok = ((not settings.use_start_date) or current_time >= start_date)
-        time_ok = time_ok and ((not settings.block_weekend) or current_time.weekday() < 5)
-        time_ok = time_ok and (current_time.strftime("%H") not in excluded_hours)
+        ts_iso = index[i].isoformat() if include_details else ""
+        time_ok = (not use_start_date) or int(market.timestamp_ns[i]) >= start_timestamp_ns
+        time_ok = time_ok and ((not block_weekend) or int(market.weekdays[i]) < 5)
+        time_ok = time_ok and (f"{int(market.hours[i]):02d}" not in excluded_hours)
         cooldown_ok = (bars_since_entry is None or bars_since_entry >= settings.cooldown_bars) and (bars_since_exit is None or bars_since_exit >= settings.reentry_bars)
         nbar_ok = (not settings.use_nbar_volatility_block) or (np.isfinite(br) and br <= settings.max_nbar_volatility)
         adx_ok = (not settings.use_adx_filter) or (np.isfinite(av) and settings.adx_min <= av <= settings.adx_max)
@@ -415,12 +412,19 @@ def run_backtest(
                 last_exit_bar = bar_number
 
         if account_liquidated:
-            equity_curve.append({
-                "bar": bar_number,
-                "timestamp": ts_iso,
-                "equity": 0.0,
-                "liquidated": True,
-            })
+            net_equity = -realized_costs
+            if streaming_peak:
+                streaming_max_dd = max(
+                    streaming_max_dd,
+                    (streaming_peak - net_equity) / streaming_peak * 100.0,
+                )
+            if include_details:
+                equity_curve.append({
+                    "bar": bar_number,
+                    "timestamp": ts_iso,
+                    "equity": 0.0,
+                    "liquidated": True,
+                })
             break
 
         sizing_equity = backtest_sizing_equity(
@@ -471,28 +475,39 @@ def run_backtest(
             qty = abs(position_size)
             avg_entry = entry_notional / qty if qty and entry_notional else initial_entry
             open_pnl = (c - avg_entry) * qty if position_side == "LONG" else (avg_entry - c) * qty
-        equity_curve.append({"bar": bar_number, "timestamp": ts_iso, "equity": initial_capital + realized_pnl + open_pnl})
+        gross_equity = initial_capital + realized_pnl + open_pnl
+        net_equity = gross_equity - realized_costs
+        streaming_peak = max(streaming_peak, net_equity)
+        if streaming_peak:
+            streaming_max_dd = max(
+                streaming_max_dd,
+                (streaming_peak - net_equity) / streaming_peak * 100.0,
+            )
+        if include_details:
+            equity_curve.append({"bar": bar_number, "timestamp": ts_iso, "equity": gross_equity})
 
     adjusted_log, estimated_costs, net_pnl, net_wins, net_pf = _apply_execution_costs(trade_log, settings)
     gross_pnl = float(realized_pnl)
 
-    cost_by_bar: dict[int, float] = {}
-    for t in adjusted_log:
-        b = int(t.get("bar") or 0)
-        cost_by_bar[b] = cost_by_bar.get(b, 0.0) + float(t.get("estimated_cost") or 0.0)
-    running_cost = 0.0
-    adjusted_curve = []
-    peak = initial_capital
-    max_dd = 0.0
-    for point in equity_curve:
-        running_cost += cost_by_bar.get(int(point.get("bar") or 0), 0.0)
-        equity = float(point["equity"]) - running_cost
-        adjusted_point = dict(point)
-        adjusted_point["equity"] = equity
-        adjusted_curve.append(adjusted_point)
-        peak = max(peak, equity)
-        if peak:
-            max_dd = max(max_dd, (peak - equity) / peak * 100.0)
+    adjusted_curve: list[dict] = []
+    max_dd = streaming_max_dd
+    if include_details:
+        cost_by_bar: dict[int, float] = {}
+        for t in adjusted_log:
+            b = int(t.get("bar") or 0)
+            cost_by_bar[b] = cost_by_bar.get(b, 0.0) + float(t.get("estimated_cost") or 0.0)
+        running_cost = 0.0
+        peak = initial_capital
+        max_dd = 0.0
+        for point in equity_curve:
+            running_cost += cost_by_bar.get(int(point.get("bar") or 0), 0.0)
+            equity = float(point["equity"]) - running_cost
+            adjusted_point = dict(point)
+            adjusted_point["equity"] = equity
+            adjusted_curve.append(adjusted_point)
+            peak = max(peak, equity)
+            if peak:
+                max_dd = max(max_dd, (peak - equity) / peak * 100.0)
 
     trades = len(adjusted_log)
     return BacktestResult(
@@ -506,6 +521,6 @@ def run_backtest(
         return_percent=net_pnl / initial_capital * 100 if initial_capital else 0.0,
         max_drawdown_percent=max_dd,
         liquidations=liquidations,
-        trades_log=adjusted_log,
+        trades_log=adjusted_log if include_details else [],
         equity_curve=adjusted_curve,
     )
