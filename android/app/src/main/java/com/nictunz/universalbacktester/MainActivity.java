@@ -377,6 +377,13 @@ public class MainActivity extends android.app.Activity {
         Button topStrategiesButton = actionButton("🏆 수익률 TOP10 전략 선택", Color.rgb(30, 41, 59));
         topStrategiesButton.setOnClickListener(v -> showTopStrategies(false));
         backtestCard.addView(topStrategiesButton, marginTop(8));
+        Button pasteJsonButton = actionButton("📋 JSON 붙여넣기 · 해당 기간 재백테스트", PRIMARY);
+        pasteJsonButton.setOnClickListener(v -> showJsonPasteDialog());
+        backtestCard.addView(pasteJsonButton, marginTop(8));
+        backtestCard.addView(text(
+                "앱에서 공유한 원본·전체 자동·단계별 JSON을 붙여넣으면 전략 수치와 JSON 기간을 자동 입력합니다.",
+                11, MUTED, false
+        ), marginTop(5));
         selectedStrategyText = text(
                 "선택된 전략 없음 · 최적화 완료 후 TOP10에서 선택하면 모든 전략 수치가 자동 입력됩니다.",
                 11, MUTED, false
@@ -644,6 +651,209 @@ enableResultActions(false);
         startBacktest(selectedStrategyParameters);
     }
 
+    private void showJsonPasteDialog() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(4), dp(18), 0);
+        content.addView(text(
+                "백테스트 원본 JSON, 전체 자동 결과, 단계별 결과 또는 TOP 후보 JSON을 붙여넣으세요. JSON에 기간이 있으면 화면 기간도 자동으로 바뀝니다.",
+                12, MUTED, false
+        ));
+
+        EditText jsonInput = edit("");
+        jsonInput.setHint("{\n  \"symbol\": \"BTC/USDT:USDT\",\n  ...\n}");
+        jsonInput.setSingleLine(false);
+        jsonInput.setGravity(Gravity.TOP | Gravity.START);
+        jsonInput.setMinLines(10);
+        jsonInput.setMaxLines(18);
+        jsonInput.setHorizontallyScrolling(false);
+        jsonInput.setPadding(dp(12), dp(12), dp(12), dp(12));
+        content.addView(jsonInput, marginTop(10));
+
+        Button clipboardButton = smallButton("클립보드 내용 붙여넣기", v -> {
+            ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = manager == null ? null : manager.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) {
+                toast("클립보드에 붙여넣을 내용이 없습니다.");
+                return;
+            }
+            CharSequence value = clip.getItemAt(0).coerceToText(this);
+            jsonInput.setText(value == null ? "" : value.toString());
+            jsonInput.setSelection(jsonInput.length());
+        });
+        content.addView(clipboardButton, marginTop(8));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("JSON 전략 불러오기")
+                .setView(content)
+                .setPositiveButton("읽기", null)
+                .setNegativeButton("취소", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String raw = jsonInput.getText().toString().trim();
+                    if (raw.isEmpty()) {
+                        toast("JSON을 붙여넣으세요.");
+                        return;
+                    }
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                    parsePastedBacktestJson(raw, dialog);
+                }));
+        dialog.getWindow();
+        dialog.show();
+    }
+
+    private void parsePastedBacktestJson(String raw, AlertDialog dialog) {
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject parsed = new JSONObject(
+                        bridge.callAttr("parse_pasted_backtest_json", raw).toString()
+                );
+                main.post(() -> {
+                    dialog.dismiss();
+                    showImportedJsonCandidates(parsed);
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                    appendFullLog("\nJSON IMPORT ERROR\n" + stackMessage(e) + "\n");
+                    showTextDialog("JSON 불러오기 실패", stackMessage(e));
+                });
+            }
+        });
+    }
+
+    private void showImportedJsonCandidates(JSONObject parsed) {
+        JSONArray items = parsed.optJSONArray("items");
+        if (items == null || items.length() == 0) {
+            toast("JSON에서 실행할 전략 수치를 찾지 못했습니다.");
+            return;
+        }
+        if (items.length() == 1) {
+            applyImportedJsonCandidate(parsed, items.optJSONObject(0));
+            return;
+        }
+        String[] labels = new String[items.length()];
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            JSONObject result = item == null ? null : item.optJSONObject("result");
+            labels[i] = String.format(
+                    Locale.KOREA,
+                    "%d위 · 수익률 %.2f%% · MDD %.2f%% · %s",
+                    i + 1,
+                    result == null ? 0.0 : result.optDouble("return_percent", 0.0),
+                    result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                    item == null ? "JSON 후보" : item.optString("label", "JSON 후보")
+            );
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("JSON 후보 선택 · 최대 10개")
+                .setItems(labels, (whichDialog, which) ->
+                        applyImportedJsonCandidate(parsed, items.optJSONObject(which)))
+                .setNegativeButton("취소", null)
+                .show();
+    }
+
+    private void applyImportedJsonCandidate(JSONObject parsed, JSONObject item) {
+        if (item == null) {
+            toast("선택한 JSON 후보를 읽지 못했습니다.");
+            return;
+        }
+        JSONObject parameters = item.optJSONObject("effective_parameters");
+        if (parameters == null) parameters = item.optJSONObject("parameters");
+        if (parameters == null) {
+            toast("선택한 JSON 후보에 전략 파라미터가 없습니다.");
+            return;
+        }
+        selectedStrategyParameters = parameters;
+        selectedStrategyRow = item;
+        try {
+            selectedStrategyRow.put("imported_json", true);
+        } catch (Exception ignored) {
+        }
+
+        String symbol = parsed.optString("symbol", "").trim();
+        String timeframe = parsed.optString("timeframe", "").trim();
+        String start = parsed.optString("requested_start", "").trim();
+        String end = parsed.optString("requested_end", "").trim();
+        if (!symbol.isEmpty()) symbolInput.setText(symbol, false);
+        if (!timeframe.isEmpty()) timeframeInput.setText(timeframe, false);
+        if (!start.isEmpty()) startInput.setText(start);
+        if (!end.isEmpty()) endInput.setText(end);
+
+        String riskProfile = parsed.optString("risk_profile", "").trim();
+        if ("공격형".equals(riskProfile) || "중간형".equals(riskProfile)
+                || "안전형".equals(riskProfile) || "3봉 분할형".equals(riskProfile)) {
+            riskProfileInput.setText(riskProfile, false);
+        }
+        if (parsed.has("initial_capital") && !parsed.isNull("initial_capital")) {
+            double capital = parsed.optDouble("initial_capital", Double.NaN);
+            if (!Double.isNaN(capital) && capital >= 10.0 && capital <= 1_000_000_000.0) {
+                initialCapitalInput.setText(String.valueOf(capital));
+            }
+        }
+        if (parsed.has("compounding_enabled") && !parsed.isNull("compounding_enabled")) {
+            sizingModeInput.setText(parsed.optBoolean("compounding_enabled", true) ? "복리식" : "고정식", false);
+        }
+        String executionModel = parsed.optString("execution_model", "");
+        if ("next_open".equals(executionModel) || "signal_close".equals(executionModel)) {
+            executionModelInput.setText(
+                    "next_open".equals(executionModel)
+                            ? "현실형 · 다음 봉 시가 체결"
+                            : "기존형 · 신호 봉 종가 체결",
+                    false
+            );
+        }
+        if (parameters.has("adaptive_regime_enabled")) {
+            adaptiveRegimeInput.setText(
+                    parameters.optBoolean("adaptive_regime_enabled", true)
+                            ? "자동 전환 사용 · 추천" : "고정 전략 사용",
+                    false
+            );
+        }
+        if (parameters.has("apply_consecutive_candles_to_all_entries")) {
+            threeTickModeInput.setText(
+                    parameters.optBoolean("apply_consecutive_candles_to_all_entries", false)
+                            ? "모든 진입 3틱룰" : "첫 진입만 3틱룰",
+                    false
+            );
+        }
+
+        JSONObject result = item.optJSONObject("result");
+        String candidateLabel = item.optString("label", "JSON 전략");
+        selectedStrategyText.setText(String.format(
+                Locale.KOREA,
+                "JSON 불러오기 완료 · %s\n%s %s · %s ~ %s\n원본 수익률 %.2f%% · MDD %.2f%% · 진입 %.0f배 · 최대 %d회",
+                candidateLabel,
+                symbolInput.getText().toString().trim(),
+                timeframeInput.getText().toString().trim(),
+                startInput.getText().toString().trim(),
+                endInput.getText().toString().trim(),
+                result == null ? 0.0 : result.optDouble("return_percent", 0.0),
+                result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                parameters.optDouble("entry_multiplier", 1.0),
+                parameters.optInt("max_pyramiding", 1)
+        ));
+        selectedStrategyText.setTextColor(ACCENT);
+        persistSelectedStrategy();
+
+        String periodSource = parsed.optBoolean("uses_json_period", false)
+                ? "JSON에 저장된 기간" : "현재 화면의 기간(JSON에 기간 없음)";
+        new AlertDialog.Builder(this)
+                .setTitle("JSON 전략 준비 완료")
+                .setMessage("전략 수치·심볼·타임프레임을 불러왔습니다.\n\n"
+                        + periodSource + ": " + startInput.getText() + " ~ " + endInput.getText()
+                        + "\n체결: " + executionModelInput.getText()
+                        + "\n계산: " + sizingModeInput.getText()
+                        + "\n\n현재 앱 엔진으로 새로 계산하며 재최적화는 하지 않습니다.")
+                .setPositiveButton("이 기간 실행", (confirmDialog, which) ->
+                        startBacktest(selectedStrategyParameters))
+                .setNeutralButton("불러오기만", null)
+                .setNegativeButton("취소", null)
+                .show();
+    }
+
     private void startBacktest(JSONObject fixedParameters) {
         String symbol = symbolInput.getText().toString().trim();
         String timeframe = timeframeInput.getText().toString().trim();
@@ -770,6 +980,10 @@ enableResultActions(false);
             try {
                 replayPayload.put("parameters", fixedParameters);
                 replayPayload.put("execution_model_override", executionModel);
+                replayPayload.put(
+                        "imported_json",
+                        selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
+                );
                 if (selectedStrategyRow != null) {
                     JSONObject originalResult = selectedStrategyRow.optJSONObject("result");
                     if (originalResult == null) {
@@ -804,11 +1018,18 @@ enableResultActions(false);
                 + " · 1차: " + broadOptimizationTrials + "회"
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
                 + " · 3틱룰: " + (allEntriesThreeTick ? "모든 진입" : "첫 진입만") + "\n"
-                + (fixedParameters == null ? "" : "TOP10에서 고른 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n")
+                + (fixedParameters == null ? "" : (
+                        selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
+                                ? "붙여넣은 JSON 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n"
+                                : "TOP10에서 고른 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n"
+                ))
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
         setBacktestControlState("RUNNING");
-        toast(fixedParameters == null ? "백그라운드 백테스트를 시작했습니다." : "선택한 수치로 기간 재백테스트를 시작했습니다.");
+        toast(fixedParameters == null ? "백그라운드 백테스트를 시작했습니다."
+                : (selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
+                ? "JSON 전략으로 해당 기간 재백테스트를 시작했습니다."
+                : "선택한 수치로 기간 재백테스트를 시작했습니다."));
     }
 
     private void controlBacktest(String action) {
@@ -1823,7 +2044,8 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 JSONObject restoredRow = new JSONObject(row);
                 JSONObject sourceContext = restoredRow.optJSONObject("source_context");
                 JSONObject sourceEngine = sourceContext == null ? null : sourceContext.optJSONObject("engine");
-                if (sourceEngine == null || !ENGINE_SCHEMA.equals(sourceEngine.optString("schema", ""))) {
+                boolean importedJson = restoredRow.optBoolean("imported_json", false);
+                if (!importedJson && (sourceEngine == null || !ENGINE_SCHEMA.equals(sourceEngine.optString("schema", "")))) {
                     selectedStrategyParameters = null;
                     selectedStrategyRow = null;
                     selectedStrategyText.setText(

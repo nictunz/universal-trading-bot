@@ -778,6 +778,240 @@ def _parse_day(value: str) -> date:
     return datetime.fromisoformat(value[:10]).date()
 
 
+def _first_present(sources: list[dict], *keys: str):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            if value is not None and value != "":
+                return value
+    return None
+
+
+def parse_pasted_backtest_json(payload_text: str) -> str:
+    """Normalize JSON exported by this app into selectable replay candidates.
+
+    Supported inputs include a saved backtest summary, the Java/Python result
+    wrapper, a TOP candidate row, a full optimization export, and each stage
+    export. The parser only reads strategy values and metadata; candle data is
+    always loaded again through the installed engine for the JSON period.
+    """
+    raw = str(payload_text or "").strip()
+    if not raw:
+        raise ValueError("붙여넣은 JSON이 비어 있습니다.")
+    if len(raw.encode("utf-8")) > 8 * 1024 * 1024:
+        raise ValueError("JSON은 8MB 이하만 붙여넣을 수 있습니다.")
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"JSON 문법 오류: {exc.lineno}줄 {exc.colno}번째 문자를 확인하세요."
+        ) from exc
+    if isinstance(decoded, list):
+        root: dict = {"result": decoded}
+    elif isinstance(decoded, dict):
+        root = decoded
+    else:
+        raise ValueError("JSON 최상위 값은 객체({}) 또는 후보 배열([])이어야 합니다.")
+
+    wrapped_summary = root.get("summary")
+    summary = wrapped_summary if isinstance(wrapped_summary, dict) else root
+    source_context = root.get("source_context")
+    context = source_context if isinstance(source_context, dict) else {}
+    metadata_sources = [root, summary, context]
+
+    symbol = str(_first_present(metadata_sources, "symbol") or "").strip()
+    timeframe = str(_first_present(metadata_sources, "timeframe") or "").strip()
+    requested_start = str(
+        _first_present(metadata_sources, "requested_start", "start", "data_start") or ""
+    )[:10]
+    requested_end = str(
+        _first_present(metadata_sources, "requested_end", "end", "data_end") or ""
+    )[:10]
+    if requested_start or requested_end:
+        if not requested_start or not requested_end:
+            raise ValueError("JSON 기간에는 시작일과 종료일이 모두 필요합니다.")
+        try:
+            start_day = _parse_day(requested_start)
+            end_day = _parse_day(requested_end)
+        except Exception as exc:
+            raise ValueError("JSON 기간은 YYYY-MM-DD 형식이어야 합니다.") from exc
+        range_days = (end_day - start_day).days + 1
+        if range_days <= 0 or range_days > 3660:
+            raise ValueError("JSON 백테스트 기간은 1일 이상 최대 10년이어야 합니다.")
+
+    base_overrides = _first_present(
+        [summary, root], "optimization_base_overrides", "fixed_values"
+    )
+    if not isinstance(base_overrides, dict):
+        base_overrides = {}
+    original_summary_result = {
+        key: summary.get(key)
+        for key in (
+            "return_percent", "max_drawdown_percent", "win_rate",
+            "profit_factor", "trades", "liquidations",
+        )
+        if summary.get(key) is not None
+    }
+
+    candidates: list[dict] = []
+    seen: set[str] = set()
+
+    def add_candidate(value, label: str = "JSON 전략") -> None:
+        if not isinstance(value, dict):
+            return
+        parameters = value.get("effective_parameters")
+        if not isinstance(parameters, dict):
+            parameters = value.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = value.get("selected_strategy_parameters")
+        if not isinstance(parameters, dict):
+            return
+        effective = dict(base_overrides)
+        effective.update(parameters)
+        recognized = {
+            "entry_multiplier", "order_percent_of_equity", "max_pyramiding",
+            "volume_lookback", "volume_break_multiplier", "rsi_length",
+            "adx_length", "min_tp_percent", "max_tp_percent",
+            "min_sl_percent", "max_sl_percent", "allow_long", "allow_short",
+        }
+        if not recognized.intersection(effective):
+            return
+        entry = float(effective.get("entry_multiplier", 1.0))
+        effective["entry_multiplier"] = entry
+        effective["order_percent_of_equity"] = float(
+            effective.get("order_percent_of_equity", entry * 100.0)
+        )
+        identity = json.dumps(effective, sort_keys=True, separators=(",", ":"), default=str)
+        if identity in seen:
+            return
+        seen.add(identity)
+        result = value.get("result")
+        if not isinstance(result, dict):
+            result = value.get("original_result")
+        if not isinstance(result, dict) or not result:
+            result = original_summary_result
+        item_context = value.get("source_context")
+        normalized_context = dict(item_context) if isinstance(item_context, dict) else {}
+        for key, meta_value in {
+            "requested_start": requested_start,
+            "requested_end": requested_end,
+            "data_start": summary.get("data_start"),
+            "data_end": summary.get("data_end"),
+            "bars": summary.get("bars"),
+            "cache_sha256": summary.get("cache_sha256"),
+            "engine": summary.get("engine"),
+            "optimization_run_identity": summary.get("optimization_run_identity"),
+            "execution_model": effective.get(
+                "backtest_execution_model", summary.get("execution_model")
+            ),
+            "initial_capital": effective.get(
+                "initial_capital", summary.get("initial_capital")
+            ),
+            "compounding_enabled": effective.get(
+                "backtest_compounding_enabled", summary.get("compounding_enabled")
+            ),
+            "effective_parameters_sha256": parameter_signature(effective),
+        }.items():
+            if meta_value is not None and meta_value != "" and key not in normalized_context:
+                normalized_context[key] = meta_value
+        rank = int(value.get("rank") or len(candidates) + 1)
+        candidates.append({
+            "rank": rank,
+            "label": str(value.get("label") or f"{label} {rank}"),
+            "parameters": dict(parameters),
+            "effective_parameters": effective,
+            "result": dict(result or {}),
+            "original_result": dict(result or {}),
+            "source_context": normalized_context,
+            "imported_json": True,
+        })
+
+    # Prefer a final/selected strategy before walking ranking arrays.
+    for owner in (root, summary):
+        add_candidate(owner.get("rolling_final_selection"), "롤링 최종 전략")
+        selection = owner.get("risk_profile_selection")
+        if isinstance(selection, dict) and isinstance(selection.get("parameters"), dict):
+            selection_row = dict(selection)
+            if not isinstance(selection_row.get("result"), dict):
+                selection_row["result"] = original_summary_result
+            add_candidate(selection_row, "대표 최적 전략")
+        if isinstance(owner.get("selected_strategy_parameters"), dict):
+            add_candidate({
+                "parameters": owner.get("selected_strategy_parameters"),
+                "result": owner.get("selected_strategy_original_result") or original_summary_result,
+                "source_context": owner.get("selected_strategy_source_context") or {},
+            }, "재검증 전략")
+    add_candidate(root, "JSON 전략")
+
+    preferred_keys = (
+        "top_10_eligible", "top_30_eligible", "ranking", "top_candidates",
+        "eligible_trials", "top_10_overall", "top_30_overall", "all_trials",
+    )
+    walked: set[int] = set()
+
+    def walk(value, label: str = "후보") -> None:
+        if len(candidates) >= 10:
+            return
+        if isinstance(value, dict):
+            marker = id(value)
+            if marker in walked:
+                return
+            walked.add(marker)
+            add_candidate(value, label)
+            for key in preferred_keys:
+                if key in value:
+                    walk(value.get(key), label)
+            for key, child in value.items():
+                if key not in preferred_keys and key not in {
+                    "parameters", "effective_parameters", "source_context", "engine"
+                }:
+                    walk(child, label)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, label)
+                if len(candidates) >= 10:
+                    break
+
+    walk(root)
+    if not candidates:
+        raise ValueError(
+            "전략 파라미터를 찾지 못했습니다. 앱에서 공유한 백테스트 원본, "
+            "전체 자동 결과 또는 단계별 JSON을 붙여넣으세요."
+        )
+
+    risk_profile = str(_first_present(metadata_sources, "risk_profile") or "").strip()
+    initial_capital = _first_present(metadata_sources, "initial_capital")
+    compounding = _first_present(metadata_sources, "compounding_enabled")
+    execution_model = str(
+        _first_present(metadata_sources, "execution_model", "backtest_execution_model") or ""
+    ).strip().lower()
+    if not execution_model:
+        execution_model = str(
+            candidates[0]["effective_parameters"].get("backtest_execution_model") or ""
+        ).strip().lower()
+    if initial_capital is None:
+        initial_capital = candidates[0]["effective_parameters"].get("initial_capital")
+    if compounding is None:
+        compounding = candidates[0]["effective_parameters"].get(
+            "backtest_compounding_enabled"
+        )
+    return json.dumps({
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "risk_profile": risk_profile,
+        "initial_capital": initial_capital,
+        "compounding_enabled": compounding,
+        "execution_model": execution_model,
+        "items": candidates,
+        "candidate_count": len(candidates),
+        "uses_json_period": bool(requested_start and requested_end),
+    }, ensure_ascii=False)
+
+
 def _add_months(value: date, months: int) -> date:
     month_index = value.month - 1 + months
     year = value.year + month_index // 12
@@ -1329,6 +1563,7 @@ def run_backtest(
     selected_parameters: dict = {}
     original_candidate_result: dict = {}
     source_context: dict = {}
+    imported_json_replay = False
     if str(selected_parameters_json or "").strip():
         replay_payload = json.loads(selected_parameters_json)
         if not isinstance(replay_payload, dict):
@@ -1339,6 +1574,7 @@ def run_backtest(
         selected_parameters = dict(candidate)
         original_candidate_result = dict(replay_payload.get("original_result") or {})
         source_context = dict(replay_payload.get("source_context") or {})
+        imported_json_replay = bool(replay_payload.get("imported_json", False))
     overrides: dict = {}
     if not selected_parameters and host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
         try:
@@ -1408,35 +1644,41 @@ def run_backtest(
             selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
         )
         overrides["max_pyramiding"] = int(selected_parameters.get("max_pyramiding", 1))
-        source_engine = dict(source_context.get("engine") or {})
-        installed_engine = engine_manifest()
-        if (
-            not source_engine.get("code_sha256")
-            or source_engine.get("schema") != installed_engine.get("schema")
-            or source_engine.get("code_sha256") != installed_engine.get("code_sha256")
-        ):
-            raise RuntimeError(
-                "선택한 TOP10은 이전 백테스트 엔진 결과입니다. "
-                "현재 엔진으로 최적화를 한 번 실행한 뒤 새 TOP10을 선택하세요."
+        if imported_json_replay:
+            log(
+                "붙여넣기 JSON 전략: 모든 전략 수치를 적용하고 현재 엔진으로 "
+                "선택 기간 재백테스트 · 재최적화 없음"
             )
-        source_run_identity = str(source_context.get("optimization_run_identity") or "")
-        expected_candidate_signature = str(source_context.get("candidate_signature") or "")
-        actual_candidate_signature = candidate_signature(
-            run_identity=source_run_identity,
-            parameters=selected_parameters,
-            result=original_candidate_result,
-        )
-        if (
-            not source_run_identity
-            or not bool(source_context.get("candidate_verified", False))
-            or not expected_candidate_signature
-            or expected_candidate_signature != actual_candidate_signature
-        ):
-            raise RuntimeError(
-                "선택한 TOP10 후보의 결과 서명이 일치하지 않습니다. "
-                "저장된 결과에서 후보를 다시 선택하세요."
+        else:
+            source_engine = dict(source_context.get("engine") or {})
+            installed_engine = engine_manifest()
+            if (
+                not source_engine.get("code_sha256")
+                or source_engine.get("schema") != installed_engine.get("schema")
+                or source_engine.get("code_sha256") != installed_engine.get("code_sha256")
+            ):
+                raise RuntimeError(
+                    "선택한 TOP10은 이전 백테스트 엔진 결과입니다. "
+                    "현재 엔진으로 최적화를 한 번 실행한 뒤 새 TOP10을 선택하세요."
+                )
+            source_run_identity = str(source_context.get("optimization_run_identity") or "")
+            expected_candidate_signature = str(source_context.get("candidate_signature") or "")
+            actual_candidate_signature = candidate_signature(
+                run_identity=source_run_identity,
+                parameters=selected_parameters,
+                result=original_candidate_result,
             )
-        log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
+            if (
+                not source_run_identity
+                or not bool(source_context.get("candidate_verified", False))
+                or not expected_candidate_signature
+                or expected_candidate_signature != actual_candidate_signature
+            ):
+                raise RuntimeError(
+                    "선택한 TOP10 후보의 결과 서명이 일치하지 않습니다. "
+                    "저장된 결과에서 후보를 다시 선택하세요."
+                )
+            log("TOP10 선택 전략: 저장된 모든 전략 수치를 그대로 적용 · 재최적화 없음")
     else:
         overrides["backtest_compounding_enabled"] = bool(compounding_enabled)
         normalized_execution_model = str(execution_model or "signal_close").strip().lower()
@@ -1515,6 +1757,7 @@ def run_backtest(
     if selected_parameters:
         summary["risk_profile"] = selected_profile
         summary["selected_strategy_retest"] = True
+        summary["selected_strategy_imported_json"] = imported_json_replay
         summary["selected_strategy_parameters"] = selected_parameters
         summary["selected_strategy_original_result"] = original_candidate_result
         summary["selected_strategy_source_context"] = source_context
@@ -1546,7 +1789,18 @@ def run_backtest(
             str(source_context.get("effective_parameters_sha256") or "")
             == current_parameters_sha
         )
-        source_candidate_verified = bool(source_context.get("candidate_verified", False))
+        source_run_identity = str(source_context.get("optimization_run_identity") or "")
+        expected_candidate_signature = str(source_context.get("candidate_signature") or "")
+        source_candidate_verified = bool(
+            source_context.get("candidate_verified", False)
+            and source_run_identity
+            and expected_candidate_signature
+            and expected_candidate_signature == candidate_signature(
+                run_identity=source_run_identity,
+                parameters=selected_parameters,
+                result=original_candidate_result,
+            )
+        )
         return_difference = float(summary.get("return_percent") or 0) - original_return
         mdd_difference = float(summary.get("max_drawdown_percent") or 0) - original_mdd
         metrics_match = abs(return_difference) <= 1e-9 and abs(mdd_difference) <= 1e-9
@@ -1577,8 +1831,20 @@ def run_backtest(
                 mismatch_reasons.append(reason)
         if context_match and not metrics_match:
             mismatch_reasons.append("동일 조건 결과 무결성")
+        comparison_available = bool(
+            original_candidate_result
+            and source_context.get("requested_start")
+            and source_context.get("requested_end")
+            and source_context.get("cache_sha256")
+            and source_context.get("engine")
+            and source_candidate_verified
+        )
         summary["reproduction_comparison"] = {
-            "status": "PASS" if context_match and metrics_match else "FAIL",
+            "status": (
+                "PASS" if context_match and metrics_match
+                else ("FAIL" if comparison_available else "NOT_COMPARABLE")
+            ),
+            "comparison_available": comparison_available,
             "exact_reproduction": bool(context_match and metrics_match),
             "context_match": bool(context_match),
             "metrics_match": bool(metrics_match),
