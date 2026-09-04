@@ -1903,42 +1903,61 @@ def run_backtest(
             and source_context.get("engine")
             and source_candidate_verified
         )
-        summary["reproduction_comparison"] = {
-            "status": (
-                "PASS" if context_match and metrics_match
-                else ("FAIL" if comparison_available else "NOT_COMPARABLE")
-            ),
-            "comparison_available": comparison_available,
-            "exact_reproduction": bool(context_match and metrics_match),
-            "context_match": bool(context_match),
-            "metrics_match": bool(metrics_match),
-            "mismatch_reasons": mismatch_reasons,
-            "same_requested_period": same_period,
-            "same_cache_sha256": same_cache,
-            "same_data_range": same_data_range,
-            "same_execution_model": same_execution_model,
-            "same_initial_capital": same_initial_capital,
-            "same_compounding": same_compounding,
-            "same_engine": same_engine,
-            "same_strategy_parameters": same_strategy_parameters,
-            "source_candidate_verified": source_candidate_verified,
-            "original_engine": source_engine,
-            "retest_engine": current_engine,
-            "original_effective_parameters_sha256": source_context.get("effective_parameters_sha256"),
-            "retest_effective_parameters_sha256": current_parameters_sha,
-            "original_initial_capital": source_initial_capital,
-            "retest_initial_capital": initial_capital,
-            "original_compounding": source_compounding,
-            "retest_compounding": bool(overrides.get("backtest_compounding_enabled")),
-            "original_execution_model": source_execution_model,
-            "retest_execution_model": overrides.get("backtest_execution_model"),
-            "original_return_percent": original_return,
-            "retest_return_percent": float(summary.get("return_percent") or 0),
-            "return_difference_percent_points": return_difference,
-            "original_mdd_percent": original_mdd,
-            "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
-            "mdd_difference_percent_points": mdd_difference,
-        }
+        if imported_json_replay and not comparison_available:
+            # A flat settings JSON has no original result, period, cache hash,
+            # engine fingerprint, or signed TOP candidate. It is a new fixed-
+            # parameter run, not a failed reproduction attempt.
+            summary["reproduction_comparison"] = {
+                "status": "NOT_COMPARABLE",
+                "comparison_available": False,
+                "exact_reproduction": False,
+                "imported_json": True,
+                "reason": (
+                    "직접 입력 JSON에는 비교할 원본 TOP10 결과와 재현 잠금 정보가 없습니다. "
+                    "현재 결과를 독립 백테스트 결과로 표시합니다."
+                ),
+                "retest_return_percent": float(summary.get("return_percent") or 0),
+                "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
+                "retest_initial_capital": initial_capital,
+                "retest_compounding": bool(overrides.get("backtest_compounding_enabled")),
+                "retest_execution_model": overrides.get("backtest_execution_model"),
+                "retest_engine": current_engine,
+                "retest_effective_parameters_sha256": current_parameters_sha,
+            }
+        else:
+            summary["reproduction_comparison"] = {
+                "status": "PASS" if context_match and metrics_match else "FAIL",
+                "comparison_available": True,
+                "exact_reproduction": bool(context_match and metrics_match),
+                "context_match": bool(context_match),
+                "metrics_match": bool(metrics_match),
+                "mismatch_reasons": mismatch_reasons,
+                "same_requested_period": same_period,
+                "same_cache_sha256": same_cache,
+                "same_data_range": same_data_range,
+                "same_execution_model": same_execution_model,
+                "same_initial_capital": same_initial_capital,
+                "same_compounding": same_compounding,
+                "same_engine": same_engine,
+                "same_strategy_parameters": same_strategy_parameters,
+                "source_candidate_verified": source_candidate_verified,
+                "original_engine": source_engine,
+                "retest_engine": current_engine,
+                "original_effective_parameters_sha256": source_context.get("effective_parameters_sha256"),
+                "retest_effective_parameters_sha256": current_parameters_sha,
+                "original_initial_capital": source_initial_capital,
+                "retest_initial_capital": initial_capital,
+                "original_compounding": source_compounding,
+                "retest_compounding": bool(overrides.get("backtest_compounding_enabled")),
+                "original_execution_model": source_execution_model,
+                "retest_execution_model": overrides.get("backtest_execution_model"),
+                "original_return_percent": original_return,
+                "retest_return_percent": float(summary.get("return_percent") or 0),
+                "return_difference_percent_points": return_difference,
+                "original_mdd_percent": original_mdd,
+                "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
+                "mdd_difference_percent_points": mdd_difference,
+            }
         summary["optimization_pipeline"] = {
             "stage": "selected_strategy_retest",
             "paper_live_applied": False,

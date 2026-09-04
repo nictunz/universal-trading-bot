@@ -1674,6 +1674,35 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         if (lastSummary == null) return;
         JSONObject comparison = lastSummary.optJSONObject("reproduction_comparison");
         if (comparison == null) return;
+        boolean comparisonAvailable = comparison.optBoolean("comparison_available", true);
+        String comparisonStatus = comparison.optString("status", "");
+        if (!comparisonAvailable || "NOT_COMPARABLE".equals(comparisonStatus)) {
+            String retestModel = "next_open".equals(comparison.optString(
+                    "retest_execution_model", lastSummary.optString("execution_model", "")))
+                    ? "현실형 · 다음 봉 시가" : "기존형 · 신호 봉 종가";
+            String compounding = comparison.optBoolean(
+                    "retest_compounding", lastSummary.optBoolean("compounding_enabled", true))
+                    ? "복리식" : "고정식";
+            String message = String.format(
+                    Locale.KOREA,
+                    "재현 판정: 비교 대상 아님 · 독립 백테스트\n\n"
+                            + "붙여넣은 설정 JSON에는 원래 TOP10 수익률·MDD, 요청 기간, 캐시 SHA256, "
+                            + "엔진 코드와 후보 서명이 없습니다. 따라서 FAIL로 판정하지 않습니다.\n\n"
+                            + "이번 수익률: %.2f%%\n이번 MDD: %.2f%%\n거래 수: %d회\n"
+                            + "실제 기간: %s ~ %s\n실제 봉 수: %d\n체결 모델: %s\n계산 방식: %s\n\n"
+                            + "원본 TOP10 결과 JSON을 붙여넣은 경우에만 동일 조건 재현 판정을 수행합니다.",
+                    comparison.optDouble("retest_return_percent", lastSummary.optDouble("return_percent", 0.0)),
+                    comparison.optDouble("retest_mdd_percent", lastSummary.optDouble("max_drawdown_percent", 0.0)),
+                    lastSummary.optInt("trades", 0),
+                    lastSummary.optString("data_start", lastSummary.optString("requested_start", "-")),
+                    lastSummary.optString("data_end", lastSummary.optString("requested_end", "-")),
+                    lastSummary.optInt("bars", 0),
+                    retestModel,
+                    compounding
+            );
+            showTextDialog("직접 입력 JSON 백테스트", message);
+            return;
+        }
         String period = comparison.optBoolean("same_requested_period", false) ? "동일" : "다름";
         String cache = comparison.optBoolean("same_cache_sha256", false) ? "동일" : "변경됨";
         String model = comparison.optBoolean("same_execution_model", false) ? "동일" : "다름";
