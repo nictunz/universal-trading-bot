@@ -9,7 +9,7 @@ on:
 
 concurrency:
   group: fixed-parameter-backtest-btc-15m
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -20,6 +20,7 @@ env:
 
 jobs:
   backtest:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, trading-bot]
     timeout-minutes: 120
     steps:
