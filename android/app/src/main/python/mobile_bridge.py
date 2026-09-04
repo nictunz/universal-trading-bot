@@ -789,6 +789,63 @@ def _first_present(sources: list[dict], *keys: str):
     return None
 
 
+KOREAN_STRATEGY_PARAMETER_MAP = {
+    "거래량_SMA_기간": "volume_lookback",
+    "거래량_폭등_배수": "volume_break_multiplier",
+    "1봉_변동_최소_pct": "min_one_bar_vol",
+    "1봉_변동_최대_pct": "max_one_bar_vol",
+    "변동성_기준_봉": "volatility_bars",
+    "TP_변동성_배수": "tp_vol_multiplier",
+    "SL_변동성_배수": "sl_vol_multiplier",
+    "TP_최소_pct": "min_tp_percent",
+    "TP_최대_pct": "max_tp_percent",
+    "SL_최소_pct": "min_sl_percent",
+    "SL_최대_pct": "max_sl_percent",
+    "N_bar_필터_사용": "use_nbar_volatility_block",
+    "N_bar_봉_수": "nbar_volatility_bars",
+    "N_bar_최대_변동_pct": "max_nbar_volatility",
+    "ADX_필터_사용": "use_adx_filter",
+    "ADX_길이": "adx_length",
+    "ADX_최소": "adx_min",
+    "ADX_최대": "adx_max",
+    "RSI_필터_사용": "use_rsi_filter",
+    "RSI_길이": "rsi_length",
+    "RSI_과매도_최소": "rsi_oversold_min",
+    "RSI_과매도_최대": "rsi_oversold_max",
+    "RSI_과매수_최소": "rsi_overbought_min",
+    "RSI_과매수_최대": "rsi_overbought_max",
+    "LONG_허용": "allow_long",
+    "SHORT_허용": "allow_short",
+    "최대_피라미딩": "max_pyramiding",
+    "쿨다운_봉": "cooldown_bars",
+    "재진입_봉": "reentry_bars",
+    "주말_차단": "block_weekend",
+    "제외_시간_UTC": "excluded_hours",
+    "진입_비중_pct": "order_percent_of_equity",
+    "백테스트_초기자본": "initial_capital",
+    "수수료_pct_side": "backtest_fee_percent",
+    "슬리피지_pct_side": "backtest_slippage_percent",
+}
+
+
+def _flat_strategy_parameters(payload: dict) -> dict:
+    parameters = {
+        target: payload[source]
+        for source, target in KOREAN_STRATEGY_PARAMETER_MAP.items()
+        if source in payload
+    }
+    accepted_english = set(OPTIMIZED_STRATEGY_FIELDS) | set(FIXED_BACKTEST) | {
+        "entry_multiplier", "backtest_execution_model",
+        "adaptive_regime_enabled", "apply_consecutive_candles_to_all_entries",
+    }
+    parameters.update({
+        key: value for key, value in payload.items() if key in accepted_english
+    })
+    if "order_percent_of_equity" in parameters and "entry_multiplier" not in parameters:
+        parameters["entry_multiplier"] = float(parameters["order_percent_of_equity"]) / 100.0
+    return parameters
+
+
 def parse_pasted_backtest_json(payload_text: str) -> str:
     """Normalize JSON exported by this app into selectable replay candidates.
 
@@ -943,6 +1000,13 @@ def parse_pasted_backtest_json(payload_text: str) -> str:
                 "result": owner.get("selected_strategy_original_result") or original_summary_result,
                 "source_context": owner.get("selected_strategy_source_context") or {},
             }, "재검증 전략")
+    flat_parameters = _flat_strategy_parameters(root)
+    if flat_parameters:
+        add_candidate({
+            "label": str(root.get("name") or "직접 입력 전략"),
+            "parameters": flat_parameters,
+            "result": original_summary_result,
+        }, "직접 입력 전략")
     add_candidate(root, "JSON 전략")
 
     preferred_keys = (
