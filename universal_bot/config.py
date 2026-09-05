@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     backtest_cross_liquidation_buffer_percent: float = 25.0
     backtest_max_total_multiplier: float = 15.0
     # Backtest only: size each new position from current net equity when enabled.
-    backtest_compounding_enabled: bool = True
+    backtest_compounding_enabled: bool = False
     # signal_close preserves legacy results. next_open executes a confirmed
     # signal at the following candle open to avoid optimistic same-close fills.
     backtest_execution_model: str = "signal_close"
