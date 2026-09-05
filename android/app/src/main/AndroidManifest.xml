@@ -32,6 +32,11 @@
             android:screenOrientation="unspecified" />
 
         <activity
+            android:name=".DeepBacktestReportActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+
+        <activity
             android:name=".ServerDashboardActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
