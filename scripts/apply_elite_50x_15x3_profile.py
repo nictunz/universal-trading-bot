@@ -21,10 +21,10 @@ PROFILE = {
     "LEVERAGE": "15",
     "MARGIN_MODE": "crossed",
     "LIVE_REQUIRE_ONE_WAY_MODE": "true",
-    "MAX_PYRAMIDING": "2",
-    "LIVE_ENTRY_MULTIPLIER": "15",
-    "LIVE_MAX_ENTRIES_PER_POSITION": "2",
-    "LIVE_MAX_TOTAL_MULTIPLIER": "30",
+    "MAX_PYRAMIDING": "1",
+    "LIVE_ENTRY_MULTIPLIER": "8.6",
+    "LIVE_MAX_ENTRIES_PER_POSITION": "1",
+    "LIVE_MAX_TOTAL_MULTIPLIER": "15",
     "REQUIRE_EXCHANGE_PROTECTION": "true",
 }
 SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
@@ -74,14 +74,14 @@ def main() -> None:
         community_fallback=False,
     )
 
-    print("ELITE_15X_LEVERAGE_PROFILE")
-    print("NOTE: legacy filename is retained for compatibility; account leverage is 15x.")
+    print("BTC_15M_JSON_LIVE_PROFILE")
+    print("NOTE: legacy filename is retained for compatibility; sizing follows the selected JSON.")
     print(f"env_backup={backup.name}")
     print("BOT_MODE=PAPER")
     print("LEVERAGE=15")
-    print("LIVE_ENTRY_MULTIPLIER=15")
-    print("MAX_ENTRIES=2 (first + one add-on)")
-    print("LIVE_MAX_TOTAL_MULTIPLIER=30")
+    print("LIVE_ENTRY_MULTIPLIER=8.6 (진입_비중_pct=860)")
+    print("MAX_ENTRIES=1")
+    print("LIVE_MAX_TOTAL_MULTIPLIER=15")
     print("No orders are placed by this script. It only changes leverage/account config.")
 
     results = []
