@@ -20,10 +20,10 @@ expected = {
     'LEVERAGE': (s.leverage, 15),
     'MARGIN_MODE': (s.margin_mode, 'crossed'),
     'LIVE_REQUIRE_ONE_WAY_MODE': (s.live_require_one_way_mode, True),
-    'MAX_PYRAMIDING': (s.max_pyramiding, 2),
-    'LIVE_ENTRY_MULTIPLIER': (s.live_entry_multiplier, 15.0),
-    'LIVE_MAX_ENTRIES_PER_POSITION': (s.live_max_entries_per_position, 2),
-    'LIVE_MAX_TOTAL_MULTIPLIER': (s.live_max_total_multiplier, 30.0),
+    'MAX_PYRAMIDING': (s.max_pyramiding, 1),
+    'LIVE_ENTRY_MULTIPLIER': (s.live_entry_multiplier, 8.6),
+    'LIVE_MAX_ENTRIES_PER_POSITION': (s.live_max_entries_per_position, 1),
+    'LIVE_MAX_TOTAL_MULTIPLIER': (s.live_max_total_multiplier, 15.0),
 }
 bad=[]
 for name,(actual,wanted) in expected.items():
@@ -104,4 +104,4 @@ echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
 
 echo
-echo "LIVE 활성화 완료. BTC/ETH는 15x 계정 레버리지, 15x 진입 배수, 최대 2회 진입(최초+추가 1회)으로 동작합니다."
+echo "LIVE 활성화 완료. BTC/ETH는 15x 계정 레버리지 상한, JSON 기준 8.6x 진입, 최대 1회으로 동작합니다."
