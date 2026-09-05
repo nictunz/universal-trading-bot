@@ -1,0 +1,84 @@
+name: Apply Deep Backtest Report
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/apply-deep-backtest-report.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch MainActivity
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
+          s = p.read_text()
+
+          field_old = '    private Button chartButton;\n'
+          field_new = field_old + '    private Button deepBacktestButton;\n'
+          if 'private Button deepBacktestButton;' not in s:
+              if field_old not in s:
+                  raise SystemExit('chartButton field anchor not found')
+              s = s.replace(field_old, field_new, 1)
+
+          button_anchor = '''        chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
+          chartButton.setOnClickListener(v -> showBacktestChart());
+          resultActions.addView(chartButton, marginTop(6));
+          '''
+          button_insert = button_anchor + '''        deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
+          deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
+          resultActions.addView(deepBacktestButton, marginTop(6));
+          '''
+          if 'showDeepBacktestReport()' not in s:
+              if button_anchor not in s:
+                  raise SystemExit('result button anchor not found')
+              s = s.replace(button_anchor, button_insert, 1)
+
+          method_anchor = '    private void enableResultActions(boolean enabled) {\n'
+          method = '''    private void showDeepBacktestReport() {
+              if (lastSummary == null) {
+                  toast("백테스트를 먼저 실행하세요.");
+                  return;
+              }
+              Intent intent = new Intent(this, DeepBacktestReportActivity.class);
+              intent.putExtra("summary_json", lastSummary.toString());
+              startActivity(intent);
+          }
+
+          '''
+          if 'private void showDeepBacktestReport()' not in s:
+              if method_anchor not in s:
+                  raise SystemExit('enableResultActions anchor not found')
+              s = s.replace(method_anchor, method + method_anchor, 1)
+
+          old_array = '        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton};'
+          new_array = '        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton, deepBacktestButton};'
+          if old_array in s:
+              s = s.replace(old_array, new_array, 1)
+
+          p.write_text(s)
+      - name: Verify patch anchors
+        run: |
+          grep -q 'deepBacktestButton' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -q 'DeepBacktestReportActivity' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -q 'DeepBacktestReportActivity' android/app/src/main/AndroidManifest.xml
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          if git diff --cached --quiet; then
+            echo 'Already patched.'
+            exit 0
+          fi
+          git commit -m 'feat(android): add deep backtest report entry point'
+          git push origin HEAD:main
