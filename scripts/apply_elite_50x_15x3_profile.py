@@ -70,7 +70,7 @@ PROFILE = {
     "LIVE_MAX_TOTAL_MULTIPLIER": "15",
     "REQUIRE_EXCHANGE_PROTECTION": "true",
 }
-SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
+SYMBOLS = ("BTC/USDT:USDT",)
 
 
 def update_env() -> Path:
