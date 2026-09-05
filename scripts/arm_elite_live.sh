@@ -17,7 +17,7 @@ from universal_bot.config import Settings
 s = Settings()
 expected = {
     'BITGET_EXECUTION_PROFILE': (s.bitget_execution_profile, 'elite'),
-    'LEVERAGE': (s.leverage, 50),
+    'LEVERAGE': (s.leverage, 15),
     'MARGIN_MODE': (s.margin_mode, 'crossed'),
     'LIVE_REQUIRE_ONE_WAY_MODE': (s.live_require_one_way_mode, True),
     'MAX_PYRAMIDING': (s.max_pyramiding, 2),
@@ -104,4 +104,4 @@ echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
 
 echo
-echo "LIVE 활성화 완료. BTC/ETH는 50x 계정 레버리지, 15x 진입 배수, 최대 2회 진입(최초+추가 1회)으로 동작합니다."
+echo "LIVE 활성화 완료. BTC/ETH는 15x 계정 레버리지, 15x 진입 배수, 최대 2회 진입(최초+추가 1회)으로 동작합니다."
