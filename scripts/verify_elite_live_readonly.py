@@ -12,7 +12,7 @@ from universal_bot.adapters import BitgetEliteAdapter
 from universal_bot.config import Settings
 from universal_bot.runtime_engine import TradingEngine
 
-SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
+SYMBOLS = ("BTC/USDT:USDT",)
 
 
 def check(name: str, ok: bool, **extra):
@@ -29,10 +29,10 @@ def main() -> None:
     # .env remains PAPER, and it never calls market_order/set_leverage/plan-order APIs.
     checks.append(check("persistent_mode_is_paper", s.bot_mode.upper() == "PAPER", value=s.bot_mode.upper()))
     checks.append(check("execution_profile", s.bitget_execution_profile.lower() == "elite", value=s.bitget_execution_profile))
-    checks.append(check("leverage_setting", int(s.leverage) == 50, value=int(s.leverage)))
-    checks.append(check("entry_multiplier", float(s.live_entry_multiplier) == 15.0, value=float(s.live_entry_multiplier)))
-    checks.append(check("max_entries", int(s.live_max_entries_per_position) == 2, value=int(s.live_max_entries_per_position)))
-    checks.append(check("max_total_multiplier", float(s.live_max_total_multiplier) == 30.0, value=float(s.live_max_total_multiplier)))
+    checks.append(check("leverage_setting", int(s.leverage) == 15, value=int(s.leverage)))
+    checks.append(check("entry_multiplier", float(s.live_entry_multiplier) == 8.6, value=float(s.live_entry_multiplier)))
+    checks.append(check("max_entries", int(s.live_max_entries_per_position) == 1, value=int(s.live_max_entries_per_position)))
+    checks.append(check("max_total_multiplier", float(s.live_max_total_multiplier) == 15.0, value=float(s.live_max_total_multiplier)))
     checks.append(check("exchange_protection_required", bool(s.require_exchange_protection), value=bool(s.require_exchange_protection)))
     checks.append(check("one_way_required", bool(s.live_require_one_way_mode), value=bool(s.live_require_one_way_mode)))
     checks.append(check("discord_enabled", bool(s.discord_notifications_enabled), value=bool(s.discord_notifications_enabled)))
