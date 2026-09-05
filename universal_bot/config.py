@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     coinapi_api_key: str = ""
 
     # LIVE execution defaults for the Classic v2 Elite account.
-    leverage: int = 50
+    leverage: int = 15
     margin_mode: str = "crossed"
     require_exchange_protection: bool = True
     reconciliation_interval_seconds: int = 10
