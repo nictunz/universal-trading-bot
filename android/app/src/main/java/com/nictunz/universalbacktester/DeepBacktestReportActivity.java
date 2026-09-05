@@ -236,7 +236,7 @@ public class DeepBacktestReportActivity extends Activity {
     private LinearLayout.LayoutParams mt(int top) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); p.topMargin = dp(top); return p; }
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
     private static String pct(double v) { return Double.isFinite(v) ? String.format(Locale.US, "%.2f%%", v) : "-"; }
-    private static String num(double v, int n) { return Double.isFinite(v) ? String.format(Locale.US, "%.” + n + "f", v) : "-"; }
+    private static String num(double v, int n) { return Double.isFinite(v) ? String.format(Locale.US, "%." + n + "f", v) : "-"; }
     private static String integer(double v) { return Double.isFinite(v) ? String.format(Locale.US, "%.0f", v) : "-"; }
     private static String joinRange(String a, String b) { return (a.isEmpty() && b.isEmpty()) ? "" : a + " ~ " + b; }
     private static double first(JSONObject o, String... keys) { for (String k:keys) if (o.has(k) && !o.isNull(k)) return o.optDouble(k, Double.NaN); return Double.NaN; }
@@ -245,3 +245,4 @@ public class DeepBacktestReportActivity extends Activity {
 
     private static final class PeriodStats { double pnl; int trades; int wins; }
 }
+
