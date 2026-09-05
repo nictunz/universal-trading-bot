@@ -1,0 +1,304 @@
+//@version=6
+// Universal Trading Bot v15 webhook signal producer.
+// Authoritative backtests remain in the Android/Python engine. TradingView is
+// used for confirmed-bar live signals; the server must validate state, size,
+// duplicate event IDs, TP/SL placement and the paper/live permission.
+
+strategy(
+     "Universal v15 · 4거래소 거래량 · Webhook v1",
+     overlay = true,
+     pyramiding = 5,
+     initial_capital = 1000,
+     currency = currency.USD,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.02,
+     margin_long = 2,
+     margin_short = 2,
+     process_orders_on_close = false,
+     calc_on_every_tick = false,
+     calc_on_order_fills = false
+)
+
+const string ENGINE_SCHEMA = "universal-vector-event-v5"
+const string WEBHOOK_SCHEMA = "universal-v15-webhook-v1"
+const string GROUP_WEBHOOK = "① 웹훅·실행"
+const string GROUP_MARKET = "② 차트·4거래소 거래량"
+const string GROUP_ENTRY = "③ 진입"
+const string GROUP_TPSL = "④ TP·SL"
+const string GROUP_NBAR = "⑤ N봉 급변동"
+const string GROUP_RSI = "⑥ RSI"
+const string GROUP_ADX = "⑦ ADX"
+const string GROUP_TIME = "⑧ 시간·재진입"
+const string GROUP_REGIME = "⑨ 시장 국면"
+const string GROUP_VISUAL = "⑩ 표시"
+
+// Webhook body intentionally contains no password or API key. Protect the
+// receiver with an unguessable HTTPS path, TradingView IP allow-listing and a
+// server-side allow-list for strategy/config IDs.
+webhookMode = input.string("paper", "웹훅 모드", options = ["paper", "live"], group = GROUP_WEBHOOK)
+strategyId = input.string("btc-15m-high-return", "전략 ID", group = GROUP_WEBHOOK)
+configVersion = input.string("btc15m-20260905-a", "설정 버전", group = GROUP_WEBHOOK)
+serverSymbol = input.string("BTCUSDT", "서버 주문 심볼", group = GROUP_WEBHOOK)
+leverage = input.int(50, "거래소 레버리지", minval = 1, maxval = 125, group = GROUP_WEBHOOK)
+orderPercent = input.float(500.0, "1회 진입 비중 % (500=자산 5배)", minval = 1.0, maxval = 2500.0, step = 0.1, group = GROUP_WEBHOOK)
+maxTotalMultiplier = input.float(15.0, "최대 총노출 배수", minval = 1.0, maxval = 100.0, step = 0.1, group = GROUP_WEBHOOK)
+feePercentSide = input.float(0.02, "수수료 편도 %", minval = 0.0, maxval = 5.0, step = 0.01, group = GROUP_WEBHOOK)
+slippagePercentSide = input.float(0.01, "예상 슬리피지 편도 %", minval = 0.0, maxval = 5.0, step = 0.01, group = GROUP_WEBHOOK)
+
+signalTimeframe = input.timeframe("15", "신호 타임프레임", group = GROUP_MARKET)
+tradeFeedSymbol = input.symbol("BITGET:BTCUSDT.P", "앱 OHLC 기준 · Bitget", group = GROUP_MARKET)
+binanceVolumeSymbol = input.symbol("BINANCE:BTCUSDT.P", "Binance 거래량", group = GROUP_MARKET)
+bitgetVolumeSymbol = input.symbol("BITGET:BTCUSDT.P", "Bitget 거래량", group = GROUP_MARKET)
+okxVolumeSymbol = input.symbol("OKX:BTCUSDT.P", "OKX 거래량", group = GROUP_MARKET)
+bybitVolumeSymbol = input.symbol("BYBIT:BTCUSDT.P", "Bybit 거래량", group = GROUP_MARKET)
+enforceChart = input.bool(true, "차트 심볼·타임프레임 일치 강제", group = GROUP_MARKET)
+
+allowLong = input.bool(true, "LONG 허용", group = GROUP_ENTRY)
+allowShort = input.bool(true, "SHORT 허용", group = GROUP_ENTRY)
+firstEntryConsecutiveCandles = input.int(1, "첫 진입 확인 연속봉", minval = 1, maxval = 10, group = GROUP_ENTRY)
+applyConsecutiveToAllEntries = input.bool(false, "추가 진입에도 연속봉 적용", group = GROUP_ENTRY)
+maxPyramiding = input.int(1, "최대 진입 횟수", minval = 1, maxval = 5, group = GROUP_ENTRY)
+volumeLookback = input.int(80, "거래량 SMA 기간", minval = 2, maxval = 2000, group = GROUP_ENTRY)
+volumeBreakMultiplier = input.float(6.0, "거래량 폭등 배수", minval = 0.1, maxval = 100.0, step = 0.1, group = GROUP_ENTRY)
+minOneBarVol = input.float(0.1, "1봉 변동 최소 %", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_ENTRY)
+maxOneBarVol = input.float(2.4, "1봉 변동 최대 %", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_ENTRY)
+
+volatilityBars = input.int(24, "TP·SL 변동성 기준 봉", minval = 2, maxval = 10000, group = GROUP_TPSL)
+tpVolMultiplier = input.float(2.4, "TP 변동성 배수", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+slVolMultiplier = input.float(0.6, "SL 변동성 배수", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+minTpPercent = input.float(0.3, "TP 최소 %", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+maxTpPercent = input.float(2.1, "TP 최대 %", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+minSlPercent = input.float(0.5, "SL 최소 %", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+maxSlPercent = input.float(1.0, "SL 최대 %", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_TPSL)
+
+useNbarBlock = input.bool(true, "N봉 급변동 차단 사용", group = GROUP_NBAR)
+nbarVolatilityBars = input.int(200, "N봉 기준 봉 수", minval = 2, maxval = 10000, group = GROUP_NBAR)
+maxNbarVolatility = input.float(7.3, "N봉 최대 변동 %", minval = 0.01, maxval = 100.0, step = 0.1, group = GROUP_NBAR)
+
+useRsiFilter = input.bool(true, "RSI 필터 사용", group = GROUP_RSI)
+rsiLength = input.int(6, "RSI 기간", minval = 2, maxval = 100, group = GROUP_RSI)
+rsiOversoldMin = input.float(17.4, "과매도 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_RSI)
+rsiOversoldMax = input.float(41.8, "과매도 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_RSI)
+rsiOverboughtMin = input.float(72.4, "과매수 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_RSI)
+rsiOverboughtMax = input.float(83.6, "과매수 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_RSI)
+
+useAdxFilter = input.bool(false, "ADX 필터 사용", group = GROUP_ADX)
+adxLength = input.int(7, "ADX 기간", minval = 2, maxval = 100, group = GROUP_ADX)
+adxMin = input.float(11.2, "ADX 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_ADX)
+adxMax = input.float(73.7, "ADX 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_ADX)
+
+cooldownBars = input.int(35, "진입 후 쿨다운 봉", minval = 0, maxval = 10000, group = GROUP_TIME)
+reentryBars = input.int(7, "청산 후 재진입 봉", minval = 0, maxval = 10000, group = GROUP_TIME)
+blockWeekend = input.bool(false, "주말 진입 차단", group = GROUP_TIME)
+excludedHoursUtc = input.string("", "제외 시간 UTC · 예: 00,13,23", group = GROUP_TIME)
+
+adaptiveRegime = input.bool(true, "시장 국면 자동 전환 · 앱 기본값", group = GROUP_REGIME)
+regimeLookbackBars = input.int(288, "시장 국면 판단 봉", minval = 20, maxval = 10000, group = GROUP_REGIME)
+regimeTrendThreshold = input.float(2.0, "추세 판정 변동 %", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_REGIME)
+regimeHighVolatility = input.float(0.8, "고변동성 판정 %", minval = 0.0, maxval = 100.0, step = 0.1, group = GROUP_REGIME)
+regimeHighVolRiskMultiplier = input.float(0.5, "고변동성 진입 축소 배수", minval = 0.0, maxval = 1.0, step = 0.1, group = GROUP_REGIME)
+
+showSignalLabels = input.bool(true, "진입 라벨", group = GROUP_VISUAL)
+showProtection = input.bool(true, "예상 TP·SL", group = GROUP_VISUAL)
+showWarningBackground = input.bool(true, "잘못된 차트 경고", group = GROUP_VISUAL)
+
+f_number(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.########")
+
+f_bool(bool value) =>
+    value ? "true" : "false"
+
+f_hour_excluded(string hoursText, int currentHour) =>
+    string compact = str.replace_all(hoursText, " ", "")
+    string paddedHour = currentHour < 10 ? "0" + str.tostring(currentHour) : str.tostring(currentHour)
+    string rawHour = str.tostring(currentHour)
+    string wrapped = "," + compact + ","
+    compact != "" and (str.contains(wrapped, "," + paddedHour + ",") or str.contains(wrapped, "," + rawHour + ","))
+
+f_payload(string action, string side, float exposurePercent, float tpPercent, float slPercent, float volumeRatio, float rsiValue, float adxValue, float nbarRange, string marketRegime, string volatilityRegime, int requestedEntry) =>
+    string eventId = strategyId + "|" + configVersion + "|" + serverSymbol + "|" + signalTimeframe + "|" + str.tostring(time_close) + "|" + action + "|" + str.tostring(requestedEntry)
+    "{" +
+      "\"schema\":\"" + WEBHOOK_SCHEMA + "\"," +
+      "\"engine_schema\":\"" + ENGINE_SCHEMA + "\"," +
+      "\"mode\":\"" + webhookMode + "\"," +
+      "\"strategy_id\":\"" + strategyId + "\"," +
+      "\"config_version\":\"" + configVersion + "\"," +
+      "\"event_id\":\"" + eventId + "\"," +
+      "\"event\":\"ENTRY\"," +
+      "\"action\":\"" + action + "\"," +
+      "\"side\":\"" + side + "\"," +
+      "\"symbol\":\"" + serverSymbol + "\"," +
+      "\"chart_symbol\":\"" + syminfo.tickerid + "\"," +
+      "\"timeframe\":\"" + signalTimeframe + "\"," +
+      "\"bar_open_time_ms\":" + str.tostring(time) + "," +
+      "\"bar_close_time_ms\":" + str.tostring(time_close) + "," +
+      "\"generated_time_ms\":" + str.tostring(timenow) + "," +
+      "\"execution_model\":\"next_open\"," +
+      "\"reference_close\":" + f_number(close) + "," +
+      "\"requested_entry\":" + str.tostring(requestedEntry) + "," +
+      "\"max_pyramiding\":" + str.tostring(maxPyramiding) + "," +
+      "\"requested_exposure_percent\":" + f_number(exposurePercent) + "," +
+      "\"max_total_multiplier\":" + f_number(maxTotalMultiplier) + "," +
+      "\"leverage\":" + str.tostring(leverage) + "," +
+      "\"tp_percent\":" + f_number(tpPercent) + "," +
+      "\"sl_percent\":" + f_number(slPercent) + "," +
+      "\"fee_percent_side\":" + f_number(feePercentSide) + "," +
+      "\"slippage_percent_side\":" + f_number(slippagePercentSide) + "," +
+      "\"volume_ratio\":" + f_number(volumeRatio) + "," +
+      "\"rsi\":" + f_number(rsiValue) + "," +
+      "\"adx\":" + f_number(adxValue) + "," +
+      "\"nbar_range_percent\":" + f_number(nbarRange) + "," +
+      "\"market_regime\":\"" + marketRegime + "\"," +
+      "\"volatility_regime\":\"" + volatilityRegime + "\"," +
+      "\"confirmed_bar\":" + f_bool(barstate.isconfirmed) +
+    "}"
+
+// The Python engine normalizes each exchange independently and then averages
+// all four ratios. A missing exchange invalidates the signal instead of silently
+// falling back to fewer sources.
+[binanceVolume, binanceVolumeSma] = request.security(binanceVolumeSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+[bitgetVolume, bitgetVolumeSma] = request.security(bitgetVolumeSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+[okxVolume, okxVolumeSma] = request.security(okxVolumeSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+[bybitVolume, bybitVolumeSma] = request.security(bybitVolumeSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+
+binanceRatio = binanceVolumeSma != 0 ? binanceVolume / binanceVolumeSma : na
+bitgetRatio = bitgetVolumeSma != 0 ? bitgetVolume / bitgetVolumeSma : na
+okxRatio = okxVolumeSma != 0 ? okxVolume / okxVolumeSma : na
+bybitRatio = bybitVolumeSma != 0 ? bybitVolume / bybitVolumeSma : na
+fourVolumesReady = not na(binanceRatio) and not na(bitgetRatio) and not na(okxRatio) and not na(bybitRatio)
+normalizedVolumeRatio = fourVolumesReady ? (binanceRatio + bitgetRatio + okxRatio + bybitRatio) / 4.0 : na
+
+oneBarVolatility = open != 0 ? math.abs(close - open) / open * 100.0 : 0.0
+rangeLow = ta.lowest(low, volatilityBars)
+rangePercent = rangeLow != 0 ? (ta.highest(high, volatilityBars) - rangeLow) / rangeLow * 100.0 : na
+blockLow = ta.lowest(low, nbarVolatilityBars)
+blockRangePercent = blockLow != 0 ? (ta.highest(high, nbarVolatilityBars) - blockLow) / blockLow * 100.0 : na
+rawTpPercent = rangePercent * tpVolMultiplier
+rawSlPercent = rangePercent * slVolMultiplier
+finalTpPercent = math.max(minTpPercent, math.min(maxTpPercent, rawTpPercent))
+finalSlPercent = math.max(minSlPercent, math.min(maxSlPercent, rawSlPercent))
+rsiValue = ta.rsi(close, rsiLength)
+[plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxLength)
+
+trendValue = (close / close[regimeLookbackBars] - 1.0) * 100.0
+regimeCandleVolatility = close != 0 ? (high - low) / close * 100.0 : na
+regimeAverageVolatility = ta.sma(regimeCandleVolatility, regimeLookbackBars)
+marketRegime = trendValue >= regimeTrendThreshold ? "UP" : trendValue <= -regimeTrendThreshold ? "DOWN" : "SIDEWAYS"
+volatilityRegime = regimeAverageVolatility >= regimeHighVolatility ? "HIGH" : "LOW"
+regimeRiskMultiplier = adaptiveRegime and volatilityRegime == "HIGH" ? regimeHighVolRiskMultiplier : 1.0
+regimeAllowLong = not adaptiveRegime or marketRegime == "UP" or marketRegime == "SIDEWAYS"
+regimeAllowShort = not adaptiveRegime or marketRegime == "DOWN" or marketRegime == "SIDEWAYS"
+
+currentHourUtc = hour(time, "UTC")
+currentDayUtc = dayofweek(time, "UTC")
+weekend = currentDayUtc == dayofweek.saturday or currentDayUtc == dayofweek.sunday
+timeOk = (not blockWeekend or not weekend) and not f_hour_excluded(excludedHoursUtc, currentHourUtc)
+nbarOk = not useNbarBlock or (not na(blockRangePercent) and blockRangePercent <= maxNbarVolatility)
+adxRangeOk = not na(adxValue) and adxValue >= adxMin and adxValue <= adxMax
+adxOk = not useAdxFilter or adxRangeOk
+rsiLongOk = not useRsiFilter or (not na(rsiValue) and rsiValue >= rsiOversoldMin and rsiValue <= rsiOversoldMax)
+rsiShortOk = not useRsiFilter or (not na(rsiValue) and rsiValue >= rsiOverboughtMin and rsiValue <= rsiOverboughtMax)
+volumeOk = not na(normalizedVolumeRatio) and normalizedVolumeRatio >= volumeBreakMultiplier
+oneBarOk = oneBarVolatility >= minOneBarVol and oneBarVolatility <= maxOneBarVol
+
+var int entryCount = 0
+var int lastEntryBar = na
+var int lastExitBar = na
+var int lastAlertBar = na
+var float activeTpPrice = na
+var float activeSlPrice = na
+
+previousPositionSize = nz(strategy.position_size[1])
+positionIncreased = math.abs(strategy.position_size) > math.abs(previousPositionSize)
+positionClosed = strategy.position_size == 0 and previousPositionSize != 0
+if positionIncreased
+    entryCount += 1
+    lastEntryBar := bar_index
+if positionClosed
+    entryCount := 0
+    lastExitBar := bar_index
+    activeTpPrice := na
+    activeSlPrice := na
+
+barsSinceEntry = na(lastEntryBar) ? na : bar_index - lastEntryBar
+barsSinceExit = na(lastExitBar) ? na : bar_index - lastExitBar
+cooldownOk = (na(barsSinceEntry) or barsSinceEntry >= cooldownBars) and (na(barsSinceExit) or barsSinceExit >= reentryBars)
+
+isFlat = strategy.position_size == 0
+requireConsecutive = isFlat or applyConsecutiveToAllEntries
+consecutiveBearish = math.sum(close < open ? 1.0 : 0.0, firstEntryConsecutiveCandles) == firstEntryConsecutiveCandles
+consecutiveBullish = math.sum(close > open ? 1.0 : 0.0, firstEntryConsecutiveCandles) == firstEntryConsecutiveCandles
+longCandleOk = requireConsecutive ? consecutiveBearish : close < open
+shortCandleOk = requireConsecutive ? consecutiveBullish : close > open
+
+warmupBars = math.max(200, math.max(volumeLookback, math.max(volatilityBars, math.max(nbarVolatilityBars, math.max(adxLength * 3, math.max(rsiLength + 10, adaptiveRegime ? regimeLookbackBars : 0))))))
+chartSymbolOk = syminfo.tickerid == tradeFeedSymbol
+chartTimeframeOk = timeframe.period == signalTimeframe
+chartOk = not enforceChart or (chartSymbolOk and chartTimeframeOk)
+parametersOk = minOneBarVol <= maxOneBarVol and minTpPercent <= maxTpPercent and minSlPercent <= maxSlPercent and rsiOversoldMin <= rsiOversoldMax and rsiOversoldMax < rsiOverboughtMin and rsiOverboughtMin <= rsiOverboughtMax and adxMin <= adxMax and (allowLong or allowShort)
+ready = bar_index >= warmupBars and fourVolumesReady and chartOk and parametersOk
+baseEntry = ready and barstate.isconfirmed and volumeOk and oneBarOk and nbarOk and adxOk and timeOk and cooldownOk
+
+sameLongDirection = isFlat or strategy.position_size > 0
+sameShortDirection = isFlat or strategy.position_size < 0
+effectiveExposurePercent = orderPercent * regimeRiskMultiplier
+requestedNotional = strategy.equity * effectiveExposurePercent / 100.0
+currentNotional = math.abs(strategy.position_size) * close
+exposureWithinCap = currentNotional + requestedNotional <= strategy.equity * maxTotalMultiplier + 0.0000001
+canPyramid = entryCount < maxPyramiding and exposureWithinCap and (volatilityRegime != "HIGH" or entryCount < 1)
+
+longSignal = baseEntry and allowLong and regimeAllowLong and longCandleOk and rsiLongOk and sameLongDirection and canPyramid
+shortSignal = baseEntry and allowShort and regimeAllowShort and shortCandleOk and rsiShortOk and sameShortDirection and canPyramid
+requestedEntryNumber = entryCount + 1
+visualQty = close > 0 ? requestedNotional / close : 0.0
+
+if longSignal and lastAlertBar != bar_index
+    string longPayload = f_payload("OPEN_LONG", "LONG", effectiveExposurePercent, finalTpPercent, finalSlPercent, normalizedVolumeRatio, rsiValue, adxValue, blockRangePercent, marketRegime, volatilityRegime, requestedEntryNumber)
+    bool firstLongEntry = isFlat
+    strategy.entry("LONG", strategy.long, qty = visualQty, alert_message = longPayload)
+    if firstLongEntry
+        activeTpPrice := close * (1.0 + finalTpPercent / 100.0)
+        activeSlPrice := close * (1.0 - finalSlPercent / 100.0)
+        strategy.exit("LONG-TP-SL", from_entry = "LONG", limit = activeTpPrice, stop = activeSlPrice)
+    alert(longPayload, alert.freq_once_per_bar_close)
+    lastAlertBar := bar_index
+
+if shortSignal and lastAlertBar != bar_index
+    string shortPayload = f_payload("OPEN_SHORT", "SHORT", effectiveExposurePercent, finalTpPercent, finalSlPercent, normalizedVolumeRatio, rsiValue, adxValue, blockRangePercent, marketRegime, volatilityRegime, requestedEntryNumber)
+    bool firstShortEntry = isFlat
+    strategy.entry("SHORT", strategy.short, qty = visualQty, alert_message = shortPayload)
+    if firstShortEntry
+        activeTpPrice := close * (1.0 - finalTpPercent / 100.0)
+        activeSlPrice := close * (1.0 + finalSlPercent / 100.0)
+        strategy.exit("SHORT-TP-SL", from_entry = "SHORT", limit = activeTpPrice, stop = activeSlPrice)
+    alert(shortPayload, alert.freq_once_per_bar_close)
+    lastAlertBar := bar_index
+
+plot(showProtection ? activeTpPrice : na, "예상 TP", color = color.new(color.lime, 0), linewidth = 2, style = plot.style_linebr)
+plot(showProtection ? activeSlPrice : na, "예상 SL", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+plot(normalizedVolumeRatio, "4거래소 정규화 거래량", display = display.data_window)
+plot(rsiValue, "RSI", display = display.data_window)
+plot(adxValue, "ADX", display = display.data_window)
+
+plotshape(showSignalLabels and longSignal, title = "LONG 웹훅", text = "LONG", style = shape.labelup, location = location.belowbar, color = color.new(color.lime, 0), textcolor = color.black, size = size.tiny)
+plotshape(showSignalLabels and shortSignal, title = "SHORT 웹훅", text = "SHORT", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+bgcolor(showWarningBackground and not chartOk ? color.new(color.red, 82) : showWarningBackground and not parametersOk ? color.new(color.orange, 82) : na, title = "설정 경고")
+
+var table statusTable = table.new(position.top_right, 2, 8, border_width = 1)
+if barstate.islast
+    table.cell(statusTable, 0, 0, "모드", text_color = color.white, bgcolor = color.rgb(30, 41, 59))
+    table.cell(statusTable, 1, 0, webhookMode, text_color = webhookMode == "live" ? color.orange : color.aqua, bgcolor = color.rgb(30, 41, 59))
+    table.cell(statusTable, 0, 1, "차트", text_color = color.white)
+    table.cell(statusTable, 1, 1, chartOk ? "정상" : "심볼/15분 확인", text_color = chartOk ? color.lime : color.red)
+    table.cell(statusTable, 0, 2, "4거래소", text_color = color.white)
+    table.cell(statusTable, 1, 2, fourVolumesReady ? "정상" : "데이터 부족", text_color = fourVolumesReady ? color.lime : color.red)
+    table.cell(statusTable, 0, 3, "설정", text_color = color.white)
+    table.cell(statusTable, 1, 3, parametersOk ? "정상" : "범위 오류", text_color = parametersOk ? color.lime : color.red)
+    table.cell(statusTable, 0, 4, "거래량 배수", text_color = color.white)
+    table.cell(statusTable, 1, 4, f_number(normalizedVolumeRatio), text_color = color.white)
+    table.cell(statusTable, 0, 5, "RSI / ADX", text_color = color.white)
+    table.cell(statusTable, 1, 5, f_number(rsiValue) + " / " + f_number(adxValue), text_color = color.white)
+    table.cell(statusTable, 0, 6, "TP / SL", text_color = color.white)
+    table.cell(statusTable, 1, 6, f_number(finalTpPercent) + "% / " + f_number(finalSlPercent) + "%", text_color = color.white)
+    table.cell(statusTable, 0, 7, "웹훅", text_color = color.white)
+    table.cell(statusTable, 1, 7, ready ? "대기 중" : "준비 안 됨", text_color = ready ? color.lime : color.orange)
