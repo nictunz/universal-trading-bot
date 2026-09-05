@@ -9,35 +9,35 @@ class Settings(BaseSettings):
     bot_mode: str = "PAPER"
     exchange: str = "bitget"
     symbol: str = "BTC/USDT:USDT"
-    timeframe: str = "5m"
-    symbols: str = "BTC/USDT:USDT,ETH/USDT:USDT"
+    timeframe: str = "15m"
+    symbols: str = "BTC/USDT:USDT"
     asset_class: str = "crypto"
     poll_seconds: int = 10
-    volume_lookback: int = 70
-    volume_break_multiplier: float = 8.0
+    volume_lookback: int = 40
+    volume_break_multiplier: float = 6.4
     use_four_crypto_exchanges: bool = True
     min_one_bar_vol: float = 0.1
-    max_one_bar_vol: float = 1.0
-    volatility_bars: int = 288
-    tp_vol_multiplier: float = 0.4
-    sl_vol_multiplier: float = 0.8
-    min_tp_percent: float = 0.20
-    max_tp_percent: float = 2.00
-    min_sl_percent: float = 0.30
-    max_sl_percent: float = 2.00
+    max_one_bar_vol: float = 3.6
+    volatility_bars: int = 36
+    tp_vol_multiplier: float = 3.8
+    sl_vol_multiplier: float = 1.0
+    min_tp_percent: float = 0.3
+    max_tp_percent: float = 2.1
+    min_sl_percent: float = 0.3
+    max_sl_percent: float = 1.9
     use_nbar_volatility_block: bool = True
     nbar_volatility_bars: int = 200
-    max_nbar_volatility: float = 5.0
+    max_nbar_volatility: float = 6.3
     use_adx_filter: bool = False
-    adx_length: int = 14
-    adx_min: float = 20.0
-    adx_max: float = 100.0
+    adx_length: int = 7
+    adx_min: float = 11.6
+    adx_max: float = 80.5
     use_rsi_filter: bool = True
-    rsi_length: int = 8
-    rsi_oversold_min: float = 10.0
-    rsi_oversold_max: float = 25.0
-    rsi_overbought_min: float = 75.0
-    rsi_overbought_max: float = 90.0
+    rsi_length: int = 10
+    rsi_oversold_min: float = 20.0
+    rsi_oversold_max: float = 42.0
+    rsi_overbought_min: float = 65.6
+    rsi_overbought_max: float = 74.7
     allow_long: bool = True
     allow_short: bool = True
     # Adaptive regime routing uses only closed historical bars.
@@ -53,24 +53,24 @@ class Settings(BaseSettings):
     apply_consecutive_candles_to_all_entries: bool = False
     # Maximum entries per position; profile optimization may override this.
 
-    max_pyramiding: int = 2
-    cooldown_bars: int = 6
-    reentry_bars: int = 6
+    max_pyramiding: int = 1
+    cooldown_bars: int = 3
+    reentry_bars: int = 5
     use_start_date: bool = True
     start_date: datetime = Field(default_factory=lambda: datetime(2024, 1, 1, tzinfo=timezone.utc))
     block_weekend: bool = False
-    excluded_hours: str = "00"
-    order_percent_of_equity: float = 5.0
-    initial_capital: float = 1_000_000.0
-    backtest_fee_percent: float = 0.06
-    backtest_slippage_percent: float = 0.02
+    excluded_hours: str = ""
+    order_percent_of_equity: float = 860.0
+    initial_capital: float = 1_000.0
+    backtest_fee_percent: float = 0.02
+    backtest_slippage_percent: float = 0.01
     # Backtest-only liquidation model. LIVE/PAPER routing is not changed by these fields.
     backtest_margin_mode: str = "crossed"
     backtest_maintenance_margin_percent: float = 0.5
     backtest_cross_liquidation_buffer_percent: float = 25.0
     backtest_max_total_multiplier: float = 15.0
     # Backtest only: size each new position from current net equity when enabled.
-    backtest_compounding_enabled: bool = False
+    backtest_compounding_enabled: bool = True
     # signal_close preserves legacy results. next_open executes a confirmed
     # signal at the following candle open to avoid optimistic same-close fills.
     backtest_execution_model: str = "signal_close"
@@ -89,10 +89,11 @@ class Settings(BaseSettings):
     # Generic/standard LIVE safety limit retained for non-Elite routing.
     live_max_position_notional_percent: float = 10.0
     live_require_one_way_mode: bool = True
-    # Elite LIVE sizing only. Each signal uses current available USDT x 15.
-    live_entry_multiplier: float = 15.0
-    live_max_entries_per_position: int = 2
-    live_max_total_multiplier: float = 30.0
+    # Elite LIVE sizing follows 진입_비중_pct=860: current available USDT x 8.6.
+    # LEVERAGE=15 is the exchange leverage ceiling, not the order-size multiplier.
+    live_entry_multiplier: float = 8.6
+    live_max_entries_per_position: int = 1
+    live_max_total_multiplier: float = 15.0
 
     # Discord notifications. Keep the webhook only in .env, never in source.
     discord_notifications_enabled: bool = False
