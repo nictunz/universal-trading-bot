@@ -18,7 +18,7 @@ ENV_PATH = ROOT / ".env"
 PROFILE = {
     "BOT_MODE": "PAPER",
     "BITGET_EXECUTION_PROFILE": "elite",
-    "LEVERAGE": "50",
+    "LEVERAGE": "15",
     "MARGIN_MODE": "crossed",
     "LIVE_REQUIRE_ONE_WAY_MODE": "true",
     "MAX_PYRAMIDING": "2",
@@ -74,11 +74,11 @@ def main() -> None:
         community_fallback=False,
     )
 
-    print("ELITE_50X_15X2_PROFILE")
-    print("NOTE: legacy filename still contains 15x3; behavior is now 15x2.")
+    print("ELITE_15X_LEVERAGE_PROFILE")
+    print("NOTE: legacy filename is retained for compatibility; account leverage is 15x.")
     print(f"env_backup={backup.name}")
     print("BOT_MODE=PAPER")
-    print("LEVERAGE=50")
+    print("LEVERAGE=15")
     print("LIVE_ENTRY_MULTIPLIER=15")
     print("MAX_ENTRIES=2 (first + one add-on)")
     print("LIVE_MAX_TOTAL_MULTIPLIER=30")
@@ -86,8 +86,8 @@ def main() -> None:
 
     results = []
     for symbol in SYMBOLS:
-        sync = adapter.ensure_leverage(symbol, 50)
-        check = adapter.configure_live(symbol, 50, "crossed", True)
+        sync = adapter.ensure_leverage(symbol, 15)
+        check = adapter.configure_live(symbol, 15, "crossed", True)
         row = {
             "symbol": adapter._symbol_id(symbol),
             "leverage_sync": sync,
