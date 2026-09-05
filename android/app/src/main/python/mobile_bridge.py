@@ -1628,6 +1628,7 @@ def run_backtest(
     original_candidate_result: dict = {}
     source_context: dict = {}
     imported_json_replay = False
+    manually_edited_replay = False
     if str(selected_parameters_json or "").strip():
         replay_payload = json.loads(selected_parameters_json)
         if not isinstance(replay_payload, dict):
@@ -1639,6 +1640,7 @@ def run_backtest(
         original_candidate_result = dict(replay_payload.get("original_result") or {})
         source_context = dict(replay_payload.get("source_context") or {})
         imported_json_replay = bool(replay_payload.get("imported_json", False))
+        manually_edited_replay = bool(replay_payload.get("manually_edited", False))
     overrides: dict = {}
     if not selected_parameters and host.strip() and username.strip() and remote_dir.strip() and key_path.strip():
         try:
@@ -1708,7 +1710,12 @@ def run_backtest(
             selected_parameters.get("order_percent_of_equity", entry_multiplier * 100.0)
         )
         overrides["max_pyramiding"] = int(selected_parameters.get("max_pyramiding", 1))
-        if imported_json_replay:
+        if manually_edited_replay:
+            log(
+                "수동 수정 전략: 불러온 원본과 분리한 새 전략으로 선택 기간 "
+                "독립 백테스트 · 재최적화 없음"
+            )
+        elif imported_json_replay:
             log(
                 "붙여넣기 JSON 전략: 모든 전략 수치를 적용하고 현재 엔진으로 "
                 "선택 기간 재백테스트 · 재최적화 없음"
@@ -1781,7 +1788,12 @@ def run_backtest(
         log("계산 방식: 복리식 · 매 진입 시 현재 순자산 기준으로 주문 규모와 최대 총노출 재계산")
     else:
         log(f"계산 방식: 고정식 · 최초자본 {initial_capital:,.2f} USDT 기준으로 주문 규모와 최대 총노출 유지")
-    log("교차마진 청산: 총노출 최대 15배 · 15배에서 약 5% 역행 시 보수적 청산")
+    log(
+        "교차마진 청산: 총노출 최대 "
+        f"{float(overrides.get('backtest_max_total_multiplier', 15.0)):g}배 · "
+        f"유지증거금 {float(overrides.get('backtest_maintenance_margin_percent', 0.5)):g}% · "
+        f"안전버퍼 {float(overrides.get('backtest_cross_liquidation_buffer_percent', 25.0)):g}%"
+    )
     log(f"3틱룰 적용: {'모든 진입' if all_entries_three_tick else '첫 진입만'}")
     log(f"자동 시장국면 전환: {'사용' if adaptive_regime_enabled else '사용 안 함'} · 상승=롱 · 하락=숏 · 횡보=양방향 · 고변동성=진입 50%")
 
@@ -1822,6 +1834,7 @@ def run_backtest(
         summary["risk_profile"] = selected_profile
         summary["selected_strategy_retest"] = True
         summary["selected_strategy_imported_json"] = imported_json_replay
+        summary["selected_strategy_manually_edited"] = manually_edited_replay
         summary["selected_strategy_parameters"] = selected_parameters
         summary["selected_strategy_original_result"] = original_candidate_result
         summary["selected_strategy_source_context"] = source_context
@@ -1903,19 +1916,24 @@ def run_backtest(
             and source_context.get("engine")
             and source_candidate_verified
         )
-        if imported_json_replay and not comparison_available:
-            # A flat settings JSON has no original result, period, cache hash,
-            # engine fingerprint, or signed TOP candidate. It is a new fixed-
-            # parameter run, not a failed reproduction attempt.
+        if manually_edited_replay or (imported_json_replay and not comparison_available):
+            # A manually changed strategy is intentionally different from its
+            # source, while a flat settings JSON has no signed source at all.
+            # Neither case is a failed reproduction attempt.
+            independent_reason = (
+                "불러온 전략 수치를 사용자가 수정했습니다. 원본 TOP10 재현 판정과 "
+                "분리하여 새 변형 전략의 독립 백테스트 결과로 표시합니다."
+                if manually_edited_replay else
+                "직접 입력 JSON에는 비교할 원본 TOP10 결과와 재현 잠금 정보가 없습니다. "
+                "현재 결과를 독립 백테스트 결과로 표시합니다."
+            )
             summary["reproduction_comparison"] = {
                 "status": "NOT_COMPARABLE",
                 "comparison_available": False,
                 "exact_reproduction": False,
-                "imported_json": True,
-                "reason": (
-                    "직접 입력 JSON에는 비교할 원본 TOP10 결과와 재현 잠금 정보가 없습니다. "
-                    "현재 결과를 독립 백테스트 결과로 표시합니다."
-                ),
+                "imported_json": imported_json_replay,
+                "manually_edited": manually_edited_replay,
+                "reason": independent_reason,
                 "retest_return_percent": float(summary.get("return_percent") or 0),
                 "retest_mdd_percent": float(summary.get("max_drawdown_percent") or 0),
                 "retest_initial_capital": initial_capital,

@@ -10,11 +10,13 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
@@ -25,6 +27,7 @@ import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -38,16 +41,23 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends android.app.Activity {
     private static final String ENGINE_SCHEMA = "universal-vector-event-v5";
+    private static final int REQUEST_OPEN_JSON = 4107;
+    private static final int MAX_IMPORTED_JSON_CHARS = 8 * 1024 * 1024;
     private static final int BG = Color.rgb(11, 18, 32);
     private static final int PANEL = Color.rgb(17, 24, 39);
     private static final int CARD = Color.rgb(23, 32, 51);
@@ -57,6 +67,75 @@ public class MainActivity extends android.app.Activity {
     private static final int ACCENT = Color.rgb(56, 189, 248);
     private static final int PRIMARY = Color.rgb(2, 132, 199);
     private static final int SUCCESS = Color.rgb(4, 120, 87);
+
+    // type, label, JSON key, minimum, maximum, fallback. entry_multiplier is
+    // intentionally not a second input: it is always derived from order % so
+    // the two equivalent sizing values cannot silently disagree.
+    private static final String[][] STRATEGY_EDITOR_FIELDS = {
+            {"section", "① 진입 방향·규모", "", "", "", ""},
+            {"bool", "LONG 허용", "allow_long", "", "", "true"},
+            {"bool", "SHORT 허용", "allow_short", "", "", "true"},
+            {"int", "첫 진입 확인 연속봉 (1~10)", "first_entry_consecutive_candles", "1", "10", "1"},
+            {"bool", "추가 진입에도 연속봉 조건 적용", "apply_consecutive_candles_to_all_entries", "", "", "false"},
+            {"decimal", "1회 진입 비중 % (500=자산 5배)", "order_percent_of_equity", "1", "2500", "100"},
+            {"int", "최대 진입 횟수 (1~5)", "max_pyramiding", "1", "5", "1"},
+
+            {"section", "② 거래량·기본 변동성", "", "", "", ""},
+            {"int", "거래량 SMA 기간", "volume_lookback", "2", "2000", "70"},
+            {"decimal", "거래량 폭등 배수", "volume_break_multiplier", "0.1", "100", "8"},
+            {"decimal", "1봉 변동 최소 %", "min_one_bar_vol", "0", "100", "0.1"},
+            {"decimal", "1봉 변동 최대 %", "max_one_bar_vol", "0", "100", "1"},
+            {"int", "TP·SL 변동성 기준 봉", "volatility_bars", "2", "10000", "288"},
+
+            {"section", "③ 익절·손절", "", "", "", ""},
+            {"decimal", "TP 변동성 배수", "tp_vol_multiplier", "0.01", "100", "0.4"},
+            {"decimal", "SL 변동성 배수", "sl_vol_multiplier", "0.01", "100", "0.8"},
+            {"decimal", "TP 최소 %", "min_tp_percent", "0.01", "100", "0.2"},
+            {"decimal", "TP 최대 %", "max_tp_percent", "0.01", "100", "2"},
+            {"decimal", "SL 최소 %", "min_sl_percent", "0.01", "100", "0.3"},
+            {"decimal", "SL 최대 %", "max_sl_percent", "0.01", "100", "2"},
+
+            {"section", "④ N봉 급변동 차단", "", "", "", ""},
+            {"bool", "N봉 급변동 차단 사용", "use_nbar_volatility_block", "", "", "true"},
+            {"int", "N봉 기준 봉 수", "nbar_volatility_bars", "2", "10000", "200"},
+            {"decimal", "N봉 최대 변동 %", "max_nbar_volatility", "0.01", "100", "5"},
+
+            {"section", "⑤ RSI", "", "", "", ""},
+            {"bool", "RSI 필터 사용", "use_rsi_filter", "", "", "true"},
+            {"int", "RSI 기간", "rsi_length", "2", "100", "8"},
+            {"decimal", "RSI 과매도 최소", "rsi_oversold_min", "0", "100", "10"},
+            {"decimal", "RSI 과매도 최대", "rsi_oversold_max", "0", "100", "25"},
+            {"decimal", "RSI 과매수 최소", "rsi_overbought_min", "0", "100", "75"},
+            {"decimal", "RSI 과매수 최대", "rsi_overbought_max", "0", "100", "90"},
+
+            {"section", "⑥ ADX·재진입", "", "", "", ""},
+            {"bool", "ADX 필터 사용", "use_adx_filter", "", "", "false"},
+            {"int", "ADX 기간", "adx_length", "2", "100", "14"},
+            {"decimal", "ADX 최소", "adx_min", "0", "100", "20"},
+            {"decimal", "ADX 최대", "adx_max", "0", "100", "100"},
+            {"int", "쿨다운 봉", "cooldown_bars", "0", "10000", "6"},
+            {"int", "재진입 대기 봉", "reentry_bars", "0", "10000", "6"},
+
+            {"section", "⑦ 시간·시장 국면", "", "", "", ""},
+            {"bool", "주말 진입 차단", "block_weekend", "", "", "false"},
+            {"text", "제외 시간 UTC (예: 00,13,23 · 없으면 비움)", "excluded_hours", "", "", ""},
+            {"bool", "시장 국면 자동 전환", "adaptive_regime_enabled", "", "", "true"},
+            {"int", "시장 국면 판단 봉", "regime_lookback_bars", "2", "10000", "288"},
+            {"decimal", "추세 판정 변동 %", "regime_trend_threshold_percent", "0", "100", "2"},
+            {"decimal", "고변동성 판정 %", "regime_high_volatility_percent", "0", "100", "0.8"},
+            {"decimal", "고변동성 진입 축소 배수", "regime_high_volatility_risk_multiplier", "0", "1", "0.5"},
+
+            {"section", "⑧ 백테스트 계산", "", "", "", ""},
+            {"decimal", "초기자산 USDT", "initial_capital", "10", "1000000000", "1000"},
+            {"bool", "복리 계산", "backtest_compounding_enabled", "", "", "true"},
+            {"choice", "체결 모델", "backtest_execution_model", "", "", "next_open"},
+            {"decimal", "수수료 편도 %", "backtest_fee_percent", "0", "5", "0.02"},
+            {"decimal", "슬리피지 편도 %", "backtest_slippage_percent", "0", "5", "0.01"},
+            {"int", "레버리지", "leverage", "1", "125", "50"},
+            {"decimal", "최대 총노출 배수", "backtest_max_total_multiplier", "1", "100", "15"},
+            {"decimal", "유지증거금 %", "backtest_maintenance_margin_percent", "0", "100", "0.5"},
+            {"decimal", "교차청산 안전버퍼 %", "backtest_cross_liquidation_buffer_percent", "0", "100", "25"},
+    };
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -98,11 +177,13 @@ public class MainActivity extends android.app.Activity {
     private Button resultSummaryButton;
     private Button tradeHistoryButton;
     private Button chartButton;
+    private Button deepBacktestButton;
     private JSONObject lastSummary;
     private JSONObject selectedStrategyParameters;
     private JSONObject selectedStrategyRow;
     private TextView selectedStrategyText;
     private TextView pinnedResultText;
+    private EditText pendingJsonInput;
 
     private String lastDbPath = "";
     private String lastResultPath = "";
@@ -377,11 +458,11 @@ public class MainActivity extends android.app.Activity {
         Button topStrategiesButton = actionButton("🏆 수익률 TOP10 전략 선택", Color.rgb(30, 41, 59));
         topStrategiesButton.setOnClickListener(v -> showTopStrategies(false));
         backtestCard.addView(topStrategiesButton, marginTop(8));
-        Button pasteJsonButton = actionButton("📋 JSON 붙여넣기 · 해당 기간 재백테스트", PRIMARY);
+        Button pasteJsonButton = actionButton("📋 JSON 붙여넣기 / 파일 불러오기", PRIMARY);
         pasteJsonButton.setOnClickListener(v -> showJsonPasteDialog());
         backtestCard.addView(pasteJsonButton, marginTop(8));
         backtestCard.addView(text(
-                "앱에서 공유한 원본·전체 자동·단계별 JSON을 붙여넣으면 전략 수치와 JSON 기간을 자동 입력합니다.",
+                "클립보드에 붙여넣거나 휴대폰의 JSON 파일을 선택하면 전략 수치와 JSON 기간을 자동 입력합니다.",
                 11, MUTED, false
         ), marginTop(5));
         selectedStrategyText = text(
@@ -392,15 +473,10 @@ public class MainActivity extends android.app.Activity {
         Button selectedDetailsButton = actionButton("📋 선택된 전략 전체 수치 보기", Color.rgb(30, 41, 59));
         selectedDetailsButton.setOnClickListener(v -> showSelectedStrategyDetails());
         backtestCard.addView(selectedDetailsButton, marginTop(8));
-        Button editSelectedStrategyButton = actionButton("✏️ 선택/JSON 전략 수치 직접 수정", PRIMARY);
-        editSelectedStrategyButton.setOnClickListener(v -> showSelectedStrategyEditor());
-        backtestCard.addView(editSelectedStrategyButton, marginTop(8));
-        backtestCard.addView(text(
-                "JSON을 붙여넣거나 불러온 뒤 각 전략 수치를 직접 바꾸고 재백테스트할 수 있습니다.",
-                11, MUTED, false
-        ), marginTop(5));
-
-        Button selectedBacktestButton = actionButton("▶ 수정된 수치로 기간 재백테스트", SUCCESS);
+        Button editSelectedButton = actionButton("✏ 불러온/선택한 전략 수치 직접 수정", PRIMARY);
+        editSelectedButton.setOnClickListener(v -> showStrategyParameterEditor());
+        backtestCard.addView(editSelectedButton, marginTop(8));
+        Button selectedBacktestButton = actionButton("▶ 선택/수정한 수치로 기간 재백테스트", SUCCESS);
         selectedBacktestButton.setOnClickListener(v -> runSelectedStrategyBacktest());
         backtestCard.addView(selectedBacktestButton, marginTop(8));
 
@@ -450,6 +526,9 @@ resultActions.addView(tradeHistoryButton, marginTop(6));
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
+deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
+deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
+resultActions.addView(deepBacktestButton, marginTop(6));
 Button regimeButton = actionButton("🌦 시장 국면별 성과·자동전환 확인", PRIMARY);
 regimeButton.setOnClickListener(v -> showMarketRegimePerformance());
 resultActions.addView(regimeButton, marginTop(6));
@@ -653,7 +732,7 @@ enableResultActions(false);
 
     private void runSelectedStrategyBacktest() {
         if (selectedStrategyParameters == null) {
-            toast("먼저 TOP10 전략을 선택하거나 JSON 전략을 불러오세요.");
+            toast("먼저 수익률 TOP10에서 전략을 선택하세요.");
             return;
         }
         startBacktest(selectedStrategyParameters);
@@ -664,7 +743,7 @@ enableResultActions(false);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(4), dp(18), 0);
         content.addView(text(
-                "백테스트 원본 JSON, 전체 자동 결과, 단계별 결과 또는 TOP 후보 JSON을 붙여넣으세요. JSON에 기간이 있으면 화면 기간도 자동으로 바뀝니다.",
+                "백테스트 원본 JSON, 전체 자동 결과, 단계별 결과 또는 TOP 후보 JSON을 붙여넣거나 파일로 선택하세요. JSON에 기간이 있으면 화면 기간도 자동으로 바뀝니다.",
                 12, MUTED, false
         ));
 
@@ -691,6 +770,10 @@ enableResultActions(false);
         });
         content.addView(clipboardButton, marginTop(8));
 
+        Button fileButton = smallButton("📂 휴대폰에서 JSON 파일 선택", v ->
+                openJsonFilePicker(jsonInput));
+        content.addView(fileButton, marginTop(8));
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("JSON 전략 불러오기")
                 .setView(content)
@@ -707,8 +790,73 @@ enableResultActions(false);
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
                     parsePastedBacktestJson(raw, dialog);
                 }));
-        dialog.getWindow();
+        dialog.setOnDismissListener(ignored -> {
+            if (pendingJsonInput == jsonInput) pendingJsonInput = null;
+        });
         dialog.show();
+    }
+
+    private void openJsonFilePicker(EditText target) {
+        pendingJsonInput = target;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "application/json", "text/json", "text/plain", "application/octet-stream"
+        });
+        try {
+            startActivityForResult(intent, REQUEST_OPEN_JSON);
+        } catch (Exception e) {
+            pendingJsonInput = null;
+            toast("JSON 파일 선택기를 열 수 없습니다.");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_OPEN_JSON || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        EditText target = pendingJsonInput;
+        if (uri == null || target == null) {
+            toast("선택한 JSON 파일을 읽을 수 없습니다.");
+            return;
+        }
+        toast("JSON 파일을 읽는 중입니다.");
+        executor.execute(() -> {
+            try {
+                String raw = readJsonDocument(uri);
+                main.post(() -> {
+                    if (pendingJsonInput != target) return;
+                    target.setText(raw);
+                    target.setSelection(target.length());
+                    toast("JSON 파일을 불러왔습니다. 내용을 확인하고 '읽기'를 누르세요.");
+                });
+            } catch (Exception e) {
+                main.post(() -> showTextDialog("JSON 파일 불러오기 실패", stackMessage(e)));
+            }
+        });
+    }
+
+    private String readJsonDocument(Uri uri) throws Exception {
+        InputStream stream = getContentResolver().openInputStream(uri);
+        if (stream == null) throw new IllegalArgumentException("파일 내용을 열 수 없습니다.");
+        try (InputStream input = stream;
+             BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            StringBuilder raw = new StringBuilder();
+            char[] buffer = new char[8192];
+            int count;
+            while ((count = reader.read(buffer)) >= 0) {
+                raw.append(buffer, 0, count);
+                if (raw.length() > MAX_IMPORTED_JSON_CHARS) {
+                    throw new IllegalArgumentException("JSON 파일은 8MB 이하만 불러올 수 있습니다.");
+                }
+            }
+            if (raw.toString().trim().isEmpty()) {
+                throw new IllegalArgumentException("선택한 JSON 파일이 비어 있습니다.");
+            }
+            return raw.toString();
+        }
     }
 
     private void parsePastedBacktestJson(String raw, AlertDialog dialog) {
@@ -746,12 +894,20 @@ enableResultActions(false);
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             JSONObject result = item == null ? null : item.optJSONObject("result");
-            labels[i] = String.format(
+            boolean hasMetrics = result != null
+                    && result.has("return_percent") && result.has("max_drawdown_percent");
+            labels[i] = hasMetrics
+                    ? String.format(
                     Locale.KOREA,
                     "%d위 · 수익률 %.2f%% · MDD %.2f%% · %s",
                     i + 1,
-                    result == null ? 0.0 : result.optDouble("return_percent", 0.0),
-                    result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                    result.optDouble("return_percent", 0.0),
+                    result.optDouble("max_drawdown_percent", 0.0),
+                    item == null ? "JSON 후보" : item.optString("label", "JSON 후보")
+            ) : String.format(
+                    Locale.KOREA,
+                    "%d위 · 원본 성과 없음 · %s",
+                    i + 1,
                     item == null ? "JSON 후보" : item.optString("label", "JSON 후보")
             );
         }
@@ -830,16 +986,24 @@ enableResultActions(false);
 
         JSONObject result = item.optJSONObject("result");
         String candidateLabel = item.optString("label", "JSON 전략");
+        boolean hasOriginalMetrics = result != null
+                && result.has("return_percent") && result.has("max_drawdown_percent");
+        String originalMetrics = hasOriginalMetrics
+                ? String.format(
+                Locale.KOREA,
+                "원본 수익률 %.2f%% · MDD %.2f%%",
+                result.optDouble("return_percent", 0.0),
+                result.optDouble("max_drawdown_percent", 0.0)
+        ) : "원본 성과 없음 · 독립 백테스트 설정";
         selectedStrategyText.setText(String.format(
                 Locale.KOREA,
-                "JSON 불러오기 완료 · %s\n%s %s · %s ~ %s\n원본 수익률 %.2f%% · MDD %.2f%% · 진입 %.0f배 · 최대 %d회",
+                "JSON 불러오기 완료 · %s\n%s %s · %s ~ %s\n%s · 진입 %.2f배 · 최대 %d회",
                 candidateLabel,
                 symbolInput.getText().toString().trim(),
                 timeframeInput.getText().toString().trim(),
                 startInput.getText().toString().trim(),
                 endInput.getText().toString().trim(),
-                result == null ? 0.0 : result.optDouble("return_percent", 0.0),
-                result == null ? 0.0 : result.optDouble("max_drawdown_percent", 0.0),
+                originalMetrics,
                 parameters.optDouble("entry_multiplier", 1.0),
                 parameters.optInt("max_pyramiding", 1)
         ));
@@ -854,150 +1018,501 @@ enableResultActions(false);
                         + periodSource + ": " + startInput.getText() + " ~ " + endInput.getText()
                         + "\n체결: " + executionModelInput.getText()
                         + "\n계산: " + sizingModeInput.getText()
-                        + "\n\n현재 앱 엔진으로 새로 계산하며 재최적화는 하지 않습니다.")
-                .setPositiveButton("이 기간 실행", (confirmDialog, which) ->
+                        + "\n\n수치를 직접 수정하면 원본 재현이 아닌 새 변형 전략으로 안전하게 구분합니다.")
+                .setPositiveButton("수치 확인·수정", (confirmDialog, which) ->
+                        showStrategyParameterEditor())
+                .setNeutralButton("바로 실행", (confirmDialog, which) ->
                         startBacktest(selectedStrategyParameters))
-                .setNeutralButton("수치 수정", (confirmDialog, which) ->
-                        showSelectedStrategyEditor())
                 .setNegativeButton("불러오기만", null)
                 .show();
     }
 
-    private void showSelectedStrategyEditor() {
-        if (selectedStrategyParameters == null) {
-            toast("먼저 TOP10 전략을 선택하거나 JSON 전략을 불러오세요.");
+    private void showStrategyParameterEditor() {
+        if (selectedStrategyParameters == null || selectedStrategyRow == null) {
+            toast("먼저 JSON을 불러오거나 TOP10 전략을 선택하세요.");
             return;
         }
 
-        LinearLayout outer = new LinearLayout(this);
-        outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setPadding(dp(18), dp(4), dp(18), 0);
-        outer.addView(text(
-                "불러온 전략 수치를 직접 수정할 수 있습니다. 저장한 값이 다음 재백테스트에 그대로 사용됩니다.",
+        JSONObject current;
+        try {
+            current = new JSONObject(selectedStrategyParameters.toString());
+        } catch (Exception e) {
+            showTextDialog("전략 수치 읽기 실패", stackMessage(e));
+            return;
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(8), dp(18), dp(18));
+        content.addView(text(
+                "JSON 또는 TOP10에서 불러온 값을 항목별로 수정합니다. 심볼·기간·타임프레임은 메인 화면에서 별도로 바꿀 수 있습니다.\n"
+                        + "진입 비중만 입력하면 진입 배수는 자동 계산되며, 수정본은 원본 재현과 분리해 저장합니다.",
                 12, MUTED, false
         ));
 
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout fields = new LinearLayout(this);
-        fields.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(fields, new ScrollView.LayoutParams(
+        Map<String, EditText> valueInputs = new LinkedHashMap<>();
+        Map<String, Switch> boolInputs = new LinkedHashMap<>();
+        Map<String, AutoCompleteTextView> choiceInputs = new LinkedHashMap<>();
+        Map<String, String> initialValues = new LinkedHashMap<>();
+
+        for (String[] spec : STRATEGY_EDITOR_FIELDS) {
+            String type = spec[0];
+            String label = spec[1];
+            String key = spec[2];
+            if ("section".equals(type)) {
+                TextView section = sectionTitle(label);
+                section.setTextColor(ACCENT);
+                content.addView(section, marginTop(16));
+                continue;
+            }
+            if ("bool".equals(type)) {
+                boolean checked = editorBooleanValue(current, key, Boolean.parseBoolean(spec[5]));
+                Switch toggle = new Switch(this);
+                toggle.setChecked(checked);
+                toggle.setText(checked ? "켜짐" : "꺼짐");
+                toggle.setTextColor(TEXT);
+                toggle.setTextSize(14);
+                toggle.setPadding(dp(8), 0, dp(8), 0);
+                toggle.setOnCheckedChangeListener((button, enabled) ->
+                        button.setText(enabled ? "켜짐" : "꺼짐"));
+                boolInputs.put(key, toggle);
+                initialValues.put(key, String.valueOf(checked));
+                content.addView(labeled(label, toggle), marginTop(8));
+                continue;
+            }
+            if ("choice".equals(type)) {
+                String model = editorStringValue(current, key, spec[5], type);
+                AutoCompleteTextView choice = autocomplete(
+                        new String[]{"현실형 · 다음 봉 시가 체결", "기존형 · 신호 봉 종가 체결"},
+                        "next_open".equals(model)
+                                ? "현실형 · 다음 봉 시가 체결"
+                                : "기존형 · 신호 봉 종가 체결"
+                );
+                choiceInputs.put(key, choice);
+                initialValues.put(key, model);
+                content.addView(labeled(label, choice), marginTop(8));
+                continue;
+            }
+
+            String value = editorStringValue(current, key, spec[5], type);
+            EditText input = edit(value);
+            if ("int".equals(type)) {
+                input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            } else if ("decimal".equals(type)) {
+                input.setInputType(InputType.TYPE_CLASS_NUMBER
+                        | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                        | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            }
+            valueInputs.put(key, input);
+            initialValues.put(key, value);
+            content.addView(labeled(label, input), marginTop(8));
+        }
+        scroll.addView(content, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT
         ));
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(430)
-        );
-        scrollParams.topMargin = dp(10);
-        outer.addView(scroll, scrollParams);
 
-        java.util.ArrayList<String> keys = new java.util.ArrayList<>();
-        java.util.Iterator<String> iterator = selectedStrategyParameters.keys();
-        while (iterator.hasNext()) keys.add(iterator.next());
-        java.util.Collections.sort(keys);
-
-        java.util.LinkedHashMap<String, EditText> editors = new java.util.LinkedHashMap<>();
-        for (String key : keys) {
-            Object value = selectedStrategyParameters.opt(key);
-            if (value instanceof JSONObject || value instanceof JSONArray) continue;
-
-            String displayValue = value == null || value == JSONObject.NULL ? "" : String.valueOf(value);
-            EditText input = edit(displayValue);
-            input.setSingleLine(true);
-            if (value instanceof Number) {
-                input.setInputType(
-                        android.text.InputType.TYPE_CLASS_NUMBER
-                                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                                | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
-                );
-            }
-            fields.addView(labeled(key, input), marginTop(8));
-            editors.put(key, input);
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("전략 전체 수치 직접 수정")
+                .setView(scroll)
+                .setPositiveButton("수정 적용", null)
+                .setNegativeButton("취소", null);
+        JSONObject base = selectedStrategyRow.optJSONObject("manual_edit_base_parameters");
+        if (base != null) {
+            builder.setNeutralButton("불러온 원본 복원", (ignored, which) ->
+                    restoreManualEditBase());
         }
-
-        outer.addView(text(
-                "숫자는 소수점 입력 가능 · true/false 값은 그대로 입력 · 빈 값은 허용하지 않습니다.",
-                11, MUTED, false
-        ), marginTop(8));
-
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("전략 수치 직접 수정")
-                .setView(outer)
-                .setPositiveButton("저장 후 재백테스트", null)
-                .setNeutralButton("저장만", null)
-                .setNegativeButton("취소", null)
-                .create();
-
+        AlertDialog dialog = builder.create();
         dialog.setOnShowListener(ignored -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                if (saveSelectedStrategyEdits(editors)) {
-                    dialog.dismiss();
-                    startBacktest(selectedStrategyParameters);
-                }
-            });
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                if (saveSelectedStrategyEdits(editors)) {
-                    dialog.dismiss();
-                }
-            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v ->
+                    applyManualStrategyEdits(
+                            dialog, current, valueInputs, boolInputs, choiceInputs, initialValues
+                    ));
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
         });
         dialog.show();
     }
 
-    private boolean saveSelectedStrategyEdits(java.util.LinkedHashMap<String, EditText> editors) {
-        if (selectedStrategyParameters == null) return false;
-        try {
-            for (java.util.Map.Entry<String, EditText> entry : editors.entrySet()) {
-                String key = entry.getKey();
-                String raw = entry.getValue().getText().toString().trim();
-                if (raw.isEmpty()) {
-                    toast(key + " 값을 입력하세요.");
-                    return false;
-                }
-
-                Object oldValue = selectedStrategyParameters.opt(key);
-                if (oldValue instanceof Boolean) {
-                    if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
-                        toast(key + " 값은 true 또는 false로 입력하세요.");
-                        return false;
-                    }
-                    selectedStrategyParameters.put(key, Boolean.parseBoolean(raw));
-                } else if (oldValue instanceof Integer) {
-                    selectedStrategyParameters.put(key, Integer.parseInt(raw));
-                } else if (oldValue instanceof Long) {
-                    selectedStrategyParameters.put(key, Long.parseLong(raw));
-                } else if (oldValue instanceof Number) {
-                    selectedStrategyParameters.put(key, Double.parseDouble(raw));
-                } else {
-                    selectedStrategyParameters.put(key, raw);
-                }
-            }
-
-            if (selectedStrategyRow != null) {
-                selectedStrategyRow.put("manually_edited", true);
-                if (selectedStrategyRow.has("effective_parameters")) {
-                    selectedStrategyRow.put("effective_parameters", selectedStrategyParameters);
-                }
-                if (selectedStrategyRow.has("parameters")) {
-                    selectedStrategyRow.put("parameters", selectedStrategyParameters);
-                }
-            }
-            persistSelectedStrategy();
-
-            String current = selectedStrategyText == null ? "" : selectedStrategyText.getText().toString();
-            if (selectedStrategyText != null && !current.contains("수동 수정됨")) {
-                selectedStrategyText.setText(current + "\n✏️ 수동 수정됨 · 수정값으로 재백테스트 가능");
-                selectedStrategyText.setTextColor(ACCENT);
-            }
-            toast("수정한 전략 수치를 저장했습니다.");
-            return true;
-        } catch (NumberFormatException e) {
-            toast("숫자 형식을 확인하세요. 예: 2.4 또는 35");
-            return false;
-        } catch (Exception e) {
-            showTextDialog("전략 수치 저장 실패", stackMessage(e));
-            return false;
+    private boolean editorBooleanValue(JSONObject parameters, String key, boolean fallback) {
+        if ("backtest_compounding_enabled".equals(key)) {
+            return !"고정식".equals(sizingModeInput.getText().toString().trim());
         }
+        if ("adaptive_regime_enabled".equals(key)) {
+            return adaptiveRegimeInput.getText().toString().startsWith("자동");
+        }
+        if ("apply_consecutive_candles_to_all_entries".equals(key)) {
+            return "모든 진입 3틱룰".equals(threeTickModeInput.getText().toString().trim());
+        }
+        return parameters.has(key) && !parameters.isNull(key)
+                ? parameters.optBoolean(key, fallback) : fallback;
+    }
+
+    private String editorStringValue(
+            JSONObject parameters, String key, String fallback, String type
+    ) {
+        if ("initial_capital".equals(key)) {
+            return initialCapitalInput.getText().toString().trim().replace(",", "");
+        }
+        if ("backtest_execution_model".equals(key)) {
+            return executionModelInput.getText().toString().contains("다음 봉")
+                    ? "next_open" : "signal_close";
+        }
+        Object raw = parameters.has(key) && !parameters.isNull(key)
+                ? parameters.opt(key) : fallback;
+        if ("int".equals(type)) {
+            try {
+                return String.valueOf((int) Math.rint(Double.parseDouble(String.valueOf(raw))));
+            } catch (Exception ignored) {
+                return fallback;
+            }
+        }
+        if ("decimal".equals(type)) {
+            try {
+                return compactNumber(Double.parseDouble(String.valueOf(raw)));
+            } catch (Exception ignored) {
+                return fallback;
+            }
+        }
+        return raw == null ? fallback : String.valueOf(raw);
+    }
+
+    private void applyManualStrategyEdits(
+            AlertDialog dialog,
+            JSONObject original,
+            Map<String, EditText> valueInputs,
+            Map<String, Switch> boolInputs,
+            Map<String, AutoCompleteTextView> choiceInputs,
+            Map<String, String> initialValues
+    ) {
+        try {
+            JSONObject edited = new JSONObject(original.toString());
+            Map<String, Double> numericValues = new LinkedHashMap<>();
+            Map<String, Boolean> booleanValues = new LinkedHashMap<>();
+            Map<String, String> normalizedValues = new LinkedHashMap<>();
+            int changed = 0;
+
+            for (String[] spec : STRATEGY_EDITOR_FIELDS) {
+                String type = spec[0];
+                String label = spec[1];
+                String key = spec[2];
+                if ("section".equals(type)) continue;
+
+                if ("bool".equals(type)) {
+                    boolean value = boolInputs.get(key).isChecked();
+                    booleanValues.put(key, value);
+                    String normalized = String.valueOf(value);
+                    normalizedValues.put(key, normalized);
+                    if (!normalized.equals(initialValues.get(key))) {
+                        edited.put(key, value);
+                        changed++;
+                    }
+                    continue;
+                }
+
+                if ("choice".equals(type)) {
+                    String value = choiceInputs.get(key).getText().toString().contains("다음 봉")
+                            ? "next_open" : "signal_close";
+                    normalizedValues.put(key, value);
+                    if (!value.equals(initialValues.get(key))) {
+                        edited.put(key, value);
+                        changed++;
+                    }
+                    continue;
+                }
+
+                EditText input = valueInputs.get(key);
+                String raw = input.getText().toString().trim();
+                if ("text".equals(type)) {
+                    String value = "excluded_hours".equals(key)
+                            ? normalizeExcludedHours(raw) : raw;
+                    normalizedValues.put(key, value);
+                    if (!value.equals(initialValues.get(key))) {
+                        edited.put(key, value);
+                        changed++;
+                    }
+                    continue;
+                }
+
+                if (raw.isEmpty()) {
+                    throw new IllegalArgumentException(label + " 값을 입력하세요.");
+                }
+                double value;
+                try {
+                    value = Double.parseDouble(raw.replace(",", ""));
+                } catch (Exception e) {
+                    throw new IllegalArgumentException(label + " 값을 숫자로 입력하세요.");
+                }
+                if (Double.isNaN(value) || Double.isInfinite(value)) {
+                    throw new IllegalArgumentException(label + " 값이 올바르지 않습니다.");
+                }
+                double minimum = Double.parseDouble(spec[3]);
+                double maximum = Double.parseDouble(spec[4]);
+                if (value < minimum || value > maximum) {
+                    throw new IllegalArgumentException(
+                            label + " 값은 " + compactNumber(minimum) + "~"
+                                    + compactNumber(maximum) + " 범위여야 합니다."
+                    );
+                }
+                if ("int".equals(type) && Math.abs(value - Math.rint(value)) > 1e-9) {
+                    throw new IllegalArgumentException(label + " 값은 정수로 입력하세요.");
+                }
+                numericValues.put(key, value);
+                String normalized = "int".equals(type)
+                        ? String.valueOf((int) Math.rint(value)) : compactNumber(value);
+                normalizedValues.put(key, normalized);
+                if (!sameNumericText(normalized, initialValues.get(key))) {
+                    edited.put(key, "int".equals(type) ? (int) Math.rint(value) : value);
+                    changed++;
+                }
+            }
+
+            validateManualStrategyValues(numericValues, booleanValues);
+
+            double orderPercent = numericValues.get("order_percent_of_equity");
+            double entryMultiplier = orderPercent / 100.0;
+            double oldEntry = edited.optDouble("entry_multiplier", Double.NaN);
+            if (Double.isNaN(oldEntry) || Math.abs(oldEntry - entryMultiplier) > 1e-9) {
+                edited.put("entry_multiplier", entryMultiplier);
+                changed++;
+            }
+
+            if (changed == 0) {
+                dialog.dismiss();
+                toast("변경된 전략 수치가 없습니다.");
+                return;
+            }
+
+            // These settings also have visible controls on the main screen.
+            // Store and update both places so the run cannot use a hidden value.
+            double capital = numericValues.get("initial_capital");
+            boolean compounding = booleanValues.get("backtest_compounding_enabled");
+            boolean adaptive = booleanValues.get("adaptive_regime_enabled");
+            boolean allEntriesThreeTick = booleanValues.get(
+                    "apply_consecutive_candles_to_all_entries"
+            );
+            String execution = normalizedValues.get("backtest_execution_model");
+            edited.put("initial_capital", capital);
+            edited.put("backtest_compounding_enabled", compounding);
+            edited.put("adaptive_regime_enabled", adaptive);
+            edited.put("apply_consecutive_candles_to_all_entries", allEntriesThreeTick);
+            edited.put("backtest_execution_model", execution);
+
+            JSONObject row = new JSONObject(selectedStrategyRow.toString());
+            if (row.optJSONObject("manual_edit_base_parameters") == null) {
+                row.put("manual_edit_base_parameters", new JSONObject(original.toString()));
+            }
+            row.put("parameters", edited);
+            row.put("effective_parameters", edited);
+            row.put("manually_edited", true);
+            row.put("manual_edit_count", row.optInt("manual_edit_count", 0) + changed);
+            selectedStrategyParameters = edited;
+            selectedStrategyRow = row;
+
+            initialCapitalInput.setText(compactNumber(capital));
+            sizingModeInput.setText(compounding ? "복리식" : "고정식", false);
+            executionModelInput.setText(
+                    "next_open".equals(execution)
+                            ? "현실형 · 다음 봉 시가 체결"
+                            : "기존형 · 신호 봉 종가 체결",
+                    false
+            );
+            adaptiveRegimeInput.setText(
+                    adaptive ? "자동 전환 사용 · 추천" : "고정 전략 사용", false
+            );
+            threeTickModeInput.setText(
+                    allEntriesThreeTick ? "모든 진입 3틱룰" : "첫 진입만 3틱룰", false
+            );
+            selectedStrategyText.setText(String.format(
+                    Locale.KOREA,
+                    "수동 수정 전략 저장 완료 · 이번 %d개 변경\n진입 %.2f배 · 최대 %d회 · %s · %s",
+                    changed,
+                    entryMultiplier,
+                    edited.optInt("max_pyramiding", 1),
+                    "next_open".equals(execution) ? "다음 봉 시가" : "신호 봉 종가",
+                    compounding ? "복리식" : "고정식"
+            ));
+            selectedStrategyText.setTextColor(Color.rgb(250, 204, 21));
+            persistSelectedStrategy();
+            dialog.dismiss();
+
+            double requestedExposure = entryMultiplier
+                    * numericValues.get("max_pyramiding");
+            double exposureCap = numericValues.get("backtest_max_total_multiplier");
+            String exposureNote = requestedExposure > exposureCap + 1e-9
+                    ? String.format(
+                            Locale.KOREA,
+                            "\n\n주의: 입력상 총진입 %.2f배지만 엔진 최대 총노출 %.2f배에서 제한됩니다.",
+                            requestedExposure, exposureCap
+                    ) : "";
+            new AlertDialog.Builder(this)
+                    .setTitle("수동 수정 전략 저장 완료")
+                    .setMessage("수정본은 원본 TOP10 재현 결과를 덮어쓰지 않습니다.\n"
+                            + "백테스트 결과에는 '변형 전략 · 독립 백테스트'로 표시됩니다."
+                            + exposureNote)
+                    .setPositiveButton("이 수치로 실행", (ignored, which) ->
+                            startBacktest(selectedStrategyParameters))
+                    .setNeutralButton("전체 수치 보기", (ignored, which) ->
+                            showSelectedStrategyDetails())
+                    .setNegativeButton("닫기", null)
+                    .show();
+        } catch (Exception e) {
+            showTextDialog(
+                    "수치 확인 필요",
+                    e.getMessage() == null ? stackMessage(e) : e.getMessage()
+            );
+        }
+    }
+
+    private void validateManualStrategyValues(
+            Map<String, Double> numbers,
+            Map<String, Boolean> booleans
+    ) {
+        if (!Boolean.TRUE.equals(booleans.get("allow_long"))
+                && !Boolean.TRUE.equals(booleans.get("allow_short"))) {
+            throw new IllegalArgumentException("LONG 또는 SHORT 중 하나 이상은 허용해야 합니다.");
+        }
+        requireOrdered(numbers, "min_one_bar_vol", "max_one_bar_vol", "1봉 변동 최소·최대");
+        requireOrdered(numbers, "min_tp_percent", "max_tp_percent", "TP 최소·최대");
+        requireOrdered(numbers, "min_sl_percent", "max_sl_percent", "SL 최소·최대");
+        requireOrdered(numbers, "rsi_oversold_min", "rsi_oversold_max", "RSI 과매도 최소·최대");
+        requireOrdered(numbers, "rsi_overbought_min", "rsi_overbought_max", "RSI 과매수 최소·최대");
+        requireOrdered(numbers, "adx_min", "adx_max", "ADX 최소·최대");
+        if (numbers.get("rsi_oversold_max") >= numbers.get("rsi_overbought_min")) {
+            throw new IllegalArgumentException(
+                    "RSI 과매도 최대는 과매수 최소보다 작아야 합니다. 두 구간이 겹치지 않게 입력하세요."
+            );
+        }
+    }
+
+    private void requireOrdered(
+            Map<String, Double> values, String minimumKey, String maximumKey, String label
+    ) {
+        if (values.get(minimumKey) > values.get(maximumKey)) {
+            throw new IllegalArgumentException(label + " 순서가 반대입니다. 최소값을 최대값 이하로 입력하세요.");
+        }
+    }
+
+    private String normalizeExcludedHours(String raw) {
+        String text = String.valueOf(raw == null ? "" : raw)
+                .trim().replace('，', ',');
+        if (text.isEmpty()) return "";
+        String[] tokens = text.split("[,\\s]+");
+        LinkedHashMap<Integer, Boolean> hours = new LinkedHashMap<>();
+        for (String token : tokens) {
+            if (token.isEmpty()) continue;
+            int hour;
+            try {
+                hour = Integer.parseInt(token);
+            } catch (Exception e) {
+                throw new IllegalArgumentException(
+                        "제외 시간 UTC는 0~23을 쉼표로 구분하세요. 예: 00,13,23"
+                );
+            }
+            if (hour < 0 || hour > 23) {
+                throw new IllegalArgumentException("제외 시간 UTC는 0~23 범위여야 합니다.");
+            }
+            hours.put(hour, true);
+        }
+        StringBuilder normalized = new StringBuilder();
+        for (Integer hour : hours.keySet()) {
+            if (normalized.length() > 0) normalized.append(',');
+            normalized.append(String.format(Locale.US, "%02d", hour));
+        }
+        return normalized.toString();
+    }
+
+    private boolean sameNumericText(String left, String right) {
+        try {
+            return Math.abs(
+                    Double.parseDouble(left) - Double.parseDouble(String.valueOf(right))
+            ) <= 1e-9;
+        } catch (Exception ignored) {
+            return String.valueOf(left).equals(String.valueOf(right));
+        }
+    }
+
+    private String compactNumber(double value) {
+        if (Math.abs(value - Math.rint(value)) <= 1e-9) {
+            return String.format(Locale.US, "%.0f", value);
+        }
+        String formatted = String.format(Locale.US, "%.10f", value);
+        return formatted.replaceFirst("0+$", "").replaceFirst("\\.$", "");
+    }
+
+    private void restoreManualEditBase() {
+        if (selectedStrategyRow == null) return;
+        JSONObject base = selectedStrategyRow.optJSONObject("manual_edit_base_parameters");
+        if (base == null) {
+            toast("복원할 불러오기 원본이 없습니다.");
+            return;
+        }
+        try {
+            JSONObject restored = new JSONObject(base.toString());
+            JSONObject row = new JSONObject(selectedStrategyRow.toString());
+            row.put("parameters", restored);
+            row.put("effective_parameters", restored);
+            row.remove("manually_edited");
+            row.remove("manual_edit_count");
+            row.remove("manual_edit_base_parameters");
+            selectedStrategyParameters = restored;
+            selectedStrategyRow = row;
+            syncMainControlsFromStrategy(restored);
+            selectedStrategyText.setText("불러온 원본 전략 수치로 복원했습니다.");
+            selectedStrategyText.setTextColor(ACCENT);
+            persistSelectedStrategy();
+            toast("수동 수정값을 취소하고 원본 수치를 복원했습니다.");
+        } catch (Exception e) {
+            showTextDialog("원본 수치 복원 실패", stackMessage(e));
+        }
+    }
+
+    private void syncMainControlsFromStrategy(JSONObject parameters) {
+        if (parameters.has("initial_capital")) {
+            initialCapitalInput.setText(compactNumber(parameters.optDouble("initial_capital", 1000.0)));
+        }
+        if (parameters.has("backtest_compounding_enabled")) {
+            sizingModeInput.setText(
+                    parameters.optBoolean("backtest_compounding_enabled", true)
+                            ? "복리식" : "고정식", false
+            );
+        }
+        String execution = parameters.optString("backtest_execution_model", "");
+        if ("next_open".equals(execution) || "signal_close".equals(execution)) {
+            executionModelInput.setText(
+                    "next_open".equals(execution)
+                            ? "현실형 · 다음 봉 시가 체결"
+                            : "기존형 · 신호 봉 종가 체결",
+                    false
+            );
+        }
+        if (parameters.has("adaptive_regime_enabled")) {
+            adaptiveRegimeInput.setText(
+                    parameters.optBoolean("adaptive_regime_enabled", true)
+                            ? "자동 전환 사용 · 추천" : "고정 전략 사용", false
+            );
+        }
+        if (parameters.has("apply_consecutive_candles_to_all_entries")) {
+            threeTickModeInput.setText(
+                    parameters.optBoolean("apply_consecutive_candles_to_all_entries", false)
+                            ? "모든 진입 3틱룰" : "첫 진입만 3틱룰", false
+            );
+        }
+    }
+
+    private boolean replaySettingDiffers(JSONObject parameters, String key, Object value) {
+        if (parameters == null || !parameters.has(key) || parameters.isNull(key)) return false;
+        Object stored = parameters.opt(key);
+        if (stored instanceof Number && value instanceof Number) {
+            return Math.abs(((Number) stored).doubleValue() - ((Number) value).doubleValue()) > 1e-9;
+        }
+        if (stored instanceof Boolean && value instanceof Boolean) {
+            return !stored.equals(value);
+        }
+        return !String.valueOf(stored).equals(String.valueOf(value));
     }
 
     private void startBacktest(JSONObject fixedParameters) {
@@ -1084,18 +1599,39 @@ enableResultActions(false);
         }
         workloadConfirmed = false;
 
-        if (fixedParameters != null && selectedStrategyRow != null) {
-            JSONObject sourceContext = selectedStrategyRow.optJSONObject("source_context");
-            String originalExecutionModel = sourceContext == null ? ""
-                    : sourceContext.optString("execution_model", "");
-            if ("next_open".equals(originalExecutionModel) || "signal_close".equals(originalExecutionModel)) {
-                executionModel = originalExecutionModel;
-                executionModelInput.setText(
-                        "next_open".equals(executionModel)
-                                ? "현실형 · 다음 봉 시가 체결"
-                                : "기존형 · 신호 봉 종가 체결",
-                        false
+        JSONObject fixedParametersForRun = fixedParameters;
+        boolean manuallyEditedReplay = selectedStrategyRow != null
+                && selectedStrategyRow.optBoolean("manually_edited", false);
+        if (fixedParameters != null) {
+            try {
+                fixedParametersForRun = new JSONObject(fixedParameters.toString());
+                boolean visibleSettingsChanged =
+                        replaySettingDiffers(fixedParameters, "initial_capital", initialCapital)
+                                || replaySettingDiffers(
+                                fixedParameters, "backtest_compounding_enabled", compoundingEnabled
+                        )
+                                || replaySettingDiffers(
+                                fixedParameters, "backtest_execution_model", executionModel
+                        )
+                                || replaySettingDiffers(
+                                fixedParameters, "adaptive_regime_enabled", adaptiveRegimeEnabled
+                        )
+                                || replaySettingDiffers(
+                                fixedParameters,
+                                "apply_consecutive_candles_to_all_entries",
+                                allEntriesThreeTick
+                        );
+                manuallyEditedReplay = manuallyEditedReplay || visibleSettingsChanged;
+                fixedParametersForRun.put("initial_capital", initialCapital);
+                fixedParametersForRun.put("backtest_compounding_enabled", compoundingEnabled);
+                fixedParametersForRun.put("backtest_execution_model", executionModel);
+                fixedParametersForRun.put("adaptive_regime_enabled", adaptiveRegimeEnabled);
+                fixedParametersForRun.put(
+                        "apply_consecutive_candles_to_all_entries", allEntriesThreeTick
                 );
+            } catch (Exception e) {
+                showTextDialog("선택 전략 준비 실패", stackMessage(e));
+                return;
             }
         }
 
@@ -1124,12 +1660,13 @@ enableResultActions(false);
         if (fixedParameters != null) {
             JSONObject replayPayload = new JSONObject();
             try {
-                replayPayload.put("parameters", fixedParameters);
+                replayPayload.put("parameters", fixedParametersForRun);
                 replayPayload.put("execution_model_override", executionModel);
                 replayPayload.put(
                         "imported_json",
                         selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
                 );
+                replayPayload.put("manually_edited", manuallyEditedReplay);
                 if (selectedStrategyRow != null) {
                     JSONObject originalResult = selectedStrategyRow.optJSONObject("result");
                     if (originalResult == null) {
@@ -1165,15 +1702,19 @@ enableResultActions(false);
                 + " · 정밀: TOP10×" + refineOptimizationTrials + "회"
                 + " · 3틱룰: " + (allEntriesThreeTick ? "모든 진입" : "첫 진입만") + "\n"
                 + (fixedParameters == null ? "" : (
-                        selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
-                                ? "붙여넣은 JSON 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n"
+                        manuallyEditedReplay
+                                ? "수동 변경 수치를 사용하는 변형 전략이며 재최적화하지 않습니다.\n"
+                                : selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
+                                ? "불러온 JSON 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n"
                                 : "TOP10에서 고른 전략 수치를 그대로 사용하며 재최적화하지 않습니다.\n"
                 ))
                 + "앱을 내리거나 화면을 꺼도 알림 서비스에서 계속 실행됩니다.\n");
         setBusy(true, "백그라운드 실행 중");
         setBacktestControlState("RUNNING");
         toast(fixedParameters == null ? "백그라운드 백테스트를 시작했습니다."
-                : (selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
+                : (manuallyEditedReplay
+                ? "수동 수정 전략으로 독립 백테스트를 시작했습니다."
+                : selectedStrategyRow != null && selectedStrategyRow.optBoolean("imported_json", false)
                 ? "JSON 전략으로 해당 기간 재백테스트를 시작했습니다."
                 : "선택한 수치로 기간 재백테스트를 시작했습니다."));
     }
@@ -1757,6 +2298,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                                 toast("선택한 후보의 전략 수치를 읽지 못했습니다.");
                                 return;
                             }
+                            syncMainControlsFromStrategy(selectedStrategyParameters);
                             selectedStrategyText.setText(String.format(
                                     Locale.KOREA,
                                     "%d위 수치 자동입력 완료 · 수익률 %.2f%% · MDD %.2f%%\n진입 %.0f배 · 최대 %d회 · 거래량 %.2f배 · RSI %d · ADX %d · TP %.2f~%.2f%% · SL %.2f~%.2f%%",
@@ -1805,8 +2347,10 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 new String[][]{{"RSI 사용","use_rsi_filter"},{"RSI 기간","rsi_length"},{"과매도 최소","rsi_oversold_min"},{"과매도 최대","rsi_oversold_max"},{"과매수 최소","rsi_overbought_min"},{"과매수 최대","rsi_overbought_max"}});
         appendSettingGroup(sb, "ADX·재진입", p,
                 new String[][]{{"ADX 사용","use_adx_filter"},{"ADX 기간","adx_length"},{"ADX 최소","adx_min"},{"ADX 최대","adx_max"},{"쿨다운 봉","cooldown_bars"},{"재진입 대기 봉","reentry_bars"}});
+        appendSettingGroup(sb, "시장 국면", p,
+                new String[][]{{"자동 전환","adaptive_regime_enabled"},{"판단 봉","regime_lookback_bars"},{"추세 판정 변동(%)","regime_trend_threshold_percent"},{"고변동성 판정(%)","regime_high_volatility_percent"},{"고변동성 진입 배수","regime_high_volatility_risk_multiplier"}});
         appendSettingGroup(sb, "시간·계산", p,
-                new String[][]{{"체결 모델","backtest_execution_model"},{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"}});
+                new String[][]{{"체결 모델","backtest_execution_model"},{"주말 차단","block_weekend"},{"제외 시간","excluded_hours"},{"초기자산","initial_capital"},{"복리 계산","backtest_compounding_enabled"},{"레버리지","leverage"},{"수수료 편도(%)","backtest_fee_percent"},{"슬리피지 편도(%)","backtest_slippage_percent"},{"최대 총노출 배수","backtest_max_total_multiplier"},{"유지증거금(%)","backtest_maintenance_margin_percent"},{"교차청산 버퍼(%)","backtest_cross_liquidation_buffer_percent"}});
         try {
             sb.append("【원본 전체 수치 · 누락 없이 확인】\n")
                     .append(p.toString(2));
@@ -1823,6 +2367,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         boolean comparisonAvailable = comparison.optBoolean("comparison_available", true);
         String comparisonStatus = comparison.optString("status", "");
         if (!comparisonAvailable || "NOT_COMPARABLE".equals(comparisonStatus)) {
+            boolean manuallyEdited = comparison.optBoolean("manually_edited", false);
             String retestModel = "next_open".equals(comparison.optString(
                     "retest_execution_model", lastSummary.optString("execution_model", "")))
                     ? "현실형 · 다음 봉 시가" : "기존형 · 신호 봉 종가";
@@ -1832,11 +2377,16 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             String message = String.format(
                     Locale.KOREA,
                     "재현 판정: 비교 대상 아님 · 독립 백테스트\n\n"
-                            + "붙여넣은 설정 JSON에는 원래 TOP10 수익률·MDD, 요청 기간, 캐시 SHA256, "
-                            + "엔진 코드와 후보 서명이 없습니다. 따라서 FAIL로 판정하지 않습니다.\n\n"
+                            + (manuallyEdited
+                            ? "불러온 전략 수치를 직접 수정했으므로 원본 TOP10과 다른 새 변형 전략입니다. "
+                            + "의도된 변경을 FAIL로 판정하지 않습니다.\n\n"
+                            : "직접 입력 설정 JSON에는 원래 TOP10 수익률·MDD, 요청 기간, 캐시 SHA256, "
+                            + "엔진 코드와 후보 서명이 없습니다. 따라서 FAIL로 판정하지 않습니다.\n\n")
                             + "이번 수익률: %.2f%%\n이번 MDD: %.2f%%\n거래 수: %d회\n"
                             + "실제 기간: %s ~ %s\n실제 봉 수: %d\n체결 모델: %s\n계산 방식: %s\n\n"
-                            + "원본 TOP10 결과 JSON을 붙여넣은 경우에만 동일 조건 재현 판정을 수행합니다.",
+                            + (manuallyEdited
+                            ? "원본 수치로 복원한 뒤 실행하면 다시 동일 조건 재현 판정을 할 수 있습니다."
+                            : "원본 TOP10 결과 JSON을 불러온 경우에만 동일 조건 재현 판정을 수행합니다."),
                     comparison.optDouble("retest_return_percent", lastSummary.optDouble("return_percent", 0.0)),
                     comparison.optDouble("retest_mdd_percent", lastSummary.optDouble("max_drawdown_percent", 0.0)),
                     lastSummary.optInt("trades", 0),
@@ -1846,7 +2396,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     retestModel,
                     compounding
             );
-            showTextDialog("직접 입력 JSON 백테스트", message);
+            showTextDialog(manuallyEdited ? "수동 수정 전략 백테스트" : "직접 입력 JSON 백테스트", message);
             return;
         }
         String period = comparison.optBoolean("same_requested_period", false) ? "동일" : "다름";
@@ -2125,6 +2675,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                     applySavedResult(item, true);
                     selectedStrategyParameters = parameters;
                     selectedStrategyRow = row;
+                    syncMainControlsFromStrategy(parameters);
                     selectedStrategyText.setText(
                             "저장 결과 수치 선택됨 · " + replay.optString("parameter_source", "대표 결과")
                                     + "\n" + item.optString("label", path)
@@ -2220,7 +2771,9 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 JSONObject sourceContext = restoredRow.optJSONObject("source_context");
                 JSONObject sourceEngine = sourceContext == null ? null : sourceContext.optJSONObject("engine");
                 boolean importedJson = restoredRow.optBoolean("imported_json", false);
-                if (!importedJson && (sourceEngine == null || !ENGINE_SCHEMA.equals(sourceEngine.optString("schema", "")))) {
+                boolean manuallyEdited = restoredRow.optBoolean("manually_edited", false);
+                if (!importedJson && !manuallyEdited
+                        && (sourceEngine == null || !ENGINE_SCHEMA.equals(sourceEngine.optString("schema", "")))) {
                     selectedStrategyParameters = null;
                     selectedStrategyRow = null;
                     selectedStrategyText.setText(
@@ -2502,8 +3055,18 @@ private void exportAndShareOptimizationStage(String stage, String label) {
                 .show();
     }
 
+    private void showDeepBacktestReport() {
+        if (lastSummary == null) {
+            toast("백테스트를 먼저 실행하세요.");
+            return;
+        }
+        Intent intent = new Intent(this, DeepBacktestReportActivity.class);
+        intent.putExtra("summary_json", lastSummary.toString());
+        startActivity(intent);
+    }
+
     private void enableResultActions(boolean enabled) {
-        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton};
+        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton, deepBacktestButton};
         for (Button button : buttons) {
             if (button == null) continue;
             button.setEnabled(enabled);

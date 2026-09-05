@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from android.app.src.main.python import mobile_bridge
 from android.app.src.main.python.mobile_bridge import parse_pasted_backtest_json
 
 
@@ -142,3 +144,59 @@ def test_flat_korean_strategy_json_is_mapped_for_current_screen_period():
     assert item["effective_parameters"]["order_percent_of_equity"] == 500
     assert item["effective_parameters"]["entry_multiplier"] == 5.0
     assert item["effective_parameters"]["backtest_fee_percent"] == 0.02
+
+
+def test_manually_edited_strategy_is_independent_not_failed_reproduction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    def fake_backtest(*args, **kwargs):
+        return tmp_path / "cache.db", tmp_path / "raw.json", {
+            "cache_sha256": "new-cache",
+            "data_start": "2026-01-01T00:00:00+00:00",
+            "data_end": "2026-01-31T23:45:00+00:00",
+            "bars": 2976,
+            "pnl": 50.0,
+            "return_percent": 5.0,
+            "max_drawdown_percent": 2.0,
+            "trades": 3,
+            "win_rate": 66.7,
+            "profit_factor": 1.5,
+            "equity_curve": [],
+            "trades_log": [],
+        }
+
+    monkeypatch.setattr(mobile_bridge, "build_cache_and_backtest", fake_backtest)
+    monkeypatch.setattr(mobile_bridge, "_attach_result_insights", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mobile_bridge, "_attach_validation_suite", lambda *args, **kwargs: None)
+    replay = {
+        "parameters": {
+            "allow_long": True,
+            "allow_short": True,
+            "entry_multiplier": 5.0,
+            "order_percent_of_equity": 500.0,
+            "max_pyramiding": 1,
+            "backtest_execution_model": "next_open",
+        },
+        "original_result": {"return_percent": 100.0, "max_drawdown_percent": 20.0},
+        "source_context": {
+            "requested_start": "2026-01-01",
+            "requested_end": "2026-01-31",
+        },
+        "manually_edited": True,
+    }
+    result = json.loads(mobile_bridge.run_backtest(
+        "BTC/USDT:USDT",
+        "15m",
+        "2026-01-01",
+        "2026-01-31",
+        str(tmp_path),
+        selected_parameters_json=json.dumps(replay),
+        execution_model="next_open",
+    ))
+
+    comparison = result["summary"]["reproduction_comparison"]
+    assert comparison["status"] == "NOT_COMPARABLE"
+    assert comparison["comparison_available"] is False
+    assert comparison["manually_edited"] is True
+    assert result["summary"]["selected_strategy_manually_edited"] is True
