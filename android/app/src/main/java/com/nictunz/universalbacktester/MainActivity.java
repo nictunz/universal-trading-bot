@@ -119,7 +119,7 @@ public class MainActivity extends android.app.Activity {
             {"section", "⑦ 시간·시장 국면", "", "", "", ""},
             {"bool", "주말 진입 차단", "block_weekend", "", "", "false"},
             {"text", "제외 시간 UTC (예: 00,13,23 · 없으면 비움)", "excluded_hours", "", "", ""},
-            {"bool", "시장 국면 자동 전환", "adaptive_regime_enabled", "", "", "true"},
+            {"bool", "시장 국면 자동 전환", "adaptive_regime_enabled", "", "", "false"},
             {"int", "시장 국면 판단 봉", "regime_lookback_bars", "2", "10000", "288"},
             {"decimal", "추세 판정 변동 %", "regime_trend_threshold_percent", "0", "100", "2"},
             {"decimal", "고변동성 판정 %", "regime_high_volatility_percent", "0", "100", "0.8"},
@@ -378,16 +378,16 @@ public class MainActivity extends android.app.Activity {
         ), marginTop(7));
 
         adaptiveRegimeInput = autocomplete(
-                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"},
-                "자동 전환 사용 · 추천"
+                new String[]{"자동 전환 사용", "고정 전략 사용 · 기본"},
+                "고정 전략 사용 · 기본"
         );
         backtestCard.addView(binaryChoiceRow(
                 "시장 국면별 전략 자동 전환", adaptiveRegimeInput,
-                new String[]{"자동 전환(추천)", "고정 전략"},
-                new String[]{"자동 전환 사용 · 추천", "고정 전략 사용"}
+                new String[]{"자동 전환", "고정 전략(기본)"},
+                new String[]{"자동 전환 사용", "고정 전략 사용 · 기본"}
         ), marginTop(12));
         backtestCard.addView(text(
-                "과거 288개 마감봉으로 자동 판단: 상승장=롱 · 하락장=숏 · 횡보장=양방향 · 고변동성=진입 50%/추가진입 제한 · 저변동성=정상 진입",
+                "기본값은 고정 전략입니다. 필요할 때만 자동 전환을 켜면 과거 288개 마감봉으로 시장 국면을 판단합니다.",
                 11, MUTED, false
         ), marginTop(7));
 
@@ -971,7 +971,7 @@ enableResultActions(false);
         }
         if (parameters.has("adaptive_regime_enabled")) {
             adaptiveRegimeInput.setText(
-                    parameters.optBoolean("adaptive_regime_enabled", true)
+                    parameters.optBoolean("adaptive_regime_enabled", false)
                             ? "자동 전환 사용 · 추천" : "고정 전략 사용",
                     false
             );
@@ -1491,7 +1491,7 @@ enableResultActions(false);
         }
         if (parameters.has("adaptive_regime_enabled")) {
             adaptiveRegimeInput.setText(
-                    parameters.optBoolean("adaptive_regime_enabled", true)
+                    parameters.optBoolean("adaptive_regime_enabled", false)
                             ? "자동 전환 사용 · 추천" : "고정 전략 사용", false
             );
         }
