@@ -16,35 +16,45 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Patch MainActivity
         shell: python
         run: |
           from pathlib import Path
+
           p = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
           s = p.read_text()
 
-          field_old = '    private Button chartButton;\n'
-          field_new = field_old + '    private Button deepBacktestButton;\n'
+          # 1) Field
+          field_anchor = '    private Button chartButton;\n'
           if 'private Button deepBacktestButton;' not in s:
-              if field_old not in s:
+              if field_anchor not in s:
                   raise SystemExit('chartButton field anchor not found')
-              s = s.replace(field_old, field_new, 1)
+              s = s.replace(
+                  field_anchor,
+                  field_anchor + '    private Button deepBacktestButton;\n',
+                  1,
+              )
 
-          button_anchor = '''        chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
-          chartButton.setOnClickListener(v -> showBacktestChart());
-          resultActions.addView(chartButton, marginTop(6));
-          '''
-          button_insert = button_anchor + '''        deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
-          deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
-          resultActions.addView(deepBacktestButton, marginTop(6));
-          '''
-          if 'showDeepBacktestReport()' not in s:
+          # 2) Result action button. Use a single stable line as the anchor so UI
+          #    text/indentation changes do not break this workflow.
+          if 'deepBacktestButton.setOnClickListener' not in s:
+              button_anchor = '        resultActions.addView(chartButton, marginTop(6));\n'
               if button_anchor not in s:
-                  raise SystemExit('result button anchor not found')
+                  raise SystemExit('chartButton addView anchor not found')
+              button_insert = button_anchor + (
+                  '        deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);\n'
+                  '        deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());\n'
+                  '        resultActions.addView(deepBacktestButton, marginTop(6));\n'
+              )
               s = s.replace(button_anchor, button_insert, 1)
 
-          method_anchor = '    private void enableResultActions(boolean enabled) {\n'
-          method = '''    private void showDeepBacktestReport() {
+          # 3) Activity launcher method
+          if 'private void showDeepBacktestReport()' not in s:
+              method_anchor = '    private void enableResultActions(boolean enabled) {\n'
+              if method_anchor not in s:
+                  raise SystemExit('enableResultActions anchor not found')
+              method = '''    private void showDeepBacktestReport() {
               if (lastSummary == null) {
                   toast("백테스트를 먼저 실행하세요.");
                   return;
@@ -55,22 +65,25 @@ jobs:
           }
 
           '''
-          if 'private void showDeepBacktestReport()' not in s:
-              if method_anchor not in s:
-                  raise SystemExit('enableResultActions anchor not found')
               s = s.replace(method_anchor, method + method_anchor, 1)
 
+          # 4) Enable/disable array. Support both the original array and already
+          #    expanded variants without treating harmless UI changes as failure.
           old_array = '        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton};'
           new_array = '        Button[] buttons = {resultSummaryButton, tradeHistoryButton, chartButton, deepBacktestButton};'
           if old_array in s:
               s = s.replace(old_array, new_array, 1)
 
           p.write_text(s)
-      - name: Verify patch anchors
+
+      - name: Verify patch
         run: |
-          grep -q 'deepBacktestButton' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
-          grep -q 'DeepBacktestReportActivity' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -q 'private Button deepBacktestButton' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -q 'deepBacktestButton.setOnClickListener' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -q 'private void showDeepBacktestReport()' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
           grep -q 'DeepBacktestReportActivity' android/app/src/main/AndroidManifest.xml
+          test -f android/app/src/main/java/com/nictunz/universalbacktester/DeepBacktestReportActivity.java
+
       - name: Commit patch
         run: |
           git config user.name 'github-actions[bot]'
