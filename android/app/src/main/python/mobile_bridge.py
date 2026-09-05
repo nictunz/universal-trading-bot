@@ -1608,7 +1608,7 @@ def run_backtest(
     execution_model: str = "signal_close",
     optimization_speed: str = "quick",
     precheck_enabled: bool = True,
-    adaptive_regime_enabled: bool = True,
+    adaptive_regime_enabled: bool = False,
     initial_capital: float = 1000.0,
 ) -> str:
     logs: list[str] = []
