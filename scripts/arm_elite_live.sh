@@ -35,37 +35,30 @@ if bad:
 PY
 
 TMP_BTC="$(mktemp)"
-TMP_ETH="$(mktemp)"
-trap 'rm -f "$TMP_BTC" "$TMP_ETH"' EXIT
+trap 'rm -f "$TMP_BTC"' EXIT
 
 echo
 echo "===== BTC ELITE LIVE PREFLIGHT ====="
 BOT_MODE=LIVE SYMBOL='BTC/USDT:USDT' "$PY" -m universal_bot.preflight >"$TMP_BTC"
 cat "$TMP_BTC"
 
-echo
-echo "===== ETH ELITE LIVE PREFLIGHT ====="
-BOT_MODE=LIVE SYMBOL='ETH/USDT:USDT' "$PY" -m universal_bot.preflight >"$TMP_ETH"
-cat "$TMP_ETH"
 
-READY="$($PY - "$TMP_BTC" "$TMP_ETH" <<'PY'
+READY="$($PY - "$TMP_BTC" <<'PY'
 import json, sys
-ok=True
-for path in sys.argv[1:]:
-    with open(path, encoding='utf-8') as f:
-        data=json.load(f)
-    ok = ok and data.get('ready') is True and data.get('api_family') == 'classic-v2'
+with open(sys.argv[1], encoding='utf-8') as f:
+    data=json.load(f)
+ok = data.get('ready') is True and data.get('api_family') == 'classic-v2'
 print('true' if ok else 'false')
 PY
 )"
 
 if [[ "$READY" != "true" ]]; then
   echo
-  echo "LIVE 전환 차단: BTC/ETH 둘 다 ready=true가 아닙니다." >&2
+  echo "LIVE 전환 차단: BTC ready=true가 아닙니다." >&2
   exit 3
 fi
 
-read -r -p "BTC/ETH Preflight 통과. 실제 Elite 주문을 활성화하려면 LIVE 를 입력하세요: " CONFIRM
+read -r -p "BTC Preflight 통과. 실제 Elite 주문을 활성화하려면 LIVE 를 입력하세요: " CONFIRM
 if [[ "$CONFIRM" != "LIVE" ]]; then
   echo "취소했습니다. .env는 PAPER 그대로입니다."
   exit 0
@@ -104,4 +97,4 @@ echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
 
 echo
-echo "LIVE 활성화 완료. BTC/ETH는 15x 계정 레버리지 상한, JSON 기준 8.6x 진입, 최대 1회으로 동작합니다."
+echo "LIVE 활성화 완료. BTC는 15x 계정 레버리지 상한, JSON 기준 8.6x 진입, 최대 1회으로 동작합니다."
