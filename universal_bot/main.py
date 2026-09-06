@@ -7,7 +7,7 @@ import time
 import pandas as pd
 import uvicorn
 
-from universal_bot.adapters import BitgetEliteAdapter, HybridCCXTAdapter, YFinanceMarketAdapter
+from universal_bot.adapters import BitgetEliteAdapter, BitgetUtaAdapter, HybridCCXTAdapter, YFinanceMarketAdapter
 from universal_bot.cache_refresh_dashboard import install_cache_refresh_dashboard
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
@@ -22,6 +22,37 @@ from universal_bot.strategy_dashboard import (
     _load as _load_strategy_settings,
     install_strategy_dashboard,
 )
+
+
+def _build_bitget_live_adapter(settings: Settings, key: str, secret: str, passphrase: str, **kwargs):
+    family = settings.bitget_api_family.strip().lower()
+    if family in {"uta", "uta-v3", "v3"}:
+        return BitgetUtaAdapter(key, secret, passphrase, **kwargs)
+    if family in {"classic", "classic-v2", "v2"}:
+        return BitgetEliteAdapter(key, secret, passphrase, **kwargs)
+    if family != "auto":
+        raise ValueError(
+            f"invalid BITGET_API_FAMILY={settings.bitget_api_family!r}; use auto, classic-v2 or uta-v3"
+        )
+
+    # Auto mode is intentionally UTA-first. A successfully upgraded account
+    # answers /api/v3/account/settings with accountMode unified/hybrid. Classic
+    # accounts fall back to the proven v2 adapter without changing credentials.
+    uta = BitgetUtaAdapter(key, secret, passphrase, **kwargs)
+    try:
+        info = uta.account_info(settings.symbol)
+        mode = str(info.get("accountMode") or "").lower()
+        if mode in {"unified", "hybrid"}:
+            print(f"BITGET_API_FAMILY_AUTO selected=uta-v3 accountMode={mode}", flush=True)
+            return uta
+    except Exception as exc:
+        print(
+            f"BITGET_API_FAMILY_AUTO uta_probe_failed={type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+    print("BITGET_API_FAMILY_AUTO selected=classic-v2", flush=True)
+    return BitgetEliteAdapter(key, secret, passphrase, **kwargs)
 
 
 def build_adapter(settings: Settings):
@@ -39,7 +70,8 @@ def build_adapter(settings: Settings):
 
     if exchange == "bitget" and live and profile == "elite":
         key, secret, passphrase = settings.bitget_elite_credentials
-        return BitgetEliteAdapter(
+        return _build_bitget_live_adapter(
+            settings,
             key,
             secret,
             passphrase,
@@ -115,8 +147,9 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
             strategy = UniversalV15Strategy(local)
             runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
             profile = local.bitget_execution_profile if local.exchange.lower() == "bitget" else "standard"
+            api_family = getattr(adapter, "API_FAMILY", "classic-v2" if isinstance(adapter, BitgetEliteAdapter) else "standard")
             print(
-                f"RUNTIME_READY symbol={symbol} mode={local.bot_mode.upper()} execution_profile={profile}",
+                f"RUNTIME_READY symbol={symbol} mode={local.bot_mode.upper()} execution_profile={profile} api_family={api_family}",
                 flush=True,
             )
         except Exception as exc:
