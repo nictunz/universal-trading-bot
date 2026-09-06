@@ -79,7 +79,8 @@ class Settings(BaseSettings):
     allow_community_market_data_live: bool = False
     coinapi_api_key: str = ""
 
-    # LIVE execution defaults for the Classic v2 Elite account.
+    # LIVE execution defaults. Both Classic v2 and UTA v3 adapters preserve the
+    # same engine-facing behavior for crossed margin / one-way execution.
     leverage: int = 15
     margin_mode: str = "crossed"
     require_exchange_protection: bool = True
@@ -100,10 +101,10 @@ class Settings(BaseSettings):
     discord_webhook_url: str = ""
     discord_timeout: float = 5.0
 
-    # Bitget credential routing.
-    # - standard: normal Bitget API; reserved for funding/spot/standard account work.
-    # - elite: dedicated Elite Trading Portfolio API; used for LIVE execution when
-    #   BITGET_EXECUTION_PROFILE=elite.
+    # Bitget credential / API-family routing.
+    # BITGET_API_FAMILY=auto probes UTA v3 first and falls back to Classic v2.
+    # After account migration, uta-v3 can be pinned explicitly.
+    bitget_api_family: str = "auto"
     bitget_execution_profile: str = "elite"
     bitget_standard_api_key: str = ""
     bitget_standard_api_secret: str = ""
