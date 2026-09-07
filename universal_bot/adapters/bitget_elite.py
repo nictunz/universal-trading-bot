@@ -29,6 +29,8 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     BASE_URL = "https://api.bitget.com"
     PRODUCT_TYPE = "USDT-FUTURES"
     MARGIN_COIN = "USDT"
+    TPSL_TRIGGER_TYPE = "fill_price"  # Bitget last traded price, never mark price
+    TPSL_ORDER_TYPE = "market"
 
     def __init__(
         self,
@@ -397,9 +399,9 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 "marginCoin": self.MARGIN_COIN,
                 "size": qty,
                 "triggerPrice": self._price(symbol, float(trigger)),
-                "triggerType": "fill_price",
+                "triggerType": self.TPSL_TRIGGER_TYPE,
                 "side": close_side,
-                "orderType": "market",
+                "orderType": self.TPSL_ORDER_TYPE,
                 "clientOid": self._client_oid(f"utb-{kind}"),
             }
             if mode == "hedge_mode":
