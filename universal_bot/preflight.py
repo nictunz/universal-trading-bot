@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from universal_bot.adapters import BitgetEliteAdapter, CCXTAdapter, YFinanceMarketAdapter
+from universal_bot.adapters import BitgetEliteAdapter, BitgetUtaAdapter, CCXTAdapter, YFinanceMarketAdapter
 from universal_bot.config import Settings
 
 
@@ -14,14 +14,27 @@ def _adapter(settings: Settings):
     profile = settings.bitget_execution_profile.strip().lower()
     if exchange == "bitget" and profile == "elite":
         key, secret, passphrase = settings.bitget_elite_credentials
-        return BitgetEliteAdapter(
-            key,
-            secret,
-            passphrase,
-            timeout=settings.bitget_elite_request_timeout,
-            fallback_exchanges=settings.crypto_fallback_exchange_list,
-            community_fallback=False,
-        )
+        kwargs = {
+            "timeout": settings.bitget_elite_request_timeout,
+            "fallback_exchanges": settings.crypto_fallback_exchange_list,
+            "community_fallback": False,
+        }
+        family = settings.bitget_api_family.strip().lower()
+        if family in {"uta", "uta-v3", "v3"}:
+            return BitgetUtaAdapter(key, secret, passphrase, **kwargs)
+        classic = BitgetEliteAdapter(key, secret, passphrase, **kwargs)
+        if family in {"classic-first", "auto-classic"}:
+            try:
+                classic.account_info(settings.symbol)
+                return classic
+            except Exception:
+                uta = BitgetUtaAdapter(key, secret, passphrase, **kwargs)
+                info = uta.account_info(settings.symbol)
+                mode = str(info.get("accountMode") or "").lower()
+                if mode in {"unified", "hybrid"}:
+                    return uta
+                raise RuntimeError(f"UTA account mode is not unified/hybrid: {mode or 'unknown'}")
+        return classic
 
     bitget_key, bitget_secret, bitget_passphrase = settings.bitget_standard_credentials
     keys = {
@@ -63,6 +76,8 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
                 "value": settings.margin_mode,
             })
 
+            api_family = "uta-v3" if isinstance(adapter, BitgetUtaAdapter) else "classic-v2"
+            account_check_name = "elite_uta_account" if api_family == "uta-v3" else "elite_classic_account"
             config = adapter.configure_live(
                 settings.symbol,
                 int(settings.leverage),
@@ -70,7 +85,7 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
                 bool(settings.live_require_one_way_mode),
             )
             checks.append({
-                "name": "elite_classic_account",
+                "name": account_check_name,
                 "ok": bool(config.get("ok")),
                 "details": config,
             })
@@ -96,7 +111,7 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
                 "execution_profile",
                 "elite_credentials",
                 "elite_margin_setting",
-                "elite_classic_account",
+                account_check_name,
             }
             if live:
                 required_names.update({"balance", "position_query"})
@@ -109,7 +124,7 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
             return {
                 "ready": ready,
                 "profile": "elite",
-                "api_family": "classic-v2",
+                "api_family": api_family,
                 "checks": checks,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
