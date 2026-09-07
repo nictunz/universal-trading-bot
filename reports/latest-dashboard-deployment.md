@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-09-07T14:09:39Z
-- Source commit: 069cbd4ac60073ba413653633fa58492cc306408
+- Generated UTC: 2026-09-07T14:12:10Z
+- Source commit: 9bcd2217f1e7a564cac93bab369a83974c2f40fc
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -20,7 +20,7 @@
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    286780
+PID:    287470
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
