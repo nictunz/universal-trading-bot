@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -71,6 +75,17 @@ def _snapshot(scanner) -> dict[str, Any]:
 def _write_env(values: dict[str, str]) -> None:
     ENV_PATH.touch(exist_ok=True)
     lines = ENV_PATH.read_text(encoding='utf-8').splitlines()
+    current = {}
+    for line in lines:
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, value = line.split('=', 1)
+            current[key.strip()] = value
+    changed = any(current.get(key) != value for key, value in values.items())
+    if changed and ENV_PATH.stat().st_size:
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+        backup = ENV_PATH.with_name(f'.env.bak-dashboard-{stamp}')
+        shutil.copy2(ENV_PATH, backup)
+        backup.chmod(0o600)
     out: list[str] = []
     seen: set[str] = set()
     for line in lines:
@@ -233,6 +248,46 @@ def install_live_settings_dashboard(app, scanner) -> None:
             )
         if target == current:
             return {'status': 'ok', 'mode': current, 'restarting': False}
+
+        if target == 'LIVE':
+            root = Path(__file__).resolve().parents[1]
+            apply_script = root / 'scripts' / 'apply_btc_15m_5y_million_mdd45.py'
+            applied = subprocess.run(
+                [sys.executable, str(apply_script)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            if applied.returncode != 0:
+                detail = (applied.stderr or applied.stdout or '기본 LIVE 프로필 적용 실패').strip()
+                raise HTTPException(status_code=409, detail=detail[-2000:])
+
+            check_env = os.environ.copy()
+            check_env['BOT_MODE'] = 'LIVE'
+            preflight = subprocess.run(
+                [sys.executable, '-m', 'universal_bot.preflight'],
+                cwd=root,
+                env=check_env,
+                text=True,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            try:
+                readiness = json.loads(preflight.stdout)
+            except Exception:
+                readiness = {'ready': False, 'reason': (preflight.stderr or preflight.stdout).strip()[-2000:]}
+            if preflight.returncode != 0 or readiness.get('ready') is not True:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        'message': '기본 BTC 15m LIVE 설정은 저장했지만 사전점검 실패로 PAPER를 유지합니다.',
+                        'readiness': readiness,
+                    },
+                )
+
         _write_env({'BOT_MODE': target})
 
         def restart_after_response() -> None:
