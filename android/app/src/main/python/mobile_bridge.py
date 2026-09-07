@@ -2796,7 +2796,7 @@ def upload_result(
 
     return str(
         _ssh_bridge().uploadFiles(
-            "",
+            str(db_path),
             str(canonical_result),
             host.strip(),
             username.strip(),
