@@ -101,9 +101,33 @@ def update_env() -> Path:
     return backup
 
 
+def sync_dashboard_strategy_store(settings: Settings) -> Path | None:
+    from universal_bot.strategy_dashboard import FIELDS
+
+    store = ROOT / "data" / "dashboard-strategy-settings.json"
+    mobile_store = Path.home() / ".cache" / "universal-trading-bot" / "mobile-strategy-settings.json"
+    values = {field: getattr(settings, field) for field in FIELDS}
+    text = json.dumps(values, ensure_ascii=False, indent=2) + "\n"
+
+    backup = None
+    if store.exists() and store.read_text(encoding="utf-8").strip() != text.strip():
+        backup_dir = ROOT / "data" / "strategy-settings-backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = backup_dir / f"strategy-settings-before-live-{stamp}.json"
+        shutil.copy2(store, backup)
+
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(text, encoding="utf-8")
+    mobile_store.parent.mkdir(parents=True, exist_ok=True)
+    mobile_store.write_text(text, encoding="utf-8")
+    return backup
+
+
 def main() -> None:
     backup = update_env()
     settings = Settings()
+    strategy_backup = sync_dashboard_strategy_store(settings)
     key, secret, passphrase = settings.bitget_elite_credentials
     if not (key and secret and passphrase):
         raise SystemExit("Elite credentials are missing in .env")
@@ -120,6 +144,7 @@ def main() -> None:
     print("BTC_15M_JSON_LIVE_PROFILE")
     print("NOTE: legacy filename is retained for compatibility; sizing follows the selected JSON.")
     print(f"env_backup={backup.name}")
+    print(f"strategy_settings_backup={strategy_backup.name if strategy_backup else 'unchanged'}")
     print("BOT_MODE=PAPER")
     print("LEVERAGE=15")
     print("LIVE_ENTRY_MULTIPLIER=8.6 (진입_비중_pct=860)")
