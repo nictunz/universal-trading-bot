@@ -86,7 +86,7 @@ public class MobileMarketRelayService extends Service {
     private synchronized void startContinuous() {
         if (scheduler != null && !scheduler.isShutdown()) return;
         continuous = true;
-        appendHistory("시작", "30초 실시간 중계를 시작했습니다.");
+        appendHistory("시작", "5초 실시간 중계를 시작했습니다.");
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(() -> {
             try {
@@ -142,7 +142,7 @@ public class MobileMarketRelayService extends Service {
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
         long now = System.currentTimeMillis();
-        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 30초 중계";
+        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 5초 중계";
         p.edit()
                 .putBoolean("relay_running", continuous)
                 .putLong("relay_last_ok_ms", now)
