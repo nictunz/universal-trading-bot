@@ -268,18 +268,46 @@ class DashboardDataService:
         *,
         symbol: str,
         mode: str = "ALL",
+        run_id: str | None = None,
+        timeframe: str | None = None,
+        exchange: str | None = None,
         start: str | None = None,
         end: str | None = None,
         limit: int = 2000,
     ) -> dict[str, Any]:
-        start_iso = None if not start else datetime.fromtimestamp((_ms(start) or 0) / 1000, timezone.utc).isoformat()
-        end_iso = None if not end else datetime.fromtimestamp((_ms(end, end=True) or 0) / 1000, timezone.utc).isoformat()
-        trades = self.history.list_trades(symbol=symbol, mode=mode, start=start_iso, end=end_iso, limit=limit)
-        summary = self.history.summary(symbol=symbol, mode=mode, start=start_iso, end=end_iso)
+        normalized_mode = mode.upper()
+        runs = self.history.list_backtest_runs(
+            symbol=symbol, timeframe=timeframe, exchange=exchange, limit=25,
+        )
+        selected_run_id = run_id
+        if normalized_mode == "BACKTEST" and not selected_run_id and runs:
+            selected_run_id = str(runs[0]["run_id"])
+
+        # A selected backtest run is an immutable result. Date inputs control
+        # the candle viewport, but must not truncate its trades or metrics.
+        run_filter = selected_run_id if normalized_mode == "BACKTEST" else None
+        if run_filter:
+            start_iso = None
+            end_iso = None
+        else:
+            start_iso = None if not start else datetime.fromtimestamp((_ms(start) or 0) / 1000, timezone.utc).isoformat()
+            end_iso = None if not end else datetime.fromtimestamp((_ms(end, end=True) or 0) / 1000, timezone.utc).isoformat()
+
+        trades = self.history.list_trades(
+            symbol=symbol, mode=normalized_mode, run_id=run_filter,
+            start=start_iso, end=end_iso, limit=limit,
+        )
+        summary = self.history.summary(
+            symbol=symbol, mode=normalized_mode, run_id=run_filter,
+            start=start_iso, end=end_iso,
+        )
+        selected_run = next((item for item in runs if item["run_id"] == selected_run_id), None)
         return {
             "symbol": symbol,
-            "mode": mode.upper(),
+            "mode": normalized_mode,
+            "selected_run_id": selected_run_id,
+            "selected_run": selected_run,
             "summary": summary,
             "trades": trades,
-            "runs": self.history.list_backtest_runs(symbol=symbol, limit=25),
+            "runs": runs,
         }
