@@ -246,6 +246,18 @@ def install_live_settings_dashboard(app, scanner) -> None:
                 status_code=400,
                 detail='LIVE 전환 확인 문구 ENABLE LIVE가 필요합니다.',
             )
+        if target == 'LIVE':
+            unhealthy = []
+            for runtime in scanner.runtimes:
+                if runtime.last_error:
+                    unhealthy.append(f'{runtime.symbol}: {runtime.last_error}')
+                if runtime.engine.safety.halted:
+                    unhealthy.append(f'{runtime.symbol}: safety halted: {runtime.engine.safety.reason}')
+            if unhealthy:
+                raise HTTPException(
+                    status_code=409,
+                    detail='서버 HEALTH가 정상일 때만 LIVE 전환할 수 있습니다: ' + ' | '.join(unhealthy),
+                )
         if target == current:
             return {'status': 'ok', 'mode': current, 'restarting': False}
 
