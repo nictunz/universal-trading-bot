@@ -42,11 +42,19 @@ def _slug(symbol: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", base).strip("-") or "asset"
 
 
-def default_cache_path(symbol: str, timeframe: str = "5m") -> Path:
-    return Path.home() / ".cache" / "universal-trading-bot" / f"{_slug(symbol)}-1y-{timeframe}.db"
+def default_cache_path(symbol: str, timeframe: str = "15m") -> Path:
+    root = Path.home() / ".cache" / "universal-trading-bot"
+    legacy = root / f"{_slug(symbol)}-1y-{timeframe}.db"
+    candidates = [
+        path for path in root.glob(f"{_slug(symbol)}-*-{timeframe}.db")
+        if path.is_file() and path.stat().st_size > 0
+    ] if root.exists() else []
+    # Range-named five-year caches are substantially larger than the legacy
+    # one-year cache. Prefer the largest available dataset without renaming it.
+    return max(candidates, key=lambda path: path.stat().st_size) if candidates else legacy
 
 
-def cache_available(symbol: str, timeframe: str = "5m") -> bool:
+def cache_available(symbol: str, timeframe: str = "15m") -> bool:
     p = default_cache_path(symbol, timeframe)
     return p.exists() and p.stat().st_size > 0
 
@@ -72,7 +80,7 @@ def run_cached_symbol_backtest(
     symbol: str,
     asset_class: str = "crypto",
     exchange: str = "bitget",
-    timeframe: str = "5m",
+    timeframe: str = "15m",
     start: str | None = None,
     end: str | None = None,
     overrides: dict[str, Any] | None = None,
