@@ -196,7 +196,7 @@ class TradeHistoryStore:
             )
 
     def list_trades(
-        self, *, symbol: str | None = None, mode: str | None = None,
+        self, *, symbol: str | None = None, mode: str | None = None, run_id: str | None = None,
         start: str | None = None, end: str | None = None, limit: int = 2000,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -205,6 +205,8 @@ class TradeHistoryStore:
             clauses.append("symbol=?"); params.append(symbol)
         if mode and mode.upper() != "ALL":
             clauses.append("mode=?"); params.append(mode.upper())
+        if run_id:
+            clauses.append("run_id=?"); params.append(run_id)
         if start:
             clauses.append("COALESCE(exit_time,entry_time,created_at)>=?"); params.append(start)
         if end:
@@ -252,11 +254,19 @@ class TradeHistoryStore:
             "pnl": sum(pnl), "profit_factor": gp / gl if gl else None,
         }
 
-    def list_backtest_runs(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_backtest_runs(
+        self, symbol: str | None = None, timeframe: str | None = None,
+        exchange: str | None = None, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
         params: list[Any] = []
-        where = ""
         if symbol:
-            where = " WHERE symbol=?"; params.append(symbol)
+            clauses.append("symbol=?"); params.append(symbol)
+        if timeframe:
+            clauses.append("timeframe=?"); params.append(timeframe)
+        if exchange:
+            clauses.append("exchange=?"); params.append(exchange)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, min(int(limit), 500)))
         with self._connect() as con:
             rows = con.execute("SELECT * FROM backtest_runs" + where + " ORDER BY created_at DESC LIMIT ?", params).fetchall()
