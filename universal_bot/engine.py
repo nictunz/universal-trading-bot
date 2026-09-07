@@ -13,6 +13,23 @@ from universal_bot.live_safety import LiveSafety
 from universal_bot.trade_history import TradeHistoryStore
 
 
+def effective_stale_seconds(timeframe: str, configured_seconds: int) -> int:
+    """Allow a completed candle to age through the next candle boundary.
+
+    Candle timestamps represent their open time. A fresh closed 15m candle is
+    therefore already at least 15 minutes old and may approach 30 minutes old
+    before the next closed candle becomes available.
+    """
+    text = str(timeframe).strip().lower()
+    try:
+        value = int(text[:-1])
+        unit_seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[text[-1]]
+        timeframe_seconds = value * unit_seconds
+    except (KeyError, TypeError, ValueError, IndexError):
+        timeframe_seconds = 0
+    return max(int(configured_seconds), timeframe_seconds * 2 + 120)
+
+
 class TradingEngine:
     REQUIRED_VOLUME_SOURCES = {"binance", "bitget", "okx", "bybit"}
 
@@ -252,7 +269,7 @@ class TradingEngine:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             self.safety.record_data(ts)
-            if self.safety.stale(datetime.now(timezone.utc), int(self.settings.stale_data_seconds)):
+            if self.safety.stale(datetime.now(timezone.utc), effective_stale_seconds(self.settings.timeframe, self.settings.stale_data_seconds)):
                 self.safety.fail("STALE_MARKET_DATA")
         if self.safety.halted:
             return self._halted_state(df)
@@ -285,7 +302,7 @@ class TradingEngine:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             self.safety.record_data(ts)
-            if self.safety.stale(datetime.now(timezone.utc), int(self.settings.stale_data_seconds)):
+            if self.safety.stale(datetime.now(timezone.utc), effective_stale_seconds(self.settings.timeframe, self.settings.stale_data_seconds)):
                 self.safety.fail("STALE_MARKET_DATA")
                 return self._halted_state(df)
         if not self.position.flat:
