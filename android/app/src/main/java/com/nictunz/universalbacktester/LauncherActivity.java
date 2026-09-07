@@ -147,7 +147,7 @@ public class LauncherActivity extends android.app.Activity {
         oneShotButton.setOnClickListener(v -> prepareRelay(MobileMarketRelayService.ACTION_ONCE));
         relay.addView(oneShotButton, mt(10));
 
-        startRelayButton = actionButton("▶ 30초 실시간 중계 시작", SUCCESS);
+        startRelayButton = actionButton("▶ 5초 실시간 중계 시작", SUCCESS);
         startRelayButton.setOnClickListener(v -> {
             requestNotificationPermissionIfNeeded();
             prepareRelay(MobileMarketRelayService.ACTION_START);
