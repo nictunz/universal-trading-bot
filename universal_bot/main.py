@@ -30,9 +30,33 @@ def _build_bitget_live_adapter(settings: Settings, key: str, secret: str, passph
         return BitgetUtaAdapter(key, secret, passphrase, **kwargs)
     if family in {"classic", "classic-v2", "v2"}:
         return BitgetEliteAdapter(key, secret, passphrase, **kwargs)
+    if family in {"classic-first", "auto-classic"}:
+        classic = BitgetEliteAdapter(key, secret, passphrase, **kwargs)
+        try:
+            classic.account_info(settings.symbol)
+            print("BITGET_API_FAMILY_CLASSIC_FIRST selected=classic-v2", flush=True)
+            return classic
+        except Exception as classic_exc:
+            print(
+                f"BITGET_API_FAMILY_CLASSIC_FIRST classic_probe_failed={type(classic_exc).__name__}: {classic_exc}",
+                flush=True,
+            )
+        uta = BitgetUtaAdapter(key, secret, passphrase, **kwargs)
+        try:
+            info = uta.account_info(settings.symbol)
+            mode = str(info.get("accountMode") or "").lower()
+            if mode in {"unified", "hybrid"}:
+                print(f"BITGET_API_FAMILY_CLASSIC_FIRST selected=uta-v3 accountMode={mode}", flush=True)
+                return uta
+            raise RuntimeError(f"UTA account mode is not unified/hybrid: {mode or 'unknown'}")
+        except Exception as uta_exc:
+            raise RuntimeError(
+                f"Bitget Classic v2 and UTA v3 probes both failed; UTA: {type(uta_exc).__name__}: {uta_exc}"
+            ) from uta_exc
     if family != "auto":
         raise ValueError(
-            f"invalid BITGET_API_FAMILY={settings.bitget_api_family!r}; use auto, classic-v2 or uta-v3"
+            f"invalid BITGET_API_FAMILY={settings.bitget_api_family!r}; "
+            "use classic-first, auto, classic-v2 or uta-v3"
         )
 
     # Auto mode is intentionally UTA-first. A successfully upgraded account
