@@ -4,6 +4,7 @@ import json
 
 from universal_bot.adapters.bitget_elite import BitgetEliteAdapter
 from universal_bot.dashboard import BacktestRequest
+from universal_bot.engine import effective_stale_seconds
 import universal_bot.strategy_dashboard as strategy_dashboard
 
 
@@ -56,3 +57,10 @@ def test_elite_tpsl_uses_last_trade_trigger_and_market_close():
         assert body["orderType"] == "market"
         assert body["reduceOnly"] == "yes"
         assert body["marginMode"] == "crossed"
+
+
+def test_stale_data_limit_accounts_for_completed_candle_open_time():
+    assert effective_stale_seconds("5m", 600) == 720
+    assert effective_stale_seconds("15m", 600) == 1920
+    assert effective_stale_seconds("1h", 600) == 7320
+    assert effective_stale_seconds("bad", 600) == 600
