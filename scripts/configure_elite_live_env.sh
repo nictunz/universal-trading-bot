@@ -60,7 +60,7 @@ updates = {
     'EXCHANGE': 'bitget',
     'ASSET_CLASS': 'crypto',
     'BITGET_EXECUTION_PROFILE': 'elite',
-    'BITGET_API_FAMILY': 'classic-v2',
+    'BITGET_API_FAMILY': 'classic-first',
     'LEVERAGE': '15',
     'MARGIN_MODE': 'crossed',
     'LIVE_REQUIRE_ONE_WAY_MODE': 'true',
