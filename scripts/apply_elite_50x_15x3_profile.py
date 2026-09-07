@@ -61,6 +61,7 @@ PROFILE = {
     "BACKTEST_EXECUTION_MODEL": "signal_close",
     "ADAPTIVE_REGIME_ENABLED": "false",
     "BITGET_EXECUTION_PROFILE": "elite",
+    "BITGET_API_FAMILY": "classic-v2",
     "LEVERAGE": "15",
     "MARGIN_MODE": "crossed",
     "LIVE_REQUIRE_ONE_WAY_MODE": "true",
