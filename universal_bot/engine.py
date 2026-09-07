@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from universal_bot.config import Settings
+from universal_bot.discord_notifier import DiscordNotifier
 from universal_bot.models import Position
 from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
@@ -60,8 +61,22 @@ class TradingEngine:
         self.safety = LiveSafety(enabled=self.live)
         self._live_initialized = False
         self.trade_history = TradeHistoryStore()
+        self.discord = DiscordNotifier(
+            settings.discord_webhook_url,
+            enabled=self.live and settings.discord_notifications_enabled,
+            timeout=settings.discord_timeout,
+        )
+        self._external_flat_notified = False
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.trade_history_run_id = f"{settings.bot_mode.upper()}-{settings.symbol}-{stamp}"
+
+    def _notify_live(self, title: str, **fields) -> None:
+        if not self.live:
+            return
+        lines = [f"**{title}**"]
+        lines.extend(f"**{key}**: {value}" for key, value in fields.items())
+        lines.append(datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+        self.discord.send_async("\n".join(lines))
 
     def _amount(self, price: float) -> float:
         equity = self.settings.initial_capital if not self.live else self.adapter.equity()
@@ -129,6 +144,17 @@ class TradingEngine:
             return
         try:
             exchange_pos = self.adapter.position(self.settings.symbol)
+            if not self.position.flat and exchange_pos.get("side") == "FLAT":
+                if not self._external_flat_notified:
+                    self._notify_live(
+                        "🔔 Bitget TP/SL 청산 감지",
+                        심볼=self.settings.symbol,
+                        기존방향=self.position.side,
+                        기존수량=f"{abs(self.position.size):.8f}",
+                        진입가=f"{float(self.position.entry_price or 0.0):.4f}",
+                        안내="거래소 보호주문 체결로 포지션이 FLAT입니다. 서버가 안전중지됩니다.",
+                    )
+                    self._external_flat_notified = True
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
             self.safety.clear_error()
@@ -183,6 +209,18 @@ class TradingEngine:
             exchange_pos = self.adapter.position(self.settings.symbol)
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
+            self._external_flat_notified = False
+            self._notify_live(
+                "🚀 실거래 진입 체결",
+                심볼=self.settings.symbol,
+                방향=side,
+                체결가=f"{actual_price:.4f}",
+                수량=f"{actual_amount:.8f}",
+                명목금액=f"{actual_price * actual_amount:.2f} USDT",
+                TP=f"{tp_price:.4f} ({tp_pct:.3f}%)",
+                SL=f"{sl_price:.4f} ({sl_pct:.3f}%)",
+                보호주문="검증 완료" if self.safety.protection_ok else "검증 실패",
+            )
 
     def _open_pnl(self, price: float) -> float:
         if self.position.flat or not self.position.entry_price:
@@ -246,6 +284,26 @@ class TradingEngine:
             exchange_pos = self.adapter.position(self.settings.symbol)
             if exchange_pos.get("side") != "FLAT" or float(exchange_pos.get("size") or 0) > 1e-9:
                 self.safety.fail("EXIT_ORDER_DID_NOT_FLATTEN_POSITION")
+                self._notify_live(
+                    "🚨 실거래 청산 확인 실패",
+                    심볼=self.settings.symbol,
+                    방향=side,
+                    요청수량=f"{qty:.8f}",
+                    사유=reason,
+                    안내="거래소 포지션이 FLAT이 아니므로 서버가 안전중지되었습니다.",
+                )
+            else:
+                self._notify_live(
+                    "✅ 실거래 청산 체결",
+                    심볼=self.settings.symbol,
+                    방향=side,
+                    진입가=f"{avg_entry:.4f}",
+                    청산가=f"{exit_price:.4f}",
+                    수량=f"{qty:.8f}",
+                    손익=f"{pnl:.2f} USDT",
+                    수익률=f"{trade['pnl_percent']:.3f}%",
+                    사유=reason,
+                )
 
     def _normalized_live_volume(self, df) -> pd.Series | None:
         if not (self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto"):
