@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-09-07T14:40:25Z
-- Source commit: 2441a1d43dced518c2f1a876e081607d61083063
+- Generated UTC: 2026-09-07T19:50:06Z
+- Source commit: 6df8aa2d73cf505637675a7f93c8c4b7ed57493c
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -20,14 +20,14 @@
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    291721
+PID:    297952
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
 ```text
 http://127.0.0.1:8000/health 200 {"status":"ok","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":[]}
-http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","timeframe":"15m","timestamp":"2026-09-07T14:15:00+00:00","position":{"side":null,"size":0.0,"entry":null,"tp":null,"sl":null,"entries":0},"signal":null,"signal_reason":"NO_SIGNAL","values":{"strategy":"Volume Strategy FINAL Universal v15","version":"v15","volume_ratio":2.4095572501713605,"volume_break":false,"one_bar_volatility":0.15630488677056298,"one_bar_min":0.1,"one_bar_max":3.6,"one_bar_ok":true,"nbar_range":1.1600428284517768,"nbar_bars":36,"nbar_block_range":2.0637485032216336,"nbar_block_bars":200,"nbar_max_allowed":6.3,"nbar_ok":true,"nbar_blocked":false,"adx":40.846568978649266,"adx_min":11.6,"
+http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","timeframe":"15m","timestamp":"2026-09-07T19:30:00+00:00","position":{"side":null,"size":0.0,"entry":null,"tp":null,"sl":null,"entries":0},"signal":null,"signal_reason":"NO_SIGNAL","values":{"strategy":"Volume Strategy FINAL Universal v15","version":"v15","volume_ratio":1.215990878236366,"volume_break":false,"one_bar_volatility":0.12309751216771563,"one_bar_min":0.1,"one_bar_max":3.6,"one_bar_ok":true,"nbar_range":1.2365725388073974,"nbar_bars":36,"nbar_block_range":2.4202490183712007,"nbar_block_bars":200,"nbar_max_allowed":6.3,"nbar_ok":true,"nbar_blocked":false,"adx":28.402063781340377,"adx_min":11.6,"a
 http://127.0.0.1:8000/ 200 <!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Universal Trading Bot</title>
@@ -37,7 +37,7 @@ http://127.0.0.1:8000/ 200 <!doctype html>
 
 ## Socket
 ```text
-LISTEN 0      2048       127.0.0.1:8000       0.0.0.0:*    users:(("python",pid=291169,fd=13))
+LISTEN 0      2048       127.0.0.1:8000       0.0.0.0:*    users:(("python",pid=293680,fd=14))
 ```
 
 ## App log
