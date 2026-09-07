@@ -280,8 +280,9 @@ class DashboardDataService:
             symbol=symbol, timeframe=timeframe, exchange=exchange, limit=25,
         )
         selected_run_id = run_id
-        if normalized_mode == "BACKTEST" and not selected_run_id and runs:
-            selected_run_id = str(runs[0]["run_id"])
+        valid_run_ids = {str(item["run_id"]) for item in runs}
+        if normalized_mode == "BACKTEST" and selected_run_id not in valid_run_ids:
+            selected_run_id = str(runs[0]["run_id"]) if runs else None
 
         # A selected backtest run is an immutable result. Date inputs control
         # the candle viewport, but must not truncate its trades or metrics.
