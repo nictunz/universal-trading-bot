@@ -1,7 +1,7 @@
 # Latest official archive smoke
 
-- Generated UTC: 2026-08-25T10:54:36Z
-- Source commit: d46ebdb3c8240d9572e8af7f3957d8f1c494c8db
+- Generated UTC: 2026-09-07T08:36:54Z
+- Source commit: 8079141f9fc1493b2a2b4d29f8f500aa5e68ef38
 - Runner: trading-bot-new
 - Unit tests: success
 - Real network 4-exchange smoke: success
@@ -9,7 +9,7 @@
 ## Unit tests
 ```text
 ...                                                                      [100%]
-3 passed in 6.10s
+3 passed in 26.56s
 ```
 ## Four-exchange smoke
 ```json
@@ -50,8 +50,8 @@
 ## Memory
 ```text
                total        used        free      shared  buff/cache   available
-Mem:           958Mi       298Mi       424Mi        20Mi       236Mi       503Mi
-Swap:          2.0Gi       900Mi       1.1Gi
-NAME      TYPE SIZE   USED PRIO
-/swapfile file   2G 900.1M   -2
+Mem:           958Mi       441Mi       185Mi        18Mi       330Mi       361Mi
+Swap:          2.0Gi       1.0Gi       1.0Gi
+NAME      TYPE SIZE    USED PRIO
+/swapfile file   2G 1007.3M   -2
 ```
