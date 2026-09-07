@@ -1,7 +1,7 @@
 # Latest dashboard deployment
 
-- Generated UTC: 2026-09-07T09:00:44Z
-- Source commit: 459ca531ae363467f7c6e39da0486a15c771ced7
+- Generated UTC: 2026-09-07T12:10:34Z
+- Source commit: e4bbc00a54cc89d1024a528f7f3530c6bca5b06d
 - Mode: PAPER
 - Host: trading-bot-new
 - Bind: 0.0.0.0:8000
@@ -16,18 +16,18 @@
 
 ## Service
 ```text
-{"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":["RuntimeError: mobile relay is stale: age=1076289.6s max=90s"],"live_halted":[]}
+{"status":"halted","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":["STALE_MARKET_DATA"]}
 Dashboard started in PAPER mode.
 Local:  http://127.0.0.1:8000/
 Tunnel: http://127.0.0.1:8000/ via Termius Local Forwarding
-PID:    279527
+PID:    281887
 Log:    /home/kpj3669/.cache/universal-trading-bot-dashboard.log
 ```
 
 ## HTTP checks
 ```text
-http://127.0.0.1:8000/health 200 {"status":"degraded","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":["RuntimeError: mobile relay is stale: age=1076289.6s max=90s"],"live_halted":[]}
-http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","status":"WAITING","error":"RuntimeError: mobile relay is stale: age=1076289.6s max=90s","volume_sources":{},"live_safety":{"enabled":false,"halted":false,"reason":"","consecutive_errors":0,"last_reconciliation":null,"last_data":null,"protection_ok":false,"exchange_position":null,"internal_position":null,"metadata":{}}}]}
+http://127.0.0.1:8000/health 200 {"status":"halted","strategy":"Volume Strategy FINAL Universal v15","symbols":1,"errors":[],"live_halted":["STALE_MARKET_DATA"]}
+http://127.0.0.1:8000/api/state 200 {"strategy":"Volume Strategy FINAL Universal v15","symbols":[{"symbol":"BTC/USDT:USDT","timeframe":"15m","timestamp":"2026-09-07T11:45:00+00:00","position":{"side":null,"size":0.0,"entry":null,"tp":null,"sl":null,"entries":0},"signal":null,"signal_reason":"LIVE_HALTED:STALE_MARKET_DATA","values":{},"stats":{"closed_trades":0.0,"win_rate":0.0,"profit_factor":null,"realized_pnl":0.0,"open_pnl":0.0,"equity":3666.66675067,"live_halted":true,"live_safety_reason":"STALE_MARKET_DATA","protection_ok":true},"error":"","volume_sources":{"binance":{"mode":"MOBILE_RELAY","status":"OK"},"bitget":{"mode":"DIRECT","status":"OK"},"okx":{"mode":"DIRECT","status":"OK"},"bybit":{"mode":"MOBILE_RELAY","status":
 http://127.0.0.1:8000/ 200 <!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Universal Trading Bot</title>
@@ -37,7 +37,7 @@ http://127.0.0.1:8000/ 200 <!doctype html>
 
 ## Socket
 ```text
-LISTEN 0      2048       127.0.0.1:8000       0.0.0.0:*    users:(("python",pid=278957,fd=13))
+LISTEN 0      2048       127.0.0.1:8000       0.0.0.0:*    users:(("python",pid=281453,fd=13))
 ```
 
 ## App log
