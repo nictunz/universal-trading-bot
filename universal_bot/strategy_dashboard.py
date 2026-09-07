@@ -16,6 +16,7 @@ from universal_bot.strategy import UniversalV15Strategy
 from universal_bot.trade_history import TradeHistoryStore
 
 STORE = Path("data/dashboard-strategy-settings.json")
+BACKUP_DIR = Path("data/strategy-settings-backups")
 MOBILE_STORE = Path.home() / ".cache" / "universal-trading-bot" / "mobile-strategy-settings.json"
 FIELDS = (
     "volume_lookback", "volume_break_multiplier", "min_one_bar_vol", "max_one_bar_vol",
@@ -35,10 +36,10 @@ class StrategyUpdate(BaseModel):
 
 
 class StrategyBacktest(BaseModel):
-    symbol: str
+    symbol: str = "BTC/USDT:USDT"
     asset_class: str = "crypto"
     exchange: str = "bitget"
-    timeframe: str = "5m"
+    timeframe: str = "15m"
     start: str | None = None
     end: str | None = None
     values: dict[str, Any] = Field(default_factory=dict)
@@ -85,6 +86,15 @@ def _validate(raw: dict[str, Any]) -> dict[str, Any]:
 def _persist(values: dict[str, Any]) -> None:
     text = json.dumps(values, ensure_ascii=False, indent=2)
     STORE.parent.mkdir(parents=True, exist_ok=True)
+    if STORE.exists():
+        previous = STORE.read_text(encoding="utf-8")
+        if previous.strip() and previous.strip() != text.strip():
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            (BACKUP_DIR / f"strategy-settings-{stamp}.json").write_text(
+                previous.rstrip() + "\n",
+                encoding="utf-8",
+            )
     STORE.write_text(text, encoding="utf-8")
     MOBILE_STORE.parent.mkdir(parents=True, exist_ok=True)
     MOBILE_STORE.write_text(text, encoding="utf-8")
@@ -108,7 +118,7 @@ def install_strategy_dashboard(app, scanner) -> None:
         return {"strategy": "Volume Strategy FINAL Universal v15", "values": _load(), "fields": list(FIELDS)}
 
     @app.get("/api/strategy-cache-status")
-    def strategy_cache_status(symbol: str = "ETH/USDT:USDT", timeframe: str = "5m"):
+    def strategy_cache_status(symbol: str = "BTC/USDT:USDT", timeframe: str = "15m"):
         path = default_cache_path(symbol, timeframe)
         return {
             "symbol": symbol,
