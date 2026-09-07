@@ -240,7 +240,10 @@ public final class SshBridge {
             String remoteDir,
             String keyPath
     ) throws Exception {
+        File database = new File(dbPath);
         File result = new File(resultPath);
+        if (!database.isFile()) throw new IllegalArgumentException("캐시 DB가 없습니다: " + dbPath);
+        if (database.length() < 4096) throw new IllegalArgumentException("캐시 DB가 너무 작습니다: " + dbPath);
         if (!result.isFile()) throw new IllegalArgumentException("결과 파일이 없습니다: " + resultPath);
 
         JSONObject resultMeta = new JSONObject(readText(result));
@@ -256,10 +259,14 @@ public final class SshBridge {
             ChannelSftp sftp = (ChannelSftp) session.openChannel("sftp");
             sftp.connect(15000);
             try {
+                uploadAtomic(sftp, database, remoteDir, logs);
                 uploadAtomic(sftp, result, remoteDir, logs);
 
                 JSONObject manifest = new JSONObject();
-                manifest.put("upload_mode", "summary_only");
+                manifest.put("upload_mode", "cache_and_summary");
+                manifest.put("database", database.getName());
+                manifest.put("database_size_bytes", database.length());
+                manifest.put("database_sha256", sha256(database));
                 manifest.put("result", result.getName());
                 manifest.put("symbol", resultMeta.optString("symbol", ""));
                 manifest.put("timeframe", resultMeta.optString("timeframe", ""));
@@ -274,7 +281,7 @@ public final class SshBridge {
                 byte[] bytes = (manifest.toString(2) + "\n").getBytes(StandardCharsets.UTF_8);
                 sftp.put(new ByteArrayInputStream(bytes), remoteManifest);
                 logs.put("완료: " + remoteManifest);
-                logs.put("서버 요약 업로드 완료. 원본 캐시와 전체 순위는 휴대폰에 보존됩니다.");
+                logs.put("서버 캐시 DB와 검증 요약 업로드 완료.");
             } finally {
                 sftp.disconnect();
             }
