@@ -35,6 +35,7 @@ public class MobileMarketRelayService extends Service {
     private static final String CHANNEL_ID = "market_relay";
     private static final int NOTIFICATION_ID = 4401;
     private static final int RELAY_INTERVAL_SECONDS = 30;
+    private static final String RELAY_TIMEFRAME = "15m";
     private static final int CANDLE_LIMIT = 240;
     private static final int MAX_HISTORY_LINES = 300;
 
@@ -125,7 +126,7 @@ public class MobileMarketRelayService extends Service {
         JSONObject payload = new JSONObject();
         payload.put("schema_version", 1);
         payload.put("generated_at_ms", System.currentTimeMillis());
-        payload.put("timeframe", "5m");
+        payload.put("timeframe", RELAY_TIMEFRAME);
         payload.put("source", "android-public-futures-rest");
 
         JSONObject markets = new JSONObject();
@@ -141,7 +142,7 @@ public class MobileMarketRelayService extends Service {
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
         long now = System.currentTimeMillis();
-        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 30초 중계";
+        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 30초 중계";
         p.edit()
                 .putBoolean("relay_running", continuous)
                 .putLong("relay_last_ok_ms", now)
@@ -161,7 +162,7 @@ public class MobileMarketRelayService extends Service {
 
     private JSONArray fetchBinance(String symbol) throws Exception {
         String url = "https://fapi.binance.com/fapi/v1/klines?symbol=" + symbol
-                + "&interval=5m&limit=" + CANDLE_LIMIT;
+                + "&interval=" + RELAY_TIMEFRAME + "&limit=" + CANDLE_LIMIT;
         Object body = new org.json.JSONTokener(get(url)).nextValue();
         if (!(body instanceof JSONArray)) throw new IllegalStateException("Binance 응답 형식 오류");
         JSONArray rows = (JSONArray) body;
@@ -180,7 +181,7 @@ public class MobileMarketRelayService extends Service {
 
     private JSONArray fetchBybit(String symbol) throws Exception {
         String url = "https://api.bybit.com/v5/market/kline?category=linear&symbol=" + symbol
-                + "&interval=5&limit=" + CANDLE_LIMIT;
+                + "&interval=15&limit=" + CANDLE_LIMIT;
         JSONObject body = new JSONObject(get(url));
         if (!"0".equals(String.valueOf(body.opt("retCode")))) {
             throw new IllegalStateException("Bybit 오류: " + body.optString("retMsg"));
