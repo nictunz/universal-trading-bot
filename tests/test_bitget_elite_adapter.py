@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from universal_bot.adapters.bitget_elite import BitgetEliteAdapter
+import pytest
+
+from universal_bot.adapters.bitget_elite import AmbiguousOrderResult, BitgetEliteAdapter
 from universal_bot.config import Settings
 
 
@@ -81,3 +83,105 @@ def test_bitget_dual_credentials_are_separate():
     )
     assert s.bitget_standard_credentials == ("standard-key", "standard-secret", "standard-pass")
     assert s.bitget_elite_credentials == ("elite-key", "elite-secret", "elite-pass")
+
+
+def test_ambiguous_elite_order_recovers_same_client_oid_without_reposting(monkeypatch):
+    adapter, calls = _fake_adapter(monkeypatch, "one_way_mode")
+    original_request = adapter._request
+    place_attempts = 0
+
+    def ambiguous_once(method, path, *, params=None, body=None):
+        nonlocal place_attempts
+        if path == "/api/v2/mix/order/place-order":
+            place_attempts += 1
+            calls.append((method, path, params, body))
+            raise RuntimeError("Bitget Elite API error HTTP 400 40010: request timed out")
+        if path == "/api/v2/mix/order/detail":
+            calls.append((method, path, params, body))
+            assert params["clientOid"] == "utb-elite-1"
+            assert params["orderId"] is None
+            return {
+                "orderId": "recovered-order",
+                "clientOid": params["clientOid"],
+                "state": "filled",
+                "baseVolume": "0.1000",
+                "priceAvg": "2500.0",
+            }
+        return original_request(method, path, params=params, body=body)
+
+    monkeypatch.setattr(adapter, "_request", ambiguous_once)
+    result = adapter.market_order(
+        "ETH/USDT:USDT",
+        "buy",
+        0.1,
+        tp_price=2600.0,
+        sl_price=2400.0,
+    )
+
+    assert place_attempts == 1
+    assert result["clientOid"] == "utb-elite-1"
+    assert result["recovered_by_client_oid"] is True
+    assert len([call for call in calls if call[1] == "/api/v2/mix/order/place-plan-order"]) == 2
+
+
+def test_unresolved_ambiguous_elite_order_fails_without_duplicate_post(monkeypatch):
+    adapter, calls = _fake_adapter(monkeypatch, "one_way_mode")
+    ticks = iter((0.0, 1.0))
+    monkeypatch.setattr("universal_bot.adapters.bitget_elite.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("universal_bot.adapters.bitget_elite.time.sleep", lambda _: None)
+
+    def unresolved(method, path, *, params=None, body=None):
+        calls.append((method, path, params, body))
+        if path == "/api/v2/mix/order/place-order":
+            raise RuntimeError("Bitget Elite API error HTTP 400 40010: request timed out")
+        if path == "/api/v2/mix/order/detail":
+            return {}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", unresolved)
+    with pytest.raises(AmbiguousOrderResult) as caught:
+        adapter.market_order("ETH/USDT:USDT", "buy", 0.1)
+
+    assert caught.value.client_oid == "utb-elite-1"
+    assert len([call for call in calls if call[1] == "/api/v2/mix/order/place-order"]) == 1
+
+
+def test_close_fill_summary_prefers_fee_detail_over_duplicate_aggregate():
+    summary = BitgetEliteAdapter._summarize_close_fills(
+        [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": "close-1",
+                "clientOid": "utb-tp-1",
+                "side": "sell",
+                "createdTime": "2000",
+                "sizeQty": "0.4",
+                "price": "110",
+                "fee": "0.08",
+                "feeDetail": [{"fee": "-0.04"}],
+                "profit": "4",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "orderId": "close-1",
+                "clientOid": "utb-tp-1",
+                "side": "sell",
+                "createdTime": "2001",
+                "sizeQty": "0.6",
+                "price": "112",
+                "fee": "0.12",
+                "feeDetail": [{"fee": "-0.06"}],
+                "profit": "7.2",
+            },
+        ],
+        symbol_id="BTCUSDT",
+        position_side="LONG",
+        since_ms=1000,
+        source="test",
+    )
+
+    assert summary is not None
+    assert summary["qty"] == pytest.approx(1.0)
+    assert summary["price"] == pytest.approx(111.2)
+    assert summary["fee"] == pytest.approx(0.1)
+    assert summary["realized_pnl"] == pytest.approx(11.2)

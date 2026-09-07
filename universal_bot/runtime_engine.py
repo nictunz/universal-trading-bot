@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from universal_bot.discord_notifier import DiscordNotifier
+from universal_bot.adapters.bitget_elite import AmbiguousOrderResult
 from universal_bot.engine import TradingEngine as _BaseTradingEngine
 from universal_bot.models import Position
 
@@ -24,11 +24,9 @@ class TradingEngine(_BaseTradingEngine):
         self._active_tp_pct: float | None = None
         self._active_sl_pct: float | None = None
         self._event_no = 0
-        self.notifier = DiscordNotifier(
-            settings.discord_webhook_url,
-            enabled=bool(settings.discord_notifications_enabled),
-            timeout=float(settings.discord_timeout),
-        )
+        # Entry and exit messages share one notifier, so a close can emit only
+        # one Discord message even when the runtime wraps the base engine.
+        self.notifier = self.discord
 
     def _elite_live(self) -> bool:
         return (
@@ -110,6 +108,9 @@ class TradingEngine(_BaseTradingEngine):
         icon = "✅" if reason == "TP" else "🛑" if reason == "SL" else "📤"
         pnl = float(trade.get("pnl") or 0.0)
         pct = float(trade.get("pnl_percent") or 0.0)
+        metadata = dict(trade.get("metadata") or {})
+        source = str(metadata.get("fill_source") or "order-response")
+        quality = "거래소 체결내역" if metadata.get("fill_exact", True) else "체결조회 지연 · 보수적 기록"
         self.notifier.send_async(
             "\n".join(
                 [
@@ -118,9 +119,142 @@ class TradingEngine(_BaseTradingEngine):
                     f"청산가: {float(trade.get('exit_price') or 0):.6f}",
                     f"수량: {float(trade.get('qty') or 0):.8f}",
                     f"손익: {pnl:+.6f} USDT ({pct:+.3f}%)",
+                    f"체결확인: {quality} ({source})",
                 ]
             )
         )
+
+    def _notify_closed_trade(self, trade: dict) -> None:
+        self._notify_exit(trade)
+
+    @staticmethod
+    def _timestamp_ms(value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp() * 1000)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _iso_from_ms(value: int | float | None) -> str | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc).isoformat()
+        except (OverflowError, TypeError, ValueError):
+            return None
+
+    def _infer_external_exit_reason(self, fill: dict | None, exit_price: float) -> str:
+        raw = (fill or {}).get("raw") or []
+        text = " ".join(
+            str(row.get(key) or "").lower()
+            for row in raw
+            for key in ("clientOid", "side", "tradeSide", "delegateType", "orderSource", "planType")
+        )
+        if "utb-tp" in text or "take_profit" in text or "take-profit" in text or "stop_profit" in text:
+            return "TP"
+        if "utb-sl" in text or "stop_loss" in text or "stop-loss" in text:
+            return "SL"
+        targets = {
+            "TP": float(self.position.tp) if self.position.tp is not None else None,
+            "SL": float(self.position.sl) if self.position.sl is not None else None,
+        }
+        available = {key: value for key, value in targets.items() if value and value > 0}
+        if available and exit_price > 0:
+            return min(available, key=lambda key: abs(exit_price - float(available[key])))
+        return "EXCHANGE_EXIT"
+
+    def _record_exit_event(self, trade: dict) -> None:
+        metadata = trade.setdefault("metadata", {})
+        if metadata.get("runtime_event_recorded"):
+            return
+        self._record_runtime_event(
+            {
+                "event_time": trade.get("exit_time") or self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+                "event_type": "EXIT",
+                "entry_no": None,
+                "side": trade.get("side"),
+                "price": trade.get("exit_price"),
+                "qty": trade.get("qty"),
+                "position_size": 0.0,
+                "pnl": trade.get("pnl"),
+                "pnl_percent": trade.get("pnl_percent"),
+                "reason": trade.get("reason"),
+                "metadata": {
+                    "fill_source": metadata.get("fill_source"),
+                    "fill_exact": metadata.get("fill_exact"),
+                    "order_id": metadata.get("order_id"),
+                },
+            }
+        )
+        metadata["runtime_event_recorded"] = True
+
+    def _handle_external_flat(self, exchange_position: dict) -> bool:
+        """Synchronize a Bitget-side TP/SL fill without halting the strategy."""
+        if self.position.flat:
+            return True
+        side = str(self.position.side or "")
+        avg_entry = float(self.position.entry_price or 0.0)
+        since_ms = self._timestamp_ms(self.position_entry_time)
+        if since_ms is not None:
+            since_ms = max(0, since_ms - 60_000)
+
+        fill = None
+        if hasattr(self.adapter, "recent_close_fill"):
+            for attempt in range(5):
+                try:
+                    fill = self.adapter.recent_close_fill(
+                        self.settings.symbol,
+                        side,
+                        since_ms=since_ms,
+                    )
+                except Exception:
+                    fill = None
+                if fill:
+                    break
+                if attempt < 4:
+                    time.sleep(0.15)
+
+        exact = bool(fill and float(fill.get("price") or 0.0) > 0)
+        exit_price = float(fill.get("price") or 0.0) if fill else 0.0
+        # If fill history is briefly unavailable, synchronize safely and record
+        # zero PnL instead of inventing an exchange price. Metadata and Discord
+        # make the conservative fallback explicit.
+        if exit_price <= 0:
+            exit_price = avg_entry
+        reason = self._infer_external_exit_reason(fill, exit_price) if exact else "EXCHANGE_EXIT"
+        metadata = {
+            "fill_source": (fill or {}).get("source") or "fill-history-unavailable",
+            "fill_exact": exact,
+            "order_id": (fill or {}).get("order_id"),
+            "client_oid": (fill or {}).get("client_oid"),
+            "exchange_fill_qty": (fill or {}).get("qty"),
+        }
+        try:
+            self.adapter.cancel_protection(self.settings.symbol)
+        except Exception:
+            # The position is already flat; leftover bot-owned reduce-only plans
+            # are retried on later maintenance and must not corrupt state sync.
+            pass
+        trade = self._finalize_closed_trade(
+            exit_price,
+            reason,
+            exit_time=self._iso_from_ms((fill or {}).get("time_ms")),
+            fee=float((fill or {}).get("fee") or 0.0),
+            reported_pnl=(fill or {}).get("realized_pnl"),
+            metadata=metadata,
+        )
+        if trade is not None:
+            self._record_exit_event(trade)
+        self._live_entry_equity_basis = None
+        self._active_tp_pct = None
+        self._active_sl_pct = None
+        self.safety.protection_ok = True
+        return self.position.flat
 
     def _initialize_live(self) -> None:
         if not self.live or self._live_initialized:
@@ -182,17 +316,24 @@ class TradingEngine(_BaseTradingEngine):
             return avg * (1 + tp_pct / 100), avg * (1 - sl_pct / 100)
         return avg * (1 - tp_pct / 100), avg * (1 + sl_pct / 100)
 
-    def _position_after_fill(self, side: str, fallback_qty: float, fallback_notional: float) -> dict:
+    def _position_after_fill(
+        self,
+        side: str,
+        fallback_qty: float,
+        fallback_notional: float,
+        *,
+        minimum_size: float = 0.0,
+    ) -> dict:
         last = None
         for _ in range(7):
             last = self.adapter.position(self.settings.symbol)
             if (
                 last.get("side") == side
-                and float(last.get("size") or 0.0) > 0
+                and float(last.get("size") or 0.0) > float(minimum_size) + 1e-9
                 and float(last.get("entry_price") or 0.0) > 0
             ):
                 return last
-            time.sleep(0.2)
+            time.sleep(0.15)
         # Do not pretend an exchange position is verified. Return a marked
         # fallback only so the emergency-close path has a quantity to use.
         qty = max(0.0, float(fallback_qty))
@@ -205,6 +346,7 @@ class TradingEngine(_BaseTradingEngine):
         }
 
     def _flatten_full_position_after_protection_failure(self, side: str, total_qty: float) -> None:
+        ambiguous: AmbiguousOrderResult | None = None
         try:
             close_side = "sell" if side == "LONG" else "buy"
             self.adapter.market_order(
@@ -213,19 +355,37 @@ class TradingEngine(_BaseTradingEngine):
                 float(total_qty),
                 reduce_only=True,
             )
-            self.adapter.cancel_protection(self.settings.symbol)
-            exchange_pos = self.adapter.position(self.settings.symbol)
-            if exchange_pos.get("side") == "FLAT" and float(exchange_pos.get("size") or 0.0) <= 1e-9:
-                self.position = Position()
-                self.entry_notional = 0.0
-                self.position_entry_time = None
-                self._live_entry_equity_basis = None
-                self._active_tp_pct = None
-                self._active_sl_pct = None
-            else:
-                self.safety.fail("PROTECTION_REPLACE_FLATTEN_DID_NOT_CLOSE_POSITION")
+        except AmbiguousOrderResult as exc:
+            # The close may already have reached Bitget. Never send a second
+            # close order; resolve it from the position state below.
+            ambiguous = exc
         except Exception as exc:
             self.safety.fail(f"PROTECTION_REPLACE_FLATTEN_FAILED: {type(exc).__name__}: {exc}")
+            return
+
+        exchange_pos: dict = {}
+        for attempt in range(7):
+            try:
+                exchange_pos = self.adapter.position(self.settings.symbol)
+            except Exception:
+                exchange_pos = {}
+            if (
+                exchange_pos.get("side") == "FLAT"
+                and float(exchange_pos.get("size") or 0.0) <= 1e-9
+            ):
+                # This also journals the emergency close and sends exactly one
+                # exit notification when an internal position was established.
+                self._handle_external_flat(exchange_pos)
+                return
+            if attempt < 6:
+                time.sleep(0.15)
+
+        if ambiguous is not None:
+            self.safety.fail(
+                f"PROTECTION_REPLACE_FLATTEN_OUTCOME_UNKNOWN clientOid={ambiguous.client_oid}"
+            )
+        else:
+            self.safety.fail("PROTECTION_REPLACE_FLATTEN_DID_NOT_CLOSE_POSITION")
 
     def _open(self, side: str, price: float, tp_pct: float, sl_pct: float) -> None:
         if not self._elite_live():
@@ -254,6 +414,8 @@ class TradingEngine(_BaseTradingEngine):
             return
 
         before_entries = int(self.position.entries)
+        before_size = abs(float(self.position.size))
+        before_notional = float(self.entry_notional)
         if self.position.flat:
             self._live_entry_equity_basis = available
             self._active_tp_pct = float(tp_pct)
@@ -287,13 +449,50 @@ class TradingEngine(_BaseTradingEngine):
             return
 
         order_side = "buy" if side == "LONG" else "sell"
-        order = self.adapter.market_order(
-            self.settings.symbol,
-            order_side,
-            amount,
-            tp_price=temp_tp,
-            sl_price=temp_sl,
-        )
+        recovered_exchange_pos = None
+        try:
+            order = self.adapter.market_order(
+                self.settings.symbol,
+                order_side,
+                amount,
+                tp_price=temp_tp,
+                sl_price=temp_sl,
+            )
+        except AmbiguousOrderResult as exc:
+            # The exchange may have filled the request despite a lost HTTP
+            # response. Detect the position delta; never submit a second entry.
+            recovered_exchange_pos = self._position_after_fill(
+                side,
+                before_size + amount,
+                before_notional + intended_notional,
+                minimum_size=before_size,
+            )
+            recovered_size = float(recovered_exchange_pos.get("size") or 0.0)
+            if (
+                recovered_exchange_pos.get("side") != side
+                or recovered_size <= before_size + 1e-9
+                or recovered_exchange_pos.get("verified", True) is False
+            ):
+                self.safety.fail(f"ENTRY_ORDER_OUTCOME_UNKNOWN clientOid={exc.client_oid}")
+                self._notify_live(
+                    "🚨 진입 주문 결과 확인 불가",
+                    심볼=self.settings.symbol,
+                    clientOid=exc.client_oid,
+                    안내="동일 주문을 재전송하지 않고 안전중지했습니다. Bitget 주문/포지션을 확인하세요.",
+                )
+                return
+            delta_qty = recovered_size - before_size
+            recovered_avg = float(recovered_exchange_pos.get("entry_price") or price)
+            delta_notional = recovered_size * recovered_avg - before_notional
+            recovered_fill_price = delta_notional / delta_qty if delta_qty > 0 and delta_notional > 0 else recovered_avg
+            order = {
+                "id": exc.client_oid,
+                "clientOid": exc.client_oid,
+                "filled": delta_qty,
+                "average": recovered_fill_price,
+                "status": "position-recovered",
+                "recovered_by_position": True,
+            }
         if not order:
             self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
             return
@@ -321,7 +520,12 @@ class TradingEngine(_BaseTradingEngine):
             self.entry_notional += actual_amount * actual_price
 
         fallback_qty = abs(float(self.position.size))
-        exchange_pos = self._position_after_fill(side, fallback_qty, self.entry_notional)
+        exchange_pos = recovered_exchange_pos or self._position_after_fill(
+            side,
+            fallback_qty,
+            self.entry_notional,
+            minimum_size=before_size,
+        )
         verified_exchange_position = (
             exchange_pos.get("side") == side
             and float(exchange_pos.get("size") or 0.0) > 0
@@ -335,6 +539,15 @@ class TradingEngine(_BaseTradingEngine):
             self._flatten_full_position_after_protection_failure(side, max(total_qty, fallback_qty))
             self.safety.fail("ENTRY_FILLED_BUT_EXCHANGE_POSITION_NOT_VERIFIED")
             return
+
+        # Use Bitget's final position delta for the entry journal/notification,
+        # even when the immediate order response did not yet contain fill data.
+        exchange_delta_qty = total_qty - before_size
+        exchange_delta_notional = total_qty * avg_entry - before_notional
+        if exchange_delta_qty > 1e-9:
+            actual_amount = exchange_delta_qty
+            if exchange_delta_notional > 0:
+                actual_price = exchange_delta_notional / exchange_delta_qty
 
         full_tp, full_sl = self._prices_from_average(
             side,
@@ -385,24 +598,27 @@ class TradingEngine(_BaseTradingEngine):
 
     def _close(self, price: float, reason: str) -> None:
         before_trades = len(self.trade_log)
-        super()._close(price, reason)
+        try:
+            super()._close(price, reason)
+        except AmbiguousOrderResult as exc:
+            exchange_pos = None
+            for _ in range(7):
+                exchange_pos = self.adapter.position(self.settings.symbol)
+                if exchange_pos.get("side") == "FLAT" and float(exchange_pos.get("size") or 0.0) <= 1e-9:
+                    self._handle_external_flat(exchange_pos)
+                    break
+                time.sleep(0.15)
+            else:
+                self.safety.fail(f"EXIT_ORDER_OUTCOME_UNKNOWN clientOid={exc.client_oid}")
+                self._notify_live(
+                    "🚨 청산 주문 결과 확인 불가",
+                    심볼=self.settings.symbol,
+                    clientOid=exc.client_oid,
+                    안내="중복 청산을 보내지 않고 안전중지했습니다. Bitget 포지션을 확인하세요.",
+                )
         if len(self.trade_log) > before_trades:
             trade = self.trade_log[-1]
-            self._record_runtime_event(
-                {
-                    "event_time": trade.get("exit_time") or self.current_bar_time or datetime.now(timezone.utc).isoformat(),
-                    "event_type": "EXIT",
-                    "entry_no": None,
-                    "side": trade.get("side"),
-                    "price": trade.get("exit_price"),
-                    "qty": trade.get("qty"),
-                    "position_size": 0.0,
-                    "pnl": trade.get("pnl"),
-                    "pnl_percent": trade.get("pnl_percent"),
-                    "reason": trade.get("reason") or reason,
-                }
-            )
-            self._notify_exit(trade)
+            self._record_exit_event(trade)
         if self.position.flat:
             self._live_entry_equity_basis = None
             self._active_tp_pct = None

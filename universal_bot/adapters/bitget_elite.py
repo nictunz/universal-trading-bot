@@ -6,13 +6,32 @@ import hmac
 import json
 import time
 import uuid
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
 
 from universal_bot.adapters.hybrid_ccxt_adapter import HybridCCXTAdapter
+
+
+class AmbiguousOrderResult(RuntimeError):
+    """The order request may have reached Bitget but no final reply was received."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        client_oid: str,
+        side: str,
+        requested_qty: float,
+        reduce_only: bool,
+    ) -> None:
+        super().__init__(message)
+        self.client_oid = client_oid
+        self.side = side
+        self.requested_qty = float(requested_qty)
+        self.reduce_only = bool(reduce_only)
 
 
 class BitgetEliteAdapter(HybridCCXTAdapter):
@@ -357,7 +376,26 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         info = self.account_info(symbol)
         return str(info.get("posMode") or "one_way_mode").lower()
 
-    def _order_detail(self, symbol: str, order_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _is_ambiguous_order_error(exc: Exception) -> bool:
+        if isinstance(exc, requests.RequestException):
+            return True
+        text = str(exc).lower()
+        return (
+            "non-json response" in text
+            or "request timed out" in text
+            or any(f" {code}:" in text for code in ("40010", "40725", "45001"))
+        )
+
+    def _order_detail(
+        self,
+        symbol: str,
+        order_id: str | None = None,
+        *,
+        client_oid: str | None = None,
+    ) -> dict[str, Any]:
+        if not order_id and not client_oid:
+            raise ValueError("order_id or client_oid is required")
         data = self._request(
             "GET",
             "/api/v2/mix/order/detail",
@@ -365,9 +403,153 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 "symbol": self._symbol_id(symbol),
                 "productType": self.PRODUCT_TYPE,
                 "orderId": order_id,
+                "clientOid": client_oid,
             },
         )
         return dict(data or {})
+
+    @staticmethod
+    def _fill_number(row: dict[str, Any], *names: str) -> float:
+        for name in names:
+            value = row.get(name)
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    @classmethod
+    def _summarize_close_fills(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        symbol_id: str,
+        position_side: str,
+        since_ms: int,
+        source: str,
+    ) -> dict[str, Any] | None:
+        position_side = str(position_side).upper()
+        expected_side = "sell" if position_side == "LONG" else "buy"
+        matched: list[dict[str, Any]] = []
+        for raw in rows:
+            row = dict(raw)
+            row_symbol = str(row.get("symbol") or symbol_id).upper()
+            if row_symbol and row_symbol != symbol_id.upper():
+                continue
+            created = int(cls._fill_number(row, "createdTime", "cTime", "ctime", "fillTime", "uTime"))
+            if created and created < since_ms:
+                continue
+            side = str(row.get("side") or "").lower()
+            trade_side = str(row.get("tradeSide") or "").lower()
+            pos_side = str(row.get("posSide") or row.get("holdSide") or "").lower()
+            closes_position = (
+                side == expected_side
+                or f"close_{position_side.lower()}" in side
+                or f"close-{position_side.lower()}" in side
+                or (trade_side == "close" and pos_side == position_side.lower())
+            )
+            if closes_position:
+                matched.append(row)
+        if not matched:
+            return None
+
+        matched.sort(
+            key=lambda row: cls._fill_number(row, "createdTime", "cTime", "ctime", "fillTime", "uTime"),
+            reverse=True,
+        )
+        latest = matched[0]
+        order_id = str(latest.get("orderId") or "")
+        client_oid = str(latest.get("clientOid") or "")
+        if order_id:
+            group = [row for row in matched if str(row.get("orderId") or "") == order_id]
+        elif client_oid:
+            group = [row for row in matched if str(row.get("clientOid") or "") == client_oid]
+        else:
+            group = [latest]
+
+        total_qty = 0.0
+        total_value = 0.0
+        fee = 0.0
+        reported_pnl = 0.0
+        has_reported_pnl = False
+        for row in group:
+            qty = abs(cls._fill_number(row, "execQty", "baseVolume", "sizeQty", "fillQty", "fillAmount", "size"))
+            price = cls._fill_number(row, "execPrice", "fillPrice", "priceAvg", "price")
+            if qty > 0 and price > 0:
+                total_qty += qty
+                total_value += qty * price
+            # UTA can return both the legacy aggregate `fee` and the detailed
+            # `feeDetail` list for the same fill. Prefer the detailed values so
+            # the journal does not charge the closing fee twice.
+            fee_details = row.get("feeDetail") or []
+            if isinstance(fee_details, dict):
+                fee_details = [fee_details]
+            if fee_details:
+                fee += sum(
+                    abs(cls._fill_number(dict(detail), "fee"))
+                    for detail in fee_details
+                    if isinstance(detail, dict)
+                )
+            else:
+                fee += abs(cls._fill_number(row, "fee"))
+            for name in ("execPnl", "profit", "totalProfits"):
+                if row.get(name) not in (None, ""):
+                    reported_pnl += cls._fill_number(row, name)
+                    has_reported_pnl = True
+                    break
+        if total_qty <= 0 or total_value <= 0:
+            return None
+        time_ms = int(
+            max(
+                cls._fill_number(row, "createdTime", "cTime", "ctime", "fillTime", "uTime")
+                for row in group
+            )
+        )
+        return {
+            "price": total_value / total_qty,
+            "qty": total_qty,
+            "fee": fee,
+            "realized_pnl": reported_pnl if has_reported_pnl else None,
+            "time_ms": time_ms or None,
+            "order_id": order_id or None,
+            "client_oid": client_oid or None,
+            "source": source,
+            "raw": group,
+        }
+
+    def recent_close_fill(
+        self,
+        symbol: str,
+        position_side: str,
+        *,
+        since_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        now_ms = int(time.time() * 1000)
+        start_ms = max(int(since_ms or now_ms - 86_400_000), now_ms - 30 * 86_400_000)
+        data = self._request(
+            "GET",
+            "/api/v2/mix/order/fills",
+            params={
+                "symbol": self._symbol_id(symbol),
+                "productType": self.PRODUCT_TYPE,
+                "startTime": str(start_ms),
+                "endTime": str(now_ms),
+                "limit": "100",
+            },
+        ) or {}
+        if isinstance(data, dict):
+            rows = data.get("fillList") or data.get("list") or data.get("entrustedList") or []
+        else:
+            rows = data
+        return self._summarize_close_fills(
+            [dict(row) for row in (rows or [])],
+            symbol_id=self._symbol_id(symbol),
+            position_side=position_side,
+            since_ms=start_ms,
+            source="bitget-classic-v2-fills",
+        )
 
     def _place_protection(
         self,
@@ -432,6 +614,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         mode = self._position_mode(symbol)
         position_side = "long" if side == "buy" else "short"
 
+        client_oid = self._client_oid("utb-elite")
         body: dict[str, Any] = {
             "symbol": sid,
             "productType": self.PRODUCT_TYPE,
@@ -439,7 +622,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "marginMode": "crossed",
             "orderType": "market",
             "size": qty,
-            "clientOid": self._client_oid("utb-elite"),
+            "clientOid": client_oid,
         }
 
         if mode == "hedge_mode":
@@ -456,24 +639,42 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             body["side"] = side
             body["reduceOnly"] = "yes" if reduce_only else "no"
 
-        data = self._request("POST", "/api/v2/mix/order/place-order", body=body) or {}
-        order_id = str(data.get("orderId") or "")
         detail: dict[str, Any] = {}
-        if order_id:
-            # First check immediately, then use short bounded retries. This
-            # preserves confirmed fill sizing while reducing TP/SL placement lag.
-            deadline = time.monotonic() + 0.65
+        recovered = False
+        try:
+            data = self._request("POST", "/api/v2/mix/order/place-order", body=body) or {}
+        except Exception as exc:
+            if not self._is_ambiguous_order_error(exc):
+                raise
+            # Never retry placement with a new ID. Bitget may already have
+            # accepted it; resolve the original request using its clientOid.
+            deadline = time.monotonic() + 0.8
             while True:
                 try:
-                    detail = self._order_detail(symbol, order_id)
-                    if str(detail.get("state") or "").lower() == "filled":
+                    detail = self._order_detail(symbol, client_oid=client_oid)
+                    if detail:
+                        recovered = True
                         break
                 except Exception:
                     pass
                 if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.05)
+                    raise AmbiguousOrderResult(
+                        f"Bitget order outcome is unknown after clientOid recovery: {client_oid}",
+                        client_oid=client_oid,
+                        side=side,
+                        requested_qty=float(qty),
+                        reduce_only=reduce_only,
+                    ) from exc
+                time.sleep(0.1)
+            data = {
+                "orderId": detail.get("orderId"),
+                "clientOid": detail.get("clientOid") or client_oid,
+            }
+        order_id = str(data.get("orderId") or "")
 
+        # Place temporary protection as soon as Bitget acknowledges the entry.
+        # The runtime later replaces it with an exact full-position pair based
+        # on the exchange average fill.
         protection_data: list[dict[str, Any]] = []
         protection_error = None
         if not reduce_only and (kwargs.get("tp_price") is not None or kwargs.get("sl_price") is not None):
@@ -490,11 +691,26 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 # immediately and emergency-flattens when protection is absent.
                 protection_error = f"{type(exc).__name__}: {exc}"
 
+        if order_id and not detail:
+            # First check immediately, then use short bounded retries. This
+            # preserves confirmed fill sizing while reducing TP/SL placement lag.
+            deadline = time.monotonic() + 0.65
+            while True:
+                try:
+                    detail = self._order_detail(symbol, order_id)
+                    if str(detail.get("state") or "").lower() == "filled":
+                        break
+                except Exception:
+                    pass
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+
         filled = float(detail.get("baseVolume") or detail.get("size") or qty)
         average = float(detail.get("priceAvg") or 0.0) or None
         return {
             "id": order_id or data.get("clientOid"),
-            "clientOid": data.get("clientOid"),
+            "clientOid": data.get("clientOid") or client_oid,
             "amount": filled,
             "filled": filled,
             "average": average,
@@ -502,6 +718,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "status": detail.get("state") or "accepted",
             "protection": protection_data,
             "protection_error": protection_error,
+            "recovered_by_client_oid": recovered,
             "raw": detail or data,
         }
 

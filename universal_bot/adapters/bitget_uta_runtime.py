@@ -4,7 +4,10 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from universal_bot.adapters.bitget_elite_runtime import BitgetEliteAdapter as _ClassicRuntimeAdapter
+from universal_bot.adapters.bitget_elite import AmbiguousOrderResult
+from universal_bot.adapters.bitget_elite_runtime import (
+    BitgetEliteAdapter as _ClassicRuntimeAdapter,
+)
 
 
 class BitgetUtaAdapter(_ClassicRuntimeAdapter):
@@ -221,9 +224,49 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
             "raw": row,
         }
 
-    def _order_detail(self, symbol: str, order_id: str) -> dict[str, Any]:
-        data = self._request("GET", "/api/v3/trade/order-info", params={"orderId": order_id})
+    def _order_detail(
+        self,
+        symbol: str,
+        order_id: str | None = None,
+        *,
+        client_oid: str | None = None,
+    ) -> dict[str, Any]:
+        if not order_id and not client_oid:
+            raise ValueError("order_id or client_oid is required")
+        data = self._request(
+            "GET",
+            "/api/v3/trade/order-info",
+            params={"orderId": order_id, "clientOid": client_oid},
+        )
         return dict(data or {})
+
+    def recent_close_fill(
+        self,
+        symbol: str,
+        position_side: str,
+        *,
+        since_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        now_ms = int(time.time() * 1000)
+        start_ms = max(int(since_ms or now_ms - 86_400_000), now_ms - 30 * 86_400_000)
+        data = self._request(
+            "GET",
+            "/api/v3/trade/fills",
+            params={
+                "category": self.CATEGORY,
+                "startTime": str(start_ms),
+                "endTime": str(now_ms),
+                "limit": "100",
+            },
+        ) or {}
+        rows = data.get("list") if isinstance(data, dict) else data
+        return self._summarize_close_fills(
+            [dict(row) for row in (rows or [])],
+            symbol_id=self._symbol_id(symbol),
+            position_side=position_side,
+            since_ms=start_ms,
+            source="bitget-uta-v3-fills",
+        )
 
     def _place_protection(
         self,
@@ -284,13 +327,14 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
         qty = self._qty(symbol, amount)
         mode = self._position_mode(symbol)
         position_side = "long" if side == "buy" else "short"
+        client_oid = self._client_oid("utb-uta")
         body: dict[str, Any] = {
             "category": self.CATEGORY,
             "symbol": sid,
             "orderType": "market",
             "qty": qty,
             "side": side,
-            "clientOid": self._client_oid("utb-uta"),
+            "clientOid": client_oid,
         }
         if mode == "hedge_mode":
             if reduce_only:
@@ -299,18 +343,36 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
         elif reduce_only:
             body["reduceOnly"] = "yes"
 
-        data = self._request("POST", "/api/v3/trade/place-order", body=body) or {}
-        order_id = str(data.get("orderId") or "")
         detail: dict[str, Any] = {}
-        if order_id:
-            for _ in range(6):
+        recovered = False
+        try:
+            data = self._request("POST", "/api/v3/trade/place-order", body=body) or {}
+        except Exception as exc:
+            if not self._is_ambiguous_order_error(exc):
+                raise
+            deadline = time.monotonic() + 0.8
+            while True:
                 try:
-                    detail = self._order_detail(symbol, order_id)
-                    if str(detail.get("orderStatus") or "").lower() == "filled":
+                    detail = self._order_detail(symbol, client_oid=client_oid)
+                    if detail:
+                        recovered = True
                         break
                 except Exception:
                     pass
-                time.sleep(0.2)
+                if time.monotonic() >= deadline:
+                    raise AmbiguousOrderResult(
+                        f"Bitget UTA order outcome is unknown after clientOid recovery: {client_oid}",
+                        client_oid=client_oid,
+                        side=side,
+                        requested_qty=float(qty),
+                        reduce_only=reduce_only,
+                    ) from exc
+                time.sleep(0.1)
+            data = {
+                "orderId": detail.get("orderId"),
+                "clientOid": detail.get("clientOid") or client_oid,
+            }
+        order_id = str(data.get("orderId") or "")
 
         protection_data: list[dict[str, Any]] = []
         protection_error = None
@@ -326,11 +388,24 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
             except Exception as exc:
                 protection_error = f"{type(exc).__name__}: {exc}"
 
+        if order_id and not detail:
+            deadline = time.monotonic() + 0.65
+            while True:
+                try:
+                    detail = self._order_detail(symbol, order_id)
+                    if str(detail.get("orderStatus") or "").lower() == "filled":
+                        break
+                except Exception:
+                    pass
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+
         filled = float(detail.get("cumExecQty") or detail.get("qty") or qty)
         average = float(detail.get("avgPrice") or 0.0) or None
         return {
             "id": order_id or data.get("clientOid"),
-            "clientOid": data.get("clientOid"),
+            "clientOid": data.get("clientOid") or client_oid,
             "amount": filled,
             "filled": filled,
             "average": average,
@@ -338,6 +413,7 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
             "status": detail.get("orderStatus") or "accepted",
             "protection": protection_data,
             "protection_error": protection_error,
+            "recovered_by_client_oid": recovered,
             "raw": detail or data,
         }
 

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import math
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
 
 from universal_bot.config import Settings
 from universal_bot.discord_notifier import DiscordNotifier
+from universal_bot.live_safety import LiveSafety
 from universal_bot.models import Position
 from universal_bot.paper import normalize_exchange_volume
 from universal_bot.strategy.v15 import UniversalV15Strategy
-from universal_bot.live_safety import LiveSafety
 from universal_bot.trade_history import TradeHistoryStore
 
 
@@ -67,6 +68,7 @@ class TradingEngine:
             timeout=settings.discord_timeout,
         )
         self._external_flat_notified = False
+        self._last_protection_status: dict = {"ok": True, "count": 0, "orders": []}
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.trade_history_run_id = f"{settings.bot_mode.upper()}-{settings.symbol}-{stamp}"
 
@@ -112,6 +114,70 @@ class TradingEngine:
         except Exception as exc:
             self.safety.fail(f"EMERGENCY_FLATTEN_FAILED: {type(exc).__name__}: {exc}")
 
+    def _restore_protection_prices(self, protection: dict) -> None:
+        """Restore TP/SL from exchange-owned plans after a process restart."""
+        if self.position.flat:
+            return
+        entry = float(self.position.entry_price or 0.0)
+        found: dict[str, float] = {}
+        unknown: list[float] = []
+        for raw in protection.get("orders") or []:
+            order = dict(raw)
+            text = str(order.get("clientOid") or "").lower()
+            leg = str(order.get("leg") or "").lower()
+            value = order.get("triggerPrice")
+            if leg == "tp":
+                value = value or order.get("takeProfit")
+            elif leg == "sl":
+                value = value or order.get("stopLoss")
+            try:
+                price = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            if leg in {"tp", "sl"}:
+                found[leg] = price
+            elif text.startswith("utb-tp-"):
+                found["tp"] = price
+            elif text.startswith("utb-sl-"):
+                found["sl"] = price
+            else:
+                unknown.append(price)
+
+        # Older pending-order responses do not always retain clientOid. Infer
+        # the two legs from their position relative to the exchange entry.
+        for price in unknown:
+            if self.position.side == "LONG":
+                found.setdefault("tp" if price > entry else "sl", price)
+            else:
+                found.setdefault("tp" if price < entry else "sl", price)
+        if found.get("tp"):
+            self.position.tp = found["tp"]
+        if found.get("sl"):
+            self.position.sl = found["sl"]
+
+    def _handle_external_flat(self, exchange_position: dict) -> bool:
+        """Hook for runtimes that can journal an exchange-side TP/SL fill."""
+        return False
+
+    def _confirm_live_flat(self, attempts: int = 7, delay: float = 0.15) -> dict:
+        """Confirm a close without removing protection from a still-open position."""
+        exchange_pos: dict = {}
+        for attempt in range(max(1, int(attempts))):
+            try:
+                exchange_pos = self.adapter.position(self.settings.symbol)
+            except Exception:
+                exchange_pos = {}
+            if (
+                exchange_pos.get("side") == "FLAT"
+                and float(exchange_pos.get("size") or 0.0) <= 1e-9
+            ):
+                return exchange_pos
+            if attempt + 1 < attempts:
+                time.sleep(max(0.0, float(delay)))
+        return exchange_pos
+
     def _initialize_live(self) -> None:
         if not self.live or self._live_initialized:
             return
@@ -130,8 +196,15 @@ class TradingEngine:
                 self.position_entry_time = datetime.now(timezone.utc).isoformat()
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
-            protection = self.adapter.protection_status(self.settings.symbol)
-            self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
+            if self.position.flat:
+                protection = {"ok": True, "count": 0, "orders": [], "skipped": "flat"}
+                self.safety.protection_ok = True
+            else:
+                protection = self.adapter.protection_status(self.settings.symbol)
+                self.safety.protection_ok = bool(protection.get("ok"))
+                if self.safety.protection_ok:
+                    self._restore_protection_prices(protection)
+            self._last_protection_status = protection
             if not self.position.flat and self.settings.require_exchange_protection and not self.safety.protection_ok:
                 self.safety.fail("EXISTING_POSITION_HAS_NO_VERIFIED_PROTECTION")
                 return
@@ -145,7 +218,15 @@ class TradingEngine:
         try:
             exchange_pos = self.adapter.position(self.settings.symbol)
             if not self.position.flat and exchange_pos.get("side") == "FLAT":
-                if not self._external_flat_notified:
+                # A single eventually-consistent FLAT response must not cancel
+                # valid protection or create a false close journal entry.
+                confirmed = self.adapter.position(self.settings.symbol)
+                if confirmed.get("side") != "FLAT" or float(confirmed.get("size") or 0.0) > 1e-9:
+                    exchange_pos = confirmed
+            if not self.position.flat and exchange_pos.get("side") == "FLAT":
+                if self._handle_external_flat(exchange_pos):
+                    exchange_pos = {"side": "FLAT", "size": 0.0, "entry_price": 0.0}
+                elif not self._external_flat_notified:
                     self._notify_live(
                         "🔔 Bitget TP/SL 청산 감지",
                         심볼=self.settings.symbol,
@@ -158,8 +239,17 @@ class TradingEngine:
             if not self.safety.reconcile(self._internal_position_dict(), exchange_pos):
                 return
             self.safety.clear_error()
-            protection = self.adapter.protection_status(self.settings.symbol)
-            self.safety.protection_ok = bool(protection.get("ok")) if not self.position.flat else True
+            if self.position.flat:
+                # No position means there is nothing to protect. Avoid ten
+                # needless plan-order calls on every two-second heartbeat.
+                protection = {"ok": True, "count": 0, "orders": [], "skipped": "flat"}
+                self.safety.protection_ok = True
+            else:
+                protection = self.adapter.protection_status(self.settings.symbol)
+                self.safety.protection_ok = bool(protection.get("ok"))
+                if self.safety.protection_ok:
+                    self._restore_protection_prices(protection)
+            self._last_protection_status = protection
             if not self.position.flat and self.settings.require_exchange_protection and not self.safety.protection_ok:
                 self.safety.fail("POSITION_LOST_EXCHANGE_PROTECTION")
         except Exception as exc:
@@ -229,22 +319,43 @@ class TradingEngine:
         avg_entry = self.entry_notional / qty if qty and self.entry_notional else self.position.entry_price
         return (price - avg_entry) * qty if self.position.side == "LONG" else (avg_entry - price) * qty
 
-    def _close(self, price: float, reason: str) -> None:
+    def _notify_closed_trade(self, trade: dict) -> None:
+        self._notify_live(
+            "✅ 실거래 청산 체결",
+            심볼=self.settings.symbol,
+            방향=trade.get("side"),
+            진입가=f"{float(trade.get('avg_entry_price') or 0.0):.4f}",
+            청산가=f"{float(trade.get('exit_price') or 0.0):.4f}",
+            수량=f"{float(trade.get('qty') or 0.0):.8f}",
+            손익=f"{float(trade.get('pnl') or 0.0):.2f} USDT",
+            수익률=f"{float(trade.get('pnl_percent') or 0.0):.3f}%",
+            사유=trade.get("reason"),
+        )
+
+    def _finalize_closed_trade(
+        self,
+        exit_price: float,
+        reason: str,
+        *,
+        exit_time: str | None = None,
+        fee: float = 0.0,
+        reported_pnl: float | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
         if self.position.flat or self.position.entry_price is None:
-            return
+            return None
         qty = abs(self.position.size)
         side = self.position.side
-        initial_entry = self.position.entry_price
+        initial_entry = float(self.position.entry_price)
         avg_entry = self.entry_notional / qty if qty and self.entry_notional else initial_entry
-        exit_price = price
-        if self.live:
-            order = self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
-            if not order:
-                self.safety.fail("EXIT_ORDER_EMPTY_RESPONSE")
-                return
-            exit_price = float(order.get("average") or order.get("price") or price)
-            self.adapter.cancel_protection(self.settings.symbol)
-        pnl = (exit_price - avg_entry) * qty if side == "LONG" else (avg_entry - exit_price) * qty
+        calculated_gross = (
+            (float(exit_price) - avg_entry) * qty
+            if side == "LONG"
+            else (avg_entry - float(exit_price)) * qty
+        )
+        gross_pnl = float(reported_pnl) if reported_pnl is not None and math.isfinite(float(reported_pnl)) else calculated_gross
+        cost = abs(float(fee or 0.0))
+        pnl = gross_pnl - cost
         self.realized_pnl += pnl
         self.closed_trades += 1
         if pnl >= 0:
@@ -253,13 +364,21 @@ class TradingEngine:
         else:
             self.gross_loss += abs(pnl)
         trade = {
-            "trade": self.closed_trades, "side": side,
+            "trade": self.closed_trades,
+            "side": side,
             "entry_time": self.position_entry_time,
-            "exit_time": self.current_bar_time or datetime.now(timezone.utc).isoformat(),
-            "entry_price": initial_entry, "avg_entry_price": avg_entry, "exit_price": exit_price,
-            "qty": qty, "gross_pnl": pnl, "estimated_cost": 0.0, "pnl": pnl,
+            "exit_time": exit_time or self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+            "entry_price": initial_entry,
+            "avg_entry_price": avg_entry,
+            "exit_price": float(exit_price),
+            "qty": qty,
+            "gross_pnl": gross_pnl,
+            "estimated_cost": cost,
+            "pnl": pnl,
             "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0,
-            "reason": reason, "bar": self.bar_number,
+            "reason": reason,
+            "bar": self.bar_number,
+            "metadata": dict(metadata or {}),
         }
         self.trade_log.append(trade)
         try:
@@ -280,8 +399,25 @@ class TradingEngine:
         self.entry_notional = 0.0
         self.position_entry_time = None
         self.last_exit_bar = self.bar_number
+        self._external_flat_notified = False
         if self.live:
-            exchange_pos = self.adapter.position(self.settings.symbol)
+            self._notify_closed_trade(trade)
+        return trade
+
+    def _close(self, price: float, reason: str) -> None:
+        if self.position.flat or self.position.entry_price is None:
+            return
+        qty = abs(self.position.size)
+        side = self.position.side
+        exit_price = price
+        if self.live:
+            order = self.adapter.market_order(self.settings.symbol, "sell" if side == "LONG" else "buy", qty, reduce_only=True)
+            if not order:
+                self.safety.fail("EXIT_ORDER_EMPTY_RESPONSE")
+                return
+            exit_price = float(order.get("average") or order.get("price") or price)
+        if self.live:
+            exchange_pos = self._confirm_live_flat()
             if exchange_pos.get("side") != "FLAT" or float(exchange_pos.get("size") or 0) > 1e-9:
                 self.safety.fail("EXIT_ORDER_DID_NOT_FLATTEN_POSITION")
                 self._notify_live(
@@ -292,18 +428,11 @@ class TradingEngine:
                     사유=reason,
                     안내="거래소 포지션이 FLAT이 아니므로 서버가 안전중지되었습니다.",
                 )
-            else:
-                self._notify_live(
-                    "✅ 실거래 청산 체결",
-                    심볼=self.settings.symbol,
-                    방향=side,
-                    진입가=f"{avg_entry:.4f}",
-                    청산가=f"{exit_price:.4f}",
-                    수량=f"{qty:.8f}",
-                    손익=f"{pnl:.2f} USDT",
-                    수익률=f"{trade['pnl_percent']:.3f}%",
-                    사유=reason,
-                )
+                return
+            # Only remove leftover plans after the exchange confirms FLAT. If a
+            # market close is delayed or partial, its existing TP/SL stays live.
+            self.adapter.cancel_protection(self.settings.symbol)
+        self._finalize_closed_trade(exit_price, reason)
 
     def _normalized_live_volume(self, df) -> pd.Series | None:
         if not (self.settings.use_four_crypto_exchanges and self.adapter.asset_class == "crypto"):
@@ -344,14 +473,16 @@ class TradingEngine:
         self.last_processed_timestamp = bar_timestamp
         self.current_bar_time = bar_timestamp.isoformat() if hasattr(bar_timestamp, "isoformat") else str(bar_timestamp)
         self.bar_number += 1
-        bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
-        bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
         if self.live:
             self._initialize_live()
             self._reconcile_live()
             if self.safety.halted:
                 return self._halted_state(df)
 
+        # Reconciliation may have just detected an exchange-side TP/SL. Compute
+        # cooldowns afterwards so that close bar is bar 0 and cannot re-enter.
+        bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
+        bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
         normalized_volume = self._normalized_live_volume(df) if precomputed is None else None
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
@@ -363,7 +494,10 @@ class TradingEngine:
             if self.safety.stale(datetime.now(timezone.utc), effective_stale_seconds(self.settings.timeframe, self.settings.stale_data_seconds)):
                 self.safety.fail("STALE_MARKET_DATA")
                 return self._halted_state(df)
-        if not self.position.flat:
+        # LIVE exits are owned by Bitget's last-traded-price market TP/SL.
+        # Evaluating a completed candle here would be slower and could submit a
+        # second close order after an exchange-side protection already fired.
+        if not self.live and not self.position.flat and self.position.tp is not None and self.position.sl is not None:
             hit_tp = (self.position.side == "LONG" and price >= self.position.tp) or (self.position.side == "SHORT" and price <= self.position.tp)
             hit_sl = (self.position.side == "LONG" and price <= self.position.sl) or (self.position.side == "SHORT" and price >= self.position.sl)
             if hit_tp or hit_sl:

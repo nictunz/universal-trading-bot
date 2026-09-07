@@ -99,8 +99,55 @@ def test_uta_tpsl_is_single_strategy_with_two_logical_legs(monkeypatch):
     assert captured["tpslMode"] == "partial"
     assert captured["takeProfit"] == "101000.0"
     assert captured["stopLoss"] == "99000.0"
+    assert captured["tpTriggerBy"] == "market"
+    assert captured["slTriggerBy"] == "market"
+    assert captured["tpOrderType"] == "market"
+    assert captured["slOrderType"] == "market"
     assert captured["reduceOnly"] == "yes"
     assert len(legs) == 2
+
+
+def test_uta_ambiguous_order_recovers_same_client_oid_without_reposting(monkeypatch):
+    adapter = _adapter()
+    calls = []
+    place_attempts = 0
+    monkeypatch.setattr(adapter, "_qty", lambda symbol, amount: "0.001")
+    monkeypatch.setattr(adapter, "_price", lambda symbol, price: str(price))
+    monkeypatch.setattr(adapter, "_position_mode", lambda symbol: "one_way_mode")
+    monkeypatch.setattr(adapter, "_client_oid", lambda prefix="utb": f"{prefix}-1")
+
+    def fake_request(method, path, params=None, body=None):
+        nonlocal place_attempts
+        calls.append((method, path, params, body))
+        if path == "/api/v3/trade/place-order":
+            place_attempts += 1
+            raise RuntimeError("Bitget UTA API error HTTP 400 45001: request timed out")
+        if path == "/api/v3/trade/order-info":
+            assert params == {"orderId": None, "clientOid": "utb-uta-1"}
+            return {
+                "orderId": "recovered-order",
+                "clientOid": "utb-uta-1",
+                "orderStatus": "filled",
+                "cumExecQty": "0.001",
+                "avgPrice": "100000",
+            }
+        if path == "/api/v3/trade/place-strategy-order":
+            return {"orderId": "protection-1", "clientOid": body["clientOid"]}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    result = adapter.market_order(
+        "BTC/USDT:USDT",
+        "buy",
+        0.001,
+        tp_price=101000.0,
+        sl_price=99000.0,
+    )
+
+    assert place_attempts == 1
+    assert result["clientOid"] == "utb-uta-1"
+    assert result["recovered_by_client_oid"] is True
+    assert len([call for call in calls if call[1] == "/api/v3/trade/place-strategy-order"]) == 1
 
 
 def test_uta_account_info_aliases_symbol_configuration(monkeypatch):
