@@ -259,6 +259,7 @@ jobs:
 
       - name: Publish verified update to server
         if: env.UPDATE_RELEASE_READY == 'true' && env.UPDATE_SERVER_READY == 'true'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -292,7 +293,7 @@ jobs:
         with:
           tag_name: android-v${{ env.ANDROID_VERSION_CODE }}
           name: Android ${{ env.ANDROID_VERSION_NAME }}
-          body: Verified Android build for commit ${{ github.sha }}. Python tests, single-pass Android build, signing, and private update publication passed.
+          body: Verified Android build for commit ${{ github.sha }}. Python tests, single-pass Android build, and signing passed. Private update-server publication is attempted independently.
           target_commitish: ${{ github.sha }}
           make_latest: true
           overwrite_files: true
