@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # Bitget credential / API-family routing.
     # BITGET_API_FAMILY=auto probes UTA v3 first and falls back to Classic v2.
     # After account migration, uta-v3 can be pinned explicitly.
-    bitget_api_family: str = "classic-v2"
+    bitget_api_family: str = "classic-first"
     bitget_execution_profile: str = "elite"
     bitget_standard_api_key: str = ""
     bitget_standard_api_secret: str = ""
