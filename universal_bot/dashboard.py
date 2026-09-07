@@ -64,10 +64,10 @@ def _one(runtime):
 
 
 class BacktestRequest(BaseModel):
-    symbol: str
+    symbol: str = "BTC/USDT:USDT"
     asset_class: str = "crypto"
     exchange: str = "bitget"
-    timeframe: str = "5m"
+    timeframe: str = "15m"
     start: str | None = None
     end: str | None = None
 
@@ -107,9 +107,9 @@ def create_dashboard(scanner) -> FastAPI:
 
     @app.get("/api/candles")
     def candles(
-        symbol: str,
+        symbol: str = "BTC/USDT:USDT",
         exchange: str = "bitget",
-        timeframe: str = "5m",
+        timeframe: str = "15m",
         asset_class: str = "crypto",
         start: str | None = None,
         end: str | None = None,
@@ -193,7 +193,7 @@ def create_dashboard(scanner) -> FastAPI:
 
 <div class='bar'>
 <b>시장 차트 / 거래 기록</b><div class='muted' style='margin-top:4px'>최신 봉부터 즉시 표시 · 차트를 과거 방향으로 밀면 저장된 이전 봉을 자동 로딩</div>
-<div class='row' style='margin-top:10px'><input id='symbol' value='ETH/USDT:USDT' placeholder='심볼'><select id='asset'><option value='crypto'>Crypto</option><option value='stock'>Stock</option><option value='etf'>ETF</option></select><select id='exchange'><option>bitget</option><option>binance</option><option>okx</option><option>bybit</option></select><select id='tf'><option>5m</option><option>15m</option><option>1h</option><option>4h</option><option>1d</option></select><select id='mode'><option value='ALL'>전체 거래</option><option value='BACKTEST'>BACKTEST</option><option value='PAPER'>PAPER</option><option value='LIVE'>LIVE</option></select></div>
+<div class='row' style='margin-top:10px'><input id='symbol' value='BTC/USDT:USDT' placeholder='심볼'><select id='asset'><option value='crypto'>Crypto</option><option value='stock'>Stock</option><option value='etf'>ETF</option></select><select id='exchange'><option>bitget</option><option>binance</option><option>okx</option><option>bybit</option></select><select id='tf'><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option></select><select id='mode'><option value='ALL'>전체 거래</option><option value='BACKTEST'>BACKTEST</option><option value='PAPER'>PAPER</option><option value='LIVE'>LIVE</option></select></div>
 <div class='row' style='margin-top:8px'><label>시작 <input id='start' type='date'></label><label>종료 <input id='end' type='date'></label><button onclick='loadMarket()'>차트/기록 불러오기</button><span id='chartStatus' class='status muted'></span></div>
 <div class='toolbar'><button class='ghost' onclick='periodDays(1,this)'>1D</button><button class='ghost' onclick='periodDays(7,this)'>7D</button><button class='ghost' onclick='periodDays(30,this)'>30D</button><button class='ghost' onclick='periodDays(90,this)'>3M</button><button class='ghost active' onclick='periodDays(365,this)'>1Y</button></div>
 <div class='chartControls'><button class='ghost' onclick='zoomChart(0.8)'>＋ 확대</button><button class='ghost' onclick='zoomChart(1.25)'>－ 축소</button><button class='ghost' onclick='goLatest()'>최신으로</button><span class='sectionHint'>모바일/PC: 차트를 좌우로 드래그 · 과거 끝에 가까워지면 다음 봉 자동 로딩</span></div>
