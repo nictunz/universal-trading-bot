@@ -114,7 +114,7 @@ public class LauncherActivity extends android.app.Activity {
         root.addView(relay, mt(16));
         relay.addView(section("📡 LIVE 시장데이터 중계"));
         relay.addView(text(
-                "휴대폰에서 Binance/Bybit 공개 USDT 선물 5분봉을 읽고 기존 SSH 키로 서버에 전송합니다. Bitget 주문 API 키는 휴대폰에 저장하지 않습니다.",
+                "휴대폰에서 Binance/Bybit 공개 USDT 선물 15분봉을 읽고 기존 SSH 키로 서버에 전송합니다. Bitget 주문 API 키는 휴대폰에 저장하지 않습니다.",
                 12, MUTED, false
         ), mt(6));
 
