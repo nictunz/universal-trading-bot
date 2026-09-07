@@ -26,7 +26,7 @@ on:
 
 concurrency:
   group: android-backtester-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -218,8 +218,11 @@ jobs:
         if: env.UPDATE_RELEASE_READY == 'true'
         shell: bash
         run: |
-          APK_SHA256="$(sha256sum UniversalTradingBacktester-Android.apk | awk '{print $1}')"
-          export APK_SHA256
+          ANDROID_UPDATE_APK_NAME="UniversalTradingBacktester-Android-${ANDROID_VERSION_CODE}.apk"
+          cp UniversalTradingBacktester-Android.apk "$ANDROID_UPDATE_APK_NAME"
+          APK_SHA256="$(sha256sum "$ANDROID_UPDATE_APK_NAME" | awk '{print $1}')"
+          echo "ANDROID_UPDATE_APK_NAME=$ANDROID_UPDATE_APK_NAME" >> "$GITHUB_ENV"
+          export APK_SHA256 ANDROID_UPDATE_APK_NAME
           python - <<'PY'
           import json, os
           data = {
@@ -228,7 +231,7 @@ jobs:
               'version_code': int(os.environ['ANDROID_VERSION_CODE']),
               'version_name': os.environ['ANDROID_VERSION_NAME'],
               'commit': os.environ['GITHUB_SHA'],
-              'apk_name': 'UniversalTradingBacktester-Android.apk',
+              'apk_name': os.environ['ANDROID_UPDATE_APK_NAME'],
               'sha256': os.environ['APK_SHA256'],
               'verified': True,
           }
@@ -268,10 +271,10 @@ jobs:
           REMOTE=/home/kpj3669/.cache/universal-trading-bot/android-updates
           SSH_OPTS=(-o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
           ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" "mkdir -p '$REMOTE'"
-          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" UniversalTradingBacktester-Android.apk "$USER@$HOST:$REMOTE/UniversalTradingBacktester-Android.apk.uploading"
+          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$ANDROID_UPDATE_APK_NAME" "$USER@$HOST:$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading"
           scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" android-update.json "$USER@$HOST:$REMOTE/android-update.json.uploading"
           ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" \
-            "mv '$REMOTE/UniversalTradingBacktester-Android.apk.uploading' '$REMOTE/UniversalTradingBacktester-Android.apk' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
+            "mv '$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading' '$REMOTE/$ANDROID_UPDATE_APK_NAME' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
           echo 'Verified Android update published to private SFTP channel.'
 
       - name: Upload signed update artifact
