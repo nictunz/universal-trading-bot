@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     timeframe: str = "15m"
     symbols: str = "BTC/USDT:USDT"
     asset_class: str = "crypto"
-    poll_seconds: int = 10
+    poll_seconds: int = 2
     volume_lookback: int = 40
     volume_break_multiplier: float = 6.4
     use_four_crypto_exchanges: bool = True
