@@ -1,7 +1,7 @@
 # Latest light self-hosted verification
 
-- Generated UTC: 2026-09-07T12:14:14Z
-- Source commit: dc6dfab0b871af572dca7b7d90b539683d880240
+- Generated UTC: 2026-09-07T13:12:48Z
+- Source commit: f4a2953a760769d26d934e1028b479d53838316e
 - Runner: trading-bot-new
 
 | Check | Outcome |
@@ -14,8 +14,8 @@
 ## Pytest
 ```text
 ........................................................................ [ 72%]
-...........................                                              [100%]
-99 passed in 106.52s (0:01:46)
+............................                                             [100%]
+100 passed in 229.75s (0:03:49)
 ```
 ## Dashboard
 ```text
