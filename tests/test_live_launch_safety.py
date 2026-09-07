@@ -5,6 +5,7 @@ import json
 from universal_bot.adapters.bitget_elite import BitgetEliteAdapter
 from universal_bot.dashboard import BacktestRequest
 from universal_bot.engine import effective_stale_seconds
+from universal_bot.fast_backtest import default_cache_path
 import universal_bot.strategy_dashboard as strategy_dashboard
 
 
@@ -64,3 +65,15 @@ def test_stale_data_limit_accounts_for_completed_candle_open_time():
     assert effective_stale_seconds("15m", 600) == 1920
     assert effective_stale_seconds("1h", 600) == 7320
     assert effective_stale_seconds("bad", 600) == 600
+
+
+def test_server_prefers_largest_range_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / ".cache" / "universal-trading-bot"
+    root.mkdir(parents=True)
+    one_year = root / "btc-1y-15m.db"
+    five_year = root / "btc-20210826-20260825-15m.db"
+    one_year.write_bytes(b"1" * 10)
+    five_year.write_bytes(b"5" * 50)
+
+    assert default_cache_path("BTC/USDT:USDT", "15m") == five_year
