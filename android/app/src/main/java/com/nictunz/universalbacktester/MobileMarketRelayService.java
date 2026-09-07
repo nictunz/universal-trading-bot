@@ -16,6 +16,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -23,7 +24,11 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -34,15 +39,36 @@ public class MobileMarketRelayService extends Service {
 
     private static final String CHANNEL_ID = "market_relay";
     private static final int NOTIFICATION_ID = 4401;
-    private static final int RELAY_INTERVAL_SECONDS = 5;
+    private static final long RELAY_INTERVAL_MILLIS = 5_000L;
+    // Run on :01, :06, :11... so a just-closed exchange candle has time to roll over.
+    private static final long RELAY_PHASE_MILLIS = 1_000L;
+    private static final long TIMEFRAME_MILLIS = 15L * 60L * 1_000L;
+    private static final long BOUNDARY_CONFIRM_WINDOW_MILLIS = 12_000L;
+    // First read at about +1s, then retry at about +2s and +4s if needed.
+    private static final long[] ROLLOVER_RETRY_DELAYS_MS = {0L, 1_000L, 2_000L};
     private static final String RELAY_TIMEFRAME = "15m";
     private static final int CANDLE_LIMIT = 240;
     private static final int MAX_HISTORY_LINES = 300;
 
     private ScheduledExecutorService scheduler;
+    private ExecutorService marketFetchPool;
     private SshBridge.RelayClient relayClient;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean continuous = false;
+
+    private interface VenueRequest {
+        JSONArray fetch() throws Exception;
+    }
+
+    private static final class RelayFetch {
+        final JSONArray rows;
+        final long observedAtMs;
+
+        RelayFetch(JSONArray rows, long observedAtMs) {
+            this.rows = rows;
+            this.observedAtMs = observedAtMs;
+        }
+    }
 
     @Override
     public void onCreate() {
@@ -86,20 +112,52 @@ public class MobileMarketRelayService extends Service {
     private synchronized void startContinuous() {
         if (scheduler != null && !scheduler.isShutdown()) return;
         continuous = true;
-        appendHistory("시작", "5초 실시간 중계를 시작했습니다.");
+        ensureFetchPool();
+        appendHistory("시작", "15분봉 경계 우선 5초 중계를 시작했습니다.");
         scheduler = Executors.newSingleThreadScheduledExecutor();
-        scheduler.scheduleWithFixedDelay(() -> {
-            try {
-                relayCycle();
-            } catch (Exception e) {
-                recordFailure(e);
-            }
-        }, 0, RELAY_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        scheduleNextRelay(true);
+    }
+
+    private void runScheduledCycle() {
+        try {
+            relayCycle();
+        } catch (Exception e) {
+            recordFailure(e);
+        } finally {
+            scheduleNextRelay(false);
+        }
+    }
+
+    private synchronized void scheduleNextRelay(boolean first) {
+        if (!continuous || scheduler == null || scheduler.isShutdown()) return;
+        long delay = millisUntilNextRelaySlot(System.currentTimeMillis());
+        // A completed cycle landing exactly on a slot must not run twice.
+        if (!first && delay < 50L) delay += RELAY_INTERVAL_MILLIS;
+        try {
+            scheduler.schedule(this::runScheduledCycle, delay, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+            // Expected only when ACTION_STOP races with a completed cycle.
+        }
+    }
+
+    static long millisUntilNextRelaySlot(long nowMs) {
+        long phase = Math.floorMod(nowMs - RELAY_PHASE_MILLIS, RELAY_INTERVAL_MILLIS);
+        return phase == 0L ? 0L : RELAY_INTERVAL_MILLIS - phase;
+    }
+
+    private synchronized ExecutorService ensureFetchPool() {
+        if (marketFetchPool == null || marketFetchPool.isShutdown()) {
+            // Binance/Bybit and BTC/ETH are independent public reads. Fetching
+            // in parallel prevents an unrelated ETH request delaying BTC LIVE.
+            marketFetchPool = Executors.newFixedThreadPool(4);
+        }
+        return marketFetchPool;
     }
 
     private synchronized void runOneShot() {
         if (scheduler != null && !scheduler.isShutdown()) return;
         continuous = false;
+        ensureFetchPool();
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.execute(() -> {
             try {
@@ -123,16 +181,48 @@ public class MobileMarketRelayService extends Service {
             throw new IllegalStateException("서버/SSH 키 설정이 비어 있습니다.");
         }
 
+        long cycleStartedAt = System.currentTimeMillis();
+        ExecutorService pool = ensureFetchPool();
+        Future<RelayFetch> btcBinanceFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Binance", "BTCUSDT", () -> fetchBinanceRows("BTCUSDT")));
+        Future<RelayFetch> btcBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Bybit", "BTCUSDT", () -> fetchBybitRows("BTCUSDT")));
+        Future<RelayFetch> ethBinanceFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Binance", "ETHUSDT", () -> fetchBinanceRows("ETHUSDT")));
+        Future<RelayFetch> ethBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Bybit", "ETHUSDT", () -> fetchBybitRows("ETHUSDT")));
+
+        RelayFetch btcBinance;
+        RelayFetch btcBybit;
+        RelayFetch ethBinance;
+        RelayFetch ethBybit;
+        try {
+            btcBinance = await(btcBinanceFuture);
+            btcBybit = await(btcBybitFuture);
+            ethBinance = await(ethBinanceFuture);
+            ethBybit = await(ethBybitFuture);
+        } catch (Exception e) {
+            btcBinanceFuture.cancel(true);
+            btcBybitFuture.cancel(true);
+            ethBinanceFuture.cancel(true);
+            ethBybitFuture.cancel(true);
+            throw e;
+        }
+
         JSONObject payload = new JSONObject();
         payload.put("schema_version", 1);
-        payload.put("generated_at_ms", System.currentTimeMillis());
+        // Retain the conservative cycle start for older server versions.
+        payload.put("generated_at_ms", cycleStartedAt);
         payload.put("timeframe", RELAY_TIMEFRAME);
         payload.put("source", "android-public-futures-rest");
 
         JSONObject markets = new JSONObject();
-        addSymbol(markets, "BTC/USDT:USDT", "BTCUSDT");
-        addSymbol(markets, "ETH/USDT:USDT", "ETHUSDT");
+        JSONObject sourceObservedAt = new JSONObject();
+        addSymbol(markets, sourceObservedAt, "BTC/USDT:USDT", btcBinance, btcBybit);
+        addSymbol(markets, sourceObservedAt, "ETH/USDT:USDT", ethBinance, ethBybit);
         payload.put("markets", markets);
+        payload.put("source_observed_at_ms", sourceObservedAt);
+        payload.put("snapshot_completed_at_ms", Math.max(cycleStartedAt, System.currentTimeMillis()));
 
         if (relayClient == null || !relayClient.isConnected()) {
             closeRelayClient();
@@ -142,7 +232,7 @@ public class MobileMarketRelayService extends Service {
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
         long now = System.currentTimeMillis();
-        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 5초 중계";
+        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 5초 경계동기";
         p.edit()
                 .putBoolean("relay_running", continuous)
                 .putLong("relay_last_ok_ms", now)
@@ -153,14 +243,70 @@ public class MobileMarketRelayService extends Service {
         updateNotification(status);
     }
 
-    private void addSymbol(JSONObject markets, String canonical, String exchangeSymbol) throws Exception {
+    private void addSymbol(
+            JSONObject markets,
+            JSONObject sourceObservedAt,
+            String canonical,
+            RelayFetch binance,
+            RelayFetch bybit
+    ) throws Exception {
         JSONObject streams = new JSONObject();
-        streams.put("binance", fetchBinance(exchangeSymbol));
-        streams.put("bybit", fetchBybit(exchangeSymbol));
+        streams.put("binance", binance.rows);
+        streams.put("bybit", bybit.rows);
         markets.put(canonical, streams);
+
+        JSONObject observations = new JSONObject();
+        observations.put("binance", binance.observedAtMs);
+        observations.put("bybit", bybit.observedAtMs);
+        sourceObservedAt.put(canonical, observations);
     }
 
-    private JSONArray fetchBinance(String symbol) throws Exception {
+    private RelayFetch fetchWithRolloverRetry(
+            String exchange,
+            String symbol,
+            VenueRequest request
+    ) throws Exception {
+        RelayFetch last = null;
+        for (long delay : ROLLOVER_RETRY_DELAYS_MS) {
+            if (delay > 0L) Thread.sleep(delay);
+            long observedAt = System.currentTimeMillis();
+            JSONArray rows = request.fetch();
+            last = new RelayFetch(rows, observedAt);
+            if (rolledOverForBoundary(rows, observedAt)) return last;
+        }
+        throw new IllegalStateException(
+                exchange + " " + symbol + " 15분봉 경계 갱신 지연; 이전 정상 스냅샷을 유지합니다."
+        );
+    }
+
+    private static boolean rolledOverForBoundary(JSONArray rows, long observedAtMs) {
+        long elapsed = Math.floorMod(observedAtMs, TIMEFRAME_MILLIS);
+        if (elapsed > BOUNDARY_CONFIRM_WINDOW_MILLIS) return true;
+        long expectedCurrentOpen = observedAtMs - elapsed;
+        long latestOpen = Long.MIN_VALUE;
+        for (int i = 0; i < rows.length(); i++) {
+            JSONArray row = rows.optJSONArray(i);
+            if (row != null && row.length() >= 1) {
+                latestOpen = Math.max(latestOpen, row.optLong(0, Long.MIN_VALUE));
+            }
+        }
+        return latestOpen >= expectedCurrentOpen;
+    }
+
+    private static RelayFetch await(Future<RelayFetch> future) throws Exception {
+        try {
+            return future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            throw new IllegalStateException("거래소 중계 작업 실패", cause);
+        }
+    }
+
+    private JSONArray fetchBinanceRows(String symbol) throws Exception {
         String url = "https://fapi.binance.com/fapi/v1/klines?symbol=" + symbol
                 + "&interval=" + RELAY_TIMEFRAME + "&limit=" + CANDLE_LIMIT;
         Object body = new org.json.JSONTokener(get(url)).nextValue();
@@ -179,7 +325,7 @@ public class MobileMarketRelayService extends Service {
         return out;
     }
 
-    private JSONArray fetchBybit(String symbol) throws Exception {
+    private JSONArray fetchBybitRows(String symbol) throws Exception {
         String url = "https://api.bybit.com/v5/market/kline?category=linear&symbol=" + symbol
                 + "&interval=15&limit=" + CANDLE_LIMIT;
         JSONObject body = new JSONObject(get(url));
@@ -204,24 +350,33 @@ public class MobileMarketRelayService extends Service {
 
     private String get(String target) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(target).openConnection();
-        conn.setConnectTimeout(12000);
-        conn.setReadTimeout(15000);
-        conn.setRequestMethod("GET");
-        conn.setRequestProperty("User-Agent", "UniversalTradingBot-Android/1");
-        int status = conn.getResponseCode();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(
-                status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream(),
-                StandardCharsets.UTF_8
-        ));
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) sb.append(line);
-        reader.close();
-        conn.disconnect();
-        if (status < 200 || status >= 300) {
-            throw new IllegalStateException("HTTP " + status + " " + sb.substring(0, Math.min(180, sb.length())));
+        try {
+            conn.setConnectTimeout(12000);
+            conn.setReadTimeout(15000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "UniversalTradingBot-Android/1");
+            int status = conn.getResponseCode();
+            InputStream stream = status >= 200 && status < 300
+                    ? conn.getInputStream()
+                    : conn.getErrorStream();
+            if (stream == null) throw new IllegalStateException("HTTP " + status + " 빈 응답");
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                    stream,
+                    StandardCharsets.UTF_8
+            ))) {
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+            }
+            if (status < 200 || status >= 300) {
+                throw new IllegalStateException(
+                        "HTTP " + status + " " + sb.substring(0, Math.min(180, sb.length()))
+                );
+            }
+            return sb.toString();
+        } finally {
+            conn.disconnect();
         }
-        return sb.toString();
     }
 
     private void recordFailure(Exception e) {
@@ -242,6 +397,10 @@ public class MobileMarketRelayService extends Service {
         if (scheduler != null) {
             scheduler.shutdownNow();
             scheduler = null;
+        }
+        if (marketFetchPool != null) {
+            marketFetchPool.shutdownNow();
+            marketFetchPool = null;
         }
         closeRelayClient();
         appendHistory("중지", "중계를 중지했습니다.");
@@ -279,6 +438,7 @@ public class MobileMarketRelayService extends Service {
     public void onDestroy() {
         continuous = false;
         if (scheduler != null) scheduler.shutdownNow();
+        if (marketFetchPool != null) marketFetchPool.shutdownNow();
         closeRelayClient();
         prefs().edit().putBoolean("relay_running", false).apply();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();

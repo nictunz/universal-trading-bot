@@ -43,10 +43,44 @@ class MobileRelayMarketData:
         generated_ms = int(payload.get("generated_at_ms") or 0)
         if generated_ms <= 0:
             raise RuntimeError("mobile relay generated_at_ms is missing")
-        age = max(0.0, time.time() - generated_ms / 1000.0)
+        # Newer Android relays keep generated_at_ms at the conservative cycle
+        # start for compatibility with older servers, and publish the time at
+        # which all venue reads completed separately.  Use that completion time
+        # only for freshness; candle completion is still decided per source.
+        completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
+        if completed_ms < generated_ms:
+            raise RuntimeError("mobile relay completion time precedes generation time")
+        age = max(0.0, time.time() - completed_ms / 1000.0)
         if age > self.max_age_seconds:
             raise RuntimeError(f"mobile relay is stale: age={age:.1f}s max={self.max_age_seconds}s")
         return payload
+
+    def _source_observed_at(self, payload: dict, symbol_key: str, exchange: str) -> pd.Timestamp:
+        """Return the conservative instant at which one venue read began.
+
+        A REST call which starts before a 15-minute boundary and finishes after
+        it must not make the previous, still-forming candle look completed.
+        Old app payloads have no per-source timestamp and remain compatible by
+        falling back to generated_at_ms.
+        """
+        generated_ms = int(payload["generated_at_ms"])
+        completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
+        observations = payload.get("source_observed_at_ms") or {}
+        symbol_observations = observations.get(symbol_key) or {}
+        raw = symbol_observations.get(exchange)
+        try:
+            observed_ms = int(raw)
+        except (TypeError, ValueError):
+            observed_ms = generated_ms
+        if observed_ms <= 0:
+            observed_ms = generated_ms
+        # Never trust a source timestamp later than the completed snapshot.
+        observed_ms = min(observed_ms, completed_ms)
+        if completed_ms - observed_ms > self.max_age_seconds * 1000:
+            raise RuntimeError(
+                f"mobile relay source is stale: {exchange} age={(completed_ms - observed_ms) / 1000.0:.1f}s"
+            )
+        return pd.to_datetime(observed_ms, unit="ms", utc=True)
 
     @staticmethod
     def _symbol_key(symbol: str) -> str:
@@ -110,9 +144,9 @@ class MobileRelayMarketData:
         series = pd.Series(volumes, index=index, dtype=float).dropna().sort_index()
         series = series.loc[~series.index.duplicated(keep="last")]
 
-        generated = pd.to_datetime(int(payload["generated_at_ms"]), unit="ms", utc=True)
+        observed = self._source_observed_at(payload, symbol_key, exchange)
         delta = self._timeframe_delta(timeframe)
-        series = series[(series.index + delta) <= generated]
+        series = series[(series.index + delta) <= observed]
         if series.empty:
             raise RuntimeError(f"mobile relay has no completed candles for {exchange} {symbol_key}")
         return series.tail(max(1, int(limit)))

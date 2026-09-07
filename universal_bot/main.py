@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 import threading
 import time
 
@@ -14,6 +15,7 @@ from universal_bot.dashboard import create_dashboard
 from universal_bot.dashboard_auth import install_dashboard_auth
 from universal_bot.dashboard_nav import install_dashboard_navigation
 from universal_bot.live_settings_dashboard import install_live_settings_dashboard
+from universal_bot.providers.mobile_relay import MobileRelayMarketData
 from universal_bot.runtime_engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
@@ -155,6 +157,41 @@ def _scanner_fetch_limit(settings: Settings) -> int:
     return max(100, min(500, required + 32))
 
 
+def _relay_snapshot_revision(path: str | Path = MobileRelayMarketData.DEFAULT_PATH) -> tuple[int, int, int] | None:
+    """Return a cheap atomic-upload revision without opening the JSON file."""
+    try:
+        stat = Path(path).expanduser().stat()
+    except OSError:
+        return None
+    # Atomic SFTP replacement normally changes the inode.  Include all three so
+    # even a coarse-mtime filesystem and equal-sized JSON cannot hide a change.
+    return stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+
+def _wait_for_relay_change(
+    previous_revision: tuple[int, int, int] | None,
+    timeout_seconds: float,
+    *,
+    path: str | Path = MobileRelayMarketData.DEFAULT_PATH,
+    check_interval_seconds: float = 0.05,
+) -> bool:
+    """Wake a scan promptly after the phone atomically replaces its snapshot.
+
+    The normal POLL_SECONDS timeout remains the fallback if the relay is absent,
+    unchanged, or the local file notification is missed.  stat polling is local
+    and never adds exchange API traffic by itself.
+    """
+    timeout = max(0.0, float(timeout_seconds))
+    deadline = time.monotonic() + timeout
+    while True:
+        if _relay_snapshot_revision(path) != previous_revision:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(max(0.01, float(check_interval_seconds)), remaining))
+
+
 def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
     """Initialize exchange runtimes and scan in the background.
 
@@ -193,6 +230,9 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
 
     limit = _scanner_fetch_limit(settings)
     while True:
+        # Capture before fetching.  If an atomic phone upload lands anywhere
+        # during this scan, the next pass runs immediately and cannot miss it.
+        relay_revision = _relay_snapshot_revision()
         frames = {}
         for runtime in list(runtimes):
             try:
@@ -215,7 +255,10 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
             except Exception as exc:
                 runtime.last_error = f"{type(exc).__name__}: {exc}"
         scanner.step(frames)
-        time.sleep(max(1, settings.poll_seconds))
+        _wait_for_relay_change(
+            relay_revision,
+            max(1, settings.poll_seconds),
+        )
 
 
 def main():
