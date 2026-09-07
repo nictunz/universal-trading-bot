@@ -57,6 +57,9 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         self.elite_api_secret = secret.strip()
         self.elite_api_passphrase = passphrase.strip()
         self.timeout = float(timeout)
+        # Reuse TLS/TCP connections for lower private-order latency.
+        self._session = requests.Session()
+        self._session.headers.update({"Connection": "keep-alive"})
         self._contract_cache: dict[str, dict[str, Any]] = {}
         self._account_mode_cache: dict[str, str] = {}
 
@@ -110,7 +113,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         body_text = "" if not body else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         headers = self._signed_headers(method, path, query, body_text)
         url = self.BASE_URL + path + (f"?{query}" if query else "")
-        response = requests.request(
+        response = self._session.request(
             method,
             url,
             headers=headers,
@@ -131,7 +134,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         return payload.get("data")
 
     def _public_get(self, path: str, params: dict[str, Any]) -> Any:
-        response = requests.get(self.BASE_URL + path, params=params, timeout=self.timeout)
+        response = self._session.get(self.BASE_URL + path, params=params, timeout=self.timeout)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -457,14 +460,19 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         order_id = str(data.get("orderId") or "")
         detail: dict[str, Any] = {}
         if order_id:
-            for _ in range(6):
+            # First check immediately, then use short bounded retries. This
+            # preserves confirmed fill sizing while reducing TP/SL placement lag.
+            deadline = time.monotonic() + 0.65
+            while True:
                 try:
                     detail = self._order_detail(symbol, order_id)
                     if str(detail.get("state") or "").lower() == "filled":
                         break
                 except Exception:
                     pass
-                time.sleep(0.2)
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
 
         protection_data: list[dict[str, Any]] = []
         protection_error = None
