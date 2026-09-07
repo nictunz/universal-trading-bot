@@ -34,7 +34,7 @@ public class MobileMarketRelayService extends Service {
 
     private static final String CHANNEL_ID = "market_relay";
     private static final int NOTIFICATION_ID = 4401;
-    private static final int RELAY_INTERVAL_SECONDS = 30;
+    private static final int RELAY_INTERVAL_SECONDS = 5;
     private static final String RELAY_TIMEFRAME = "15m";
     private static final int CANDLE_LIMIT = 240;
     private static final int MAX_HISTORY_LINES = 300;
