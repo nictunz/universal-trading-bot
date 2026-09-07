@@ -28,6 +28,8 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
+import android.widget.TableLayout;
+import android.widget.TableRow;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -526,6 +528,9 @@ resultActions.addView(tradeHistoryButton, marginTop(6));
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
 resultActions.addView(chartButton, marginTop(6));
+Button serverChartButton = actionButton("🕯 서버 캔들 차트 · 진입/TP/SL 확인", Color.rgb(30, 41, 59));
+serverChartButton.setOnClickListener(v -> openServerTradingChart());
+resultActions.addView(serverChartButton, marginTop(6));
 deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
 deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
 resultActions.addView(deepBacktestButton, marginTop(6));
@@ -2981,6 +2986,14 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         showTextDialog("성과 요약 · 재현 조건", sb.toString());
     }
 
+    private TextView tradeTableCell(String value, boolean header) {
+        TextView cell = text(value, header ? 11 : 10, header ? TEXT : MUTED, header);
+        cell.setGravity(Gravity.CENTER_VERTICAL);
+        cell.setPadding(dp(9), dp(8), dp(9), dp(8));
+        cell.setSingleLine(true);
+        return cell;
+    }
+
     private void showTradeHistory() {
         if (lastSummary == null) {
             toast("백테스트를 먼저 실행하세요.");
@@ -2991,24 +3004,62 @@ private void exportAndShareOptimizationStage(String stage, String label) {
             showTextDialog("전체 거래내역", "거래 기록이 없습니다.");
             return;
         }
-        StringBuilder sb = new StringBuilder();
+
+        TableLayout table = new TableLayout(this);
+        table.setStretchAllColumns(false);
+        String[] headers = {"#", "방향", "진입 시각", "진입가", "청산 시각", "청산가", "수량", "순손익", "수익률", "사유"};
+        TableRow header = new TableRow(this);
+        header.setBackgroundColor(Color.rgb(30, 41, 59));
+        for (String label : headers) header.addView(tradeTableCell(label, true));
+        table.addView(header);
+
         for (int i = 0; i < trades.length(); i++) {
             JSONObject t = trades.optJSONObject(i);
             if (t == null) continue;
-            sb.append("#").append(t.optInt("trade", i + 1))
-                    .append(" · ").append(t.optString("side"))
-                    .append(" · ").append(t.optString("reason"))
-                    .append("\n진입 ").append(t.optString("entry_time"))
-                    .append(" @ ").append(t.optDouble("avg_entry_price", t.optDouble("entry_price")))
-                    .append("\n청산 ").append(t.optString("exit_time"))
-                    .append(" @ ").append(t.optDouble("exit_price"))
-                    .append("\n수량 ").append(t.optDouble("qty"))
-                    .append(" · 손익 ").append(String.format(Locale.US, "%+.4f", t.optDouble("pnl")))
-                    .append(" (").append(String.format(Locale.US, "%+.3f%%", t.optDouble("pnl_percent")))
-                    .append(") · 비용 ").append(String.format(Locale.US, "%.4f", t.optDouble("estimated_cost")))
-                    .append("\n\n");
+            TableRow row = new TableRow(this);
+            if (i % 2 == 1) row.setBackgroundColor(Color.rgb(14, 23, 39));
+            String[] values = {
+                    String.valueOf(t.optInt("trade", i + 1)),
+                    t.optString("side", "-"),
+                    t.optString("entry_time", "-"),
+                    String.format(Locale.US, "%.2f", t.optDouble("avg_entry_price", t.optDouble("entry_price"))),
+                    t.optString("exit_time", "-"),
+                    String.format(Locale.US, "%.2f", t.optDouble("exit_price")),
+                    String.format(Locale.US, "%.6f", t.optDouble("qty")),
+                    String.format(Locale.US, "%+.4f", t.optDouble("pnl")),
+                    String.format(Locale.US, "%+.3f%%", t.optDouble("pnl_percent")),
+                    t.optString("reason", "-")
+            };
+            for (String value : values) row.addView(tradeTableCell(value, false));
+            table.addView(row);
         }
-        showTextDialog("전체 거래내역 · " + trades.length() + "건", sb.toString());
+
+        HorizontalScrollView horizontal = new HorizontalScrollView(this);
+        horizontal.addView(table);
+        ScrollView vertical = new ScrollView(this);
+        vertical.setFillViewport(true);
+        vertical.addView(horizontal);
+        new AlertDialog.Builder(this)
+                .setTitle("거래 기록 표 · " + trades.length() + "건")
+                .setMessage("좌우로 밀어 모든 열을 확인할 수 있습니다.")
+                .setView(vertical)
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void openServerTradingChart() {
+        String host = hostInput == null ? "" : hostInput.getText().toString().trim();
+        if (host.isEmpty()) host = "34.132.172.40";
+        if (!host.startsWith("http://") && !host.startsWith("https://")) host = "http://" + host;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(host)));
+        } catch (Exception e) {
+            showTextDialog(
+                    "서버 캔들 차트 확인",
+                    "브라우저에서 " + host + " 을 열고 BTC/USDT:USDT · 15m · BACKTEST를 선택하세요. "
+                            + "캔들과 LONG/SHORT 진입, TP/SL/청산 표식을 함께 확인할 수 있습니다."
+            );
+        }
     }
 
     private void showBacktestChart() {
