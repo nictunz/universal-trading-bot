@@ -76,7 +76,7 @@ def _historical_four_exchange_ratio(
     return ratio, inserted_total, source_bars
 
 
-def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str = "bitget", timeframe: str = "5m", start: str | None = None, end: str | None = None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_symbol_backtest(symbol: str, asset_class: str = "crypto", exchange: str = "bitget", timeframe: str = "15m", start: str | None = None, end: str | None = None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     if not symbol.strip():
         raise ValueError("symbol is required")
     if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w", "1M"}:
