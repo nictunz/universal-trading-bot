@@ -101,6 +101,17 @@ class Settings(BaseSettings):
     discord_webhook_url: str = ""
     discord_timeout: float = 5.0
 
+    # Daily fee-rebate sweep from the Classic spot/funding account into the
+    # Elite futures lead account. It is deliberately OFF and DRY RUN by default.
+    elite_rebate_auto_transfer_enabled: bool = False
+    elite_rebate_auto_transfer_dry_run: bool = True
+    elite_rebate_window_start_kst: str = "15:55"
+    elite_rebate_window_end_kst: str = "16:20"
+    elite_rebate_poll_seconds: int = 30
+    elite_rebate_minimum_usdt: float = 0.01
+    elite_rebate_maximum_daily_usdt: float = 100.0
+    elite_rebate_transfer_state_path: str = "~/.cache/universal-trading-bot/rebate-transfer-state.json"
+
     # Bitget credential / API-family routing.
     # BITGET_API_FAMILY=auto probes UTA v3 first and falls back to Classic v2.
     # After account migration, uta-v3 can be pinned explicitly.

@@ -16,6 +16,7 @@ from universal_bot.dashboard_auth import install_dashboard_auth
 from universal_bot.dashboard_nav import install_dashboard_navigation
 from universal_bot.live_settings_dashboard import install_live_settings_dashboard
 from universal_bot.providers.mobile_relay import MobileRelayMarketData
+from universal_bot.rebate_transfer import run_rebate_transfer_worker
 from universal_bot.runtime_engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
@@ -286,6 +287,14 @@ def main():
             name="runtime-scanner",
         ).start()
         print("RUNTIME_WORKER_START", flush=True)
+        if settings.elite_rebate_auto_transfer_enabled:
+            threading.Thread(
+                target=run_rebate_transfer_worker,
+                args=(settings,),
+                daemon=True,
+                name="elite-rebate-transfer",
+            ).start()
+            print("ELITE_REBATE_TRANSFER_WORKER_START", flush=True)
 
     print(
         f"DASHBOARD_HTTP_BIND host={settings.dashboard_host} port={settings.dashboard_port}",
