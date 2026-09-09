@@ -7,11 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from universal_bot.main import (
-    _adaptive_runtime_poll_seconds,
-    _relay_snapshot_revision,
-    _wait_for_relay_change,
-)
+from universal_bot.main import _relay_snapshot_revision, _wait_for_relay_change
 from universal_bot.providers.mobile_relay import MobileRelayMarketData
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,26 +105,6 @@ def test_relay_wait_keeps_poll_timeout_as_fallback(tmp_path):
     assert not _wait_for_relay_change(previous, 0, path=path)
 
 
-def test_runtime_scans_each_second_after_every_15m_boundary():
-    boundary = pd.Timestamp("2026-09-09T12:15:00Z")
-
-    assert _adaptive_runtime_poll_seconds("15m", 5, now=boundary) == 1.0
-    assert _adaptive_runtime_poll_seconds(
-        "15m", 5, now=boundary + pd.Timedelta(seconds=59)
-    ) == 1.0
-    assert _adaptive_runtime_poll_seconds(
-        "15m", 5, now=boundary + pd.Timedelta(seconds=60)
-    ) == 5.0
-
-
-def test_runtime_keeps_five_second_pre_boundary_cadence():
-    assert _adaptive_runtime_poll_seconds(
-        "15m",
-        30,
-        now=pd.Timestamp("2026-09-09T12:14:30Z"),
-    ) == 5.0
-
-
 def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
     service = (
         ROOT
@@ -141,9 +117,7 @@ def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
     assert "NORMAL_INTERVAL_MILLIS = 30_000L" in service
     assert "PRE_BOUNDARY_INTERVAL_MILLIS = 5_000L" in service
     assert "POST_BOUNDARY_INTERVAL_MILLIS = 1_000L" in service
-    assert "confirmedBoundaryOpenMs" not in service
-    assert "if (elapsed < BOUNDARY_WINDOW_MILLIS)" in service
-    assert "millisUntilNextRelaySlot(System.currentTimeMillis())" in service
+    assert "confirmedBoundaryOpenMs" in service
     assert "적응형 경계동기" in service
     assert "newFixedThreadPool(4)" in service
     assert "ROLLOVER_RETRY_DELAYS_MS" in service
