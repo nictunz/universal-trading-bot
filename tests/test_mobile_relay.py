@@ -114,6 +114,11 @@ def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
     assert "scheduleWithFixedDelay" not in service
     assert "millisUntilNextRelaySlot" in service
     assert "RELAY_PHASE_MILLIS = 1_000L" in service
+    assert "NORMAL_INTERVAL_MILLIS = 30_000L" in service
+    assert "PRE_BOUNDARY_INTERVAL_MILLIS = 5_000L" in service
+    assert "POST_BOUNDARY_INTERVAL_MILLIS = 1_000L" in service
+    assert "confirmedBoundaryOpenMs" in service
+    assert "적응형 경계동기" in service
     assert "newFixedThreadPool(4)" in service
     assert "ROLLOVER_RETRY_DELAYS_MS" in service
     assert 'payload.put("source_observed_at_ms", sourceObservedAt)' in service
