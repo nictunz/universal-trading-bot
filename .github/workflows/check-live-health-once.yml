@@ -1,0 +1,47 @@
+name: check-live-health-once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/check-live-health-once.yml'
+
+jobs:
+  check:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 5
+    steps:
+      - name: Verify active LIVE runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
+          test -s "$RELAY"
+          AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY") ))
+          echo "mobile_relay_age_seconds=$AGE"
+          test "$AGE" -le 90
+          for attempt in $(seq 1 60); do
+            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/live-health-final.json \
+              && curl -fsS -m 10 http://127.0.0.1:8000/api/live-readiness > /tmp/live-ready-final.json; then
+              if python3 - <<'PY'
+          import json
+          with open('/tmp/live-health-final.json',encoding='utf-8') as f: h=json.load(f)
+          with open('/tmp/live-ready-final.json',encoding='utf-8') as f: r=json.load(f)
+          assert h.get('status') == 'ok', h
+          assert int(h.get('symbols') or 0) >= 1, h
+          assert not h.get('errors'), h
+          assert not h.get('live_halted'), h
+          assert r.get('ready') is True, r
+          assert r.get('api_family') == 'classic-v2', r
+          print({'health':h.get('status'),'symbols':h.get('symbols'),'live_halted':h.get('live_halted'),'ready':r.get('ready'),'api_family':r.get('api_family')})
+          PY
+              then
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          cat /tmp/live-health-final.json 2>/dev/null || true
+          cat /tmp/live-ready-final.json 2>/dev/null || true
+          sudo journalctl -u universal-trading-bot-dashboard.service -n 120 --no-pager || true
+          exit 1
