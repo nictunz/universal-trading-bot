@@ -57,6 +57,7 @@ public class MobileMarketRelayService extends Service {
     private SshBridge.RelayClient relayClient;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean continuous = false;
+    private volatile long confirmedBoundaryOpenMs = Long.MIN_VALUE;
 
     private interface VenueRequest {
         JSONArray fetch() throws Exception;
@@ -132,7 +133,10 @@ public class MobileMarketRelayService extends Service {
 
     private synchronized void scheduleNextRelay(boolean first) {
         if (!continuous || scheduler == null || scheduler.isShutdown()) return;
-        long delay = millisUntilNextRelaySlot(System.currentTimeMillis());
+        long delay = millisUntilNextRelaySlot(
+                System.currentTimeMillis(),
+                confirmedBoundaryOpenMs
+        );
         // A completed cycle landing exactly on a slot must not run twice.
         if (!first && delay < 50L) delay = 50L;
         try {
@@ -142,17 +146,16 @@ public class MobileMarketRelayService extends Service {
         }
     }
 
-    static long millisUntilNextRelaySlot(long nowMs) {
+    static long millisUntilNextRelaySlot(long nowMs, long confirmedBoundaryOpenMs) {
         long currentBoundary = nowMs - Math.floorMod(nowMs, TIMEFRAME_MILLIS);
         long elapsed = nowMs - currentBoundary;
+        boolean awaitingBoundary = elapsed < BOUNDARY_WINDOW_MILLIS
+                && confirmedBoundaryOpenMs != currentBoundary;
 
         long interval;
         long phase;
         long regimeEnd;
-        // Keep the whole post-boundary window at 1-second cadence. A successful
-        // first rollover must not demote the remaining window to the normal
-        // cadence: later venue updates still need to wake the server promptly.
-        if (elapsed < BOUNDARY_WINDOW_MILLIS) {
+        if (awaitingBoundary) {
             interval = POST_BOUNDARY_INTERVAL_MILLIS;
             phase = currentBoundary + RELAY_PHASE_MILLIS;
             regimeEnd = currentBoundary + BOUNDARY_WINDOW_MILLIS;
@@ -264,6 +267,12 @@ public class MobileMarketRelayService extends Service {
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
         long now = System.currentTimeMillis();
+        long boundary = now - Math.floorMod(now, TIMEFRAME_MILLIS);
+        if (now - boundary < BOUNDARY_WINDOW_MILLIS) {
+            // All four requests passed rollover validation and the atomic SSH upload
+            // completed, so the server has the newly opened candle snapshot.
+            confirmedBoundaryOpenMs = boundary;
+        }
         String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 적응형 경계동기";
         p.edit()
                 .putBoolean("relay_running", continuous)
