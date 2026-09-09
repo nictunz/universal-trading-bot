@@ -15,7 +15,7 @@ class TradingEngine(_BaseTradingEngine):
     uses the Bitget Elite profile, each entry uses current available USDT times
     LIVE_ENTRY_MULTIPLIER and the position is capped at
     LIVE_MAX_ENTRIES_PER_POSITION. After every fill the bot re-reads Bitget and
-    installs one full-position TP/SL pair centered on the exchange average price.
+    installs one full-position TP/SL pair at the original signal-based prices.
     """
 
     def __init__(self, settings, adapter, strategy):
@@ -23,6 +23,8 @@ class TradingEngine(_BaseTradingEngine):
         self._live_entry_equity_basis: float | None = None
         self._active_tp_pct: float | None = None
         self._active_sl_pct: float | None = None
+        self._active_tp_price: float | None = None
+        self._active_sl_price: float | None = None
         self._event_no = 0
         self._active_execution_id: str | None = None
         # Entry and exit messages share one notifier, so a close can emit only
@@ -331,6 +333,8 @@ class TradingEngine(_BaseTradingEngine):
         self._live_entry_equity_basis = None
         self._active_tp_pct = None
         self._active_sl_pct = None
+        self._active_tp_price = None
+        self._active_sl_price = None
         self.safety.protection_ok = True
         return self.position.flat
 
@@ -369,6 +373,8 @@ class TradingEngine(_BaseTradingEngine):
             self._live_entry_equity_basis = None
             self._active_tp_pct = None
             self._active_sl_pct = None
+            self._active_tp_price = None
+            self._active_sl_price = None
 
     def step(self, df, precomputed=None):
         # Saved dashboard strategy settings may contain an older pyramiding
@@ -518,10 +524,16 @@ class TradingEngine(_BaseTradingEngine):
             self.safety.fail("LIVE_TOTAL_MULTIPLIER_LIMIT_EXCEEDED")
             return
 
-        # Temporary protection is attached to the new tranche immediately.
-        # It is then superseded by one full-position pair after Bitget reports
-        # the final size and average entry price.
-        temp_tp, temp_sl = self._prices_from_average(side, price, active_tp_pct, active_sl_pct)
+        # Match backtest semantics: freeze TP/SL at the first signal close.
+        # Partial IOC fills may change only protected quantity and average entry.
+        signal_tp, signal_sl = self._prices_from_average(
+            side, price, active_tp_pct, active_sl_pct
+        )
+        if self.position.flat:
+            self._active_tp_price = signal_tp
+            self._active_sl_price = signal_sl
+        fixed_tp = float(self._active_tp_price or signal_tp)
+        fixed_sl = float(self._active_sl_price or signal_sl)
 
         if not self.safety.can_open:
             return
@@ -544,6 +556,8 @@ class TradingEngine(_BaseTradingEngine):
                     reference_price=price,
                     tp_pct=active_tp_pct,
                     sl_pct=active_sl_pct,
+                    fixed_tp_price=fixed_tp,
+                    fixed_sl_price=fixed_sl,
                     max_adverse_slippage_percent=float(
                         self.settings.live_entry_max_adverse_slippage_percent
                     ),
@@ -563,8 +577,8 @@ class TradingEngine(_BaseTradingEngine):
                     self.settings.symbol,
                     order_side,
                     amount,
-                    tp_price=temp_tp,
-                    sl_price=temp_sl,
+                    tp_price=fixed_tp,
+                    sl_price=fixed_sl,
                 )
         except AmbiguousOrderResult as exc:
             # The exchange may have filled the request despite a lost HTTP
@@ -633,6 +647,8 @@ class TradingEngine(_BaseTradingEngine):
                 self._live_entry_equity_basis = None
                 self._active_tp_pct = None
                 self._active_sl_pct = None
+                self._active_tp_price = None
+                self._active_sl_price = None
             self._finish_live_execution(execution_id, "UNFILLED", **execution_quality)
             return
         actual_price = float(order.get("average") or order.get("price") or price)
@@ -643,8 +659,8 @@ class TradingEngine(_BaseTradingEngine):
                 side=side,
                 size=signed_amount,
                 entry_price=actual_price,
-                tp=temp_tp,
-                sl=temp_sl,
+                tp=fixed_tp,
+                sl=fixed_sl,
                 entries=1,
             )
             self.entry_notional = actual_amount * actual_price
@@ -691,12 +707,7 @@ class TradingEngine(_BaseTradingEngine):
             if exchange_delta_notional > 0:
                 actual_price = exchange_delta_notional / exchange_delta_qty
 
-        full_tp, full_sl = self._prices_from_average(
-            side,
-            avg_entry,
-            active_tp_pct,
-            active_sl_pct,
-        )
+        full_tp, full_sl = fixed_tp, fixed_sl
 
         if not hasattr(self.adapter, "replace_full_protection"):
             self._flatten_full_position_after_protection_failure(side, total_qty)
@@ -707,16 +718,28 @@ class TradingEngine(_BaseTradingEngine):
                 **execution_quality,
             )
             return
-        try:
-            replaced = self.adapter.replace_full_protection(
-                self.settings.symbol,
-                "long" if side == "LONG" else "short",
-                total_qty,
-                full_tp,
-                full_sl,
-            )
-        except Exception as exc:
-            replaced = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        adaptive_already_protected = (
+            str(order.get("execution_mode") or "") == "adaptive_ioc"
+            and bool(order.get("protection_ok"))
+            and abs(float(order.get("protected_qty") or 0.0) - total_qty) <= 1e-9
+            and abs(float(order.get("fixed_tp") or 0.0) - full_tp) <= 1e-9
+            and abs(float(order.get("fixed_sl") or 0.0) - full_sl) <= 1e-9
+        )
+        if adaptive_already_protected:
+            # The final IOC child already installed and verified this exact
+            # quantity/pair; avoid a redundant private-API replacement cycle.
+            replaced = {"ok": True, "source": "adaptive_ioc_final_verification"}
+        else:
+            try:
+                replaced = self.adapter.replace_full_protection(
+                    self.settings.symbol,
+                    "long" if side == "LONG" else "short",
+                    total_qty,
+                    full_tp,
+                    full_sl,
+                )
+            except Exception as exc:
+                replaced = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
         self.safety.protection_ok = bool(replaced.get("ok"))
         if self.settings.require_exchange_protection and not self.safety.protection_ok:
             self._flatten_full_position_after_protection_failure(side, total_qty)
@@ -781,3 +804,5 @@ class TradingEngine(_BaseTradingEngine):
             self._live_entry_equity_basis = None
             self._active_tp_pct = None
             self._active_sl_pct = None
+            self._active_tp_price = None
+            self._active_sl_price = None
