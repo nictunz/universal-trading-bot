@@ -261,3 +261,104 @@ def test_adaptive_ioc_accepts_price_improvement_and_protects_partial_fill(monkey
     assert result["protection_updates"][0]["ok"] is True
     assert protections[0][1] == "long"
     assert protections[0][2] == pytest.approx(0.1)
+    # Protection prices stay anchored to the signal/reference price even when
+    # the actual IOC fill receives price improvement.
+    assert protections[0][3] == pytest.approx(101_000.0)
+    assert protections[0][4] == pytest.approx(99_000.0)
+
+
+def test_cancel_protection_never_cancels_manual_plan(monkeypatch):
+    adapter = BitgetEliteAdapter.__new__(BitgetEliteAdapter)
+    pending = [
+        {"orderId": "tp-1", "clientOid": "utb-tp-1", "planType": "normal_plan"},
+        {"orderId": "sl-1", "clientOid": "utb-sl-1", "planType": "normal_plan"},
+        {"orderId": "manual-1", "clientOid": "phone-order", "planType": "normal_plan"},
+    ]
+    cancelled = []
+    monkeypatch.setattr(
+        adapter,
+        "_pending_plan_orders",
+        lambda symbol: pending if not cancelled else [pending[-1]],
+    )
+
+    def request(method, path, *, params=None, body=None):
+        cancelled.append(body["orderId"])
+        return {}
+
+    monkeypatch.setattr(adapter, "_request", request)
+    result = adapter.cancel_protection("BTC/USDT:USDT")
+
+    assert result["ok"] is True
+    assert cancelled == ["tp-1", "sl-1"]
+
+
+def test_replace_protection_places_and_verifies_new_pair_before_old_cancel(monkeypatch):
+    adapter = BitgetEliteAdapter.__new__(BitgetEliteAdapter)
+    old = [
+        {"orderId": "old-tp", "clientOid": "utb-tp-old", "triggerPrice": "101", "planType": "normal_plan"},
+        {"orderId": "old-sl", "clientOid": "utb-sl-old", "triggerPrice": "99", "planType": "normal_plan"},
+    ]
+    new = [
+        {"orderId": "new-tp", "clientOid": "utb-tp-new", "triggerPrice": "102", "size": "1", "side": "sell", "leg": "tp", "planType": "normal_plan"},
+        {"orderId": "new-sl", "clientOid": "utb-sl-new", "triggerPrice": "98", "size": "1", "side": "sell", "leg": "sl", "planType": "normal_plan"},
+    ]
+    # Bitget may briefly omit clientOid/leg in the pending response. The exact
+    # returned orderId still proves ownership of this just-created pair.
+    pending_new = [
+        {k: v for k, v in order.items() if k not in {"clientOid", "leg"}}
+        for order in new
+    ]
+    snapshots = iter([old, old + pending_new, pending_new])
+    cancelled = []
+    monkeypatch.setattr(adapter, "_pending_plan_orders", lambda symbol: next(snapshots))
+    monkeypatch.setattr(adapter, "_qty", lambda symbol, qty: "1")
+    monkeypatch.setattr(adapter, "_place_protection", lambda *args: new)
+
+    def cancel(symbol, orders):
+        cancelled.extend(order["orderId"] for order in orders)
+        return []
+
+    monkeypatch.setattr(adapter, "_cancel_plan_orders", cancel)
+    result = adapter.replace_full_protection("BTC/USDT:USDT", "long", 1.0, 102.0, 98.0)
+
+    assert result["ok"] is True
+    assert cancelled == ["old-tp", "old-sl"]
+
+
+def test_private_get_retries_429_but_post_is_never_replayed(monkeypatch):
+    class Response:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._payload = payload
+            self.headers = {}
+
+        def json(self):
+            return self._payload
+
+    class Session:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+            self.calls = 0
+
+        def request(self, *args, **kwargs):
+            self.calls += 1
+            return next(self.responses)
+
+    adapter = BitgetEliteAdapter.__new__(BitgetEliteAdapter)
+    adapter.timeout = 1.0
+    monkeypatch.setattr(adapter, "_signed_headers", lambda *args: {})
+    monkeypatch.setattr(adapter, "_acquire_api_budget", lambda *args: None)
+    monkeypatch.setattr("universal_bot.adapters.bitget_elite.time.sleep", lambda _: None)
+    monkeypatch.setattr("universal_bot.adapters.bitget_elite.random.uniform", lambda *args: 0.0)
+
+    adapter._session = Session([
+        Response(429, {"code": "429", "msg": "too many"}),
+        Response(200, {"code": "00000", "data": {"ok": True}}),
+    ])
+    assert adapter._request("GET", "/private") == {"ok": True}
+    assert adapter._session.calls == 2
+
+    adapter._session = Session([Response(429, {"code": "429", "msg": "too many"})])
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        adapter._request("POST", "/order", body={"clientOid": "same-id"})
+    assert adapter._session.calls == 1
