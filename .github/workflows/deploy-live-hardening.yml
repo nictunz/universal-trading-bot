@@ -1,0 +1,128 @@
+name: deploy-live-hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-live-hardening.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-live-hardening
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy only while exchange is flat
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_DIR=/home/kpj3669/universal-trading-bot
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          SERVICE=universal-trading-bot-dashboard.service
+          RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
+
+          test -s "$RELAY"
+          AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY") ))
+          test "$AGE" -le 90
+
+          curl -fsS -m 10 http://127.0.0.1:8000/health > /tmp/pre-health.json
+          curl -fsS -m 10 http://127.0.0.1:8000/api/state > /tmp/pre-state.json
+          "$PY" - <<'PY'
+          import json
+          h=json.load(open('/tmp/pre-health.json'))
+          s=json.load(open('/tmp/pre-state.json'))
+          assert h.get('status') == 'ok', h
+          rows=s.get('symbols') or []
+          assert rows, s
+          for row in rows:
+              safe=row.get('live_safety') or {}
+              pos=safe.get('exchange_position') or {}
+              assert safe.get('enabled') is True, safe
+              assert not safe.get('halted'), safe
+              assert pos.get('side') == 'FLAT' and float(pos.get('size') or 0) <= 1e-9, pos
+          print('pre_stop_live_flat_ok')
+          PY
+
+          sudo systemctl stop "$SERVICE"
+          RESTORE=1
+          restore_service() {
+            if [ "$RESTORE" = 1 ]; then
+              sudo systemctl start "$SERVICE" || true
+            fi
+          }
+          trap restore_service EXIT
+
+          cd "$APP_DIR"
+          "$PY" - <<'PY'
+          import json
+          from universal_bot.config import Settings
+          from universal_bot.main import build_adapter
+          s=Settings()
+          assert s.bot_mode.upper() == 'LIVE', s.bot_mode
+          p=build_adapter(s).position(s.symbol)
+          assert p.get('side') == 'FLAT' and float(p.get('size') or 0) <= 1e-9, p
+          print(json.dumps({'exchange_position':'FLAT','size':0.0}))
+          PY
+
+          cd "$GITHUB_WORKSPACE"
+          BACKUP="$APP_DIR/data/deploy-backups/$GITHUB_SHA"
+          mkdir -p "$BACKUP"
+          for file in             universal_bot/runtime_engine.py             universal_bot/adapters/bitget_elite.py             universal_bot/trade_history.py             universal_bot/dashboard.py             universal_bot/live_settings_dashboard.py
+          do
+            mkdir -p "$BACKUP/$(dirname "$file")"
+            cp "$APP_DIR/$file" "$BACKUP/$file"
+            install -m 0644 "$file" "$APP_DIR/$file"
+          done
+
+          sudo systemctl start "$SERVICE"
+          for attempt in $(seq 1 60); do
+            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/post-health.json               && curl -fsS -m 10 http://127.0.0.1:8000/api/live-readiness > /tmp/post-ready.json               && curl -fsS -m 10 http://127.0.0.1:8000/api/runtime-info > /tmp/post-runtime.json; then
+              if "$PY" - <<'PY'
+          import json
+          h=json.load(open('/tmp/post-health.json'))
+          r=json.load(open('/tmp/post-ready.json'))
+          v=json.load(open('/tmp/post-runtime.json'))
+          assert h.get('status') == 'ok', h
+          assert r.get('ready') is True, r
+          rows=v.get('runtimes') or []
+          assert rows, v
+          x=rows[0]
+          assert x.get('mode') == 'LIVE', x
+          assert x.get('timeframe') == '15m', x
+          assert x.get('strategy') == {
+              'volume_lookback':41,
+              'max_nbar_volatility':6.1,
+              'rsi_oversold_max':41.5,
+              'reentry_bars':7,
+          }, x
+          assert x.get('execution') == {
+              'mode':'adaptive_ioc',
+              'multiplier':8.9,
+              'max_child_orders':5,
+              'max_adverse_slippage_percent':0.03,
+          }, x
+          assert v.get('source_fingerprint'), v
+          print(json.dumps({
+              'health':'ok','ready':True,'mode':'LIVE',
+              'position':'FLAT','runtime':x,
+              'source_fingerprint':v.get('source_fingerprint'),
+              'strategy_settings_hash':v.get('strategy_settings_hash'),
+          }))
+          PY
+              then
+                RESTORE=0
+                trap - EXIT
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+
+          sudo journalctl -u "$SERVICE" -n 150 --no-pager || true
+          exit 1
