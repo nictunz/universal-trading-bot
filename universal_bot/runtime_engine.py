@@ -451,13 +451,39 @@ class TradingEngine(_BaseTradingEngine):
         order_side = "buy" if side == "LONG" else "sell"
         recovered_exchange_pos = None
         try:
-            order = self.adapter.market_order(
-                self.settings.symbol,
-                order_side,
-                amount,
-                tp_price=temp_tp,
-                sl_price=temp_sl,
-            )
+            if (
+                str(self.settings.live_entry_execution_mode).strip().lower() == "adaptive_ioc"
+                and hasattr(self.adapter, "adaptive_ioc_entry")
+            ):
+                order = self.adapter.adaptive_ioc_entry(
+                    self.settings.symbol,
+                    order_side,
+                    amount,
+                    reference_price=price,
+                    tp_pct=active_tp_pct,
+                    sl_pct=active_sl_pct,
+                    max_adverse_slippage_percent=float(
+                        self.settings.live_entry_max_adverse_slippage_percent
+                    ),
+                    max_child_orders=int(self.settings.live_entry_max_child_orders),
+                    execution_window_seconds=float(
+                        self.settings.live_entry_execution_window_seconds
+                    ),
+                    depth_participation=float(
+                        self.settings.live_entry_depth_participation
+                    ),
+                    child_pause_seconds=float(
+                        self.settings.live_entry_child_pause_seconds
+                    ),
+                )
+            else:
+                order = self.adapter.market_order(
+                    self.settings.symbol,
+                    order_side,
+                    amount,
+                    tp_price=temp_tp,
+                    sl_price=temp_sl,
+                )
         except AmbiguousOrderResult as exc:
             # The exchange may have filled the request despite a lost HTTP
             # response. Detect the position delta; never submit a second entry.
@@ -497,8 +523,16 @@ class TradingEngine(_BaseTradingEngine):
             self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
             return
 
+        actual_amount = float(order.get("filled") or order.get("amount") or 0.0)
+        if actual_amount <= 0:
+            # IOC may legitimately expire without a fill. Never invent the
+            # requested quantity and never fall back to an uncapped market order.
+            if self.position.flat:
+                self._live_entry_equity_basis = None
+                self._active_tp_pct = None
+                self._active_sl_pct = None
+            return
         actual_price = float(order.get("average") or order.get("price") or price)
-        actual_amount = float(order.get("filled") or order.get("amount") or amount)
         signed_amount = actual_amount if side == "LONG" else -actual_amount
 
         if self.position.flat:
