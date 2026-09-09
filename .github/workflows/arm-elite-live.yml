@@ -26,10 +26,13 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
-          test -s "$APP_DIR/.env"
-          grep -q 'def adaptive_ioc_entry' "$APP_DIR/universal_bot/adapters/bitget_elite.py"
-          grep -q 'live_entry_execution_mode' "$APP_DIR/universal_bot/config.py"
-          cp "$GITHUB_WORKSPACE/scripts/verify_elite_live_readonly.py" "$APP_DIR/scripts/verify_elite_live_readonly.py"
+          test -s "$APP_DIR/.env" || { echo "missing app env"; exit 11; }
+          test -f "$APP_DIR/universal_bot/adapters/bitget_elite.py" || { echo "missing deployed adapter"; exit 12; }
+          grep -q 'def adaptive_ioc_entry' "$APP_DIR/universal_bot/adapters/bitget_elite.py" || { echo "deployed adapter is old"; exit 13; }
+          test -f "$APP_DIR/universal_bot/config.py" || { echo "missing deployed config"; exit 14; }
+          grep -q 'live_entry_execution_mode' "$APP_DIR/universal_bot/config.py" || { echo "deployed config is old"; exit 15; }
+          mkdir -p "$APP_DIR/scripts"
+          cp "$GITHUB_WORKSPACE/scripts/verify_elite_live_readonly.py" "$APP_DIR/scripts/verify_elite_live_readonly.py" || { echo "verifier copy failed"; exit 16; }
           BACKUP="$APP_DIR/.env.bak-before-ioc-live-$(date +%Y%m%d-%H%M%S)"
           cp "$APP_DIR/.env" "$BACKUP"
           echo "backup=$BACKUP" >> "$GITHUB_ENV"
