@@ -25,14 +25,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
-          test -s "$APP_DIR/.env" || { echo "missing app env"; exit 11; }
+          APP_DIR=/home/kpj3669/universal-trading-bot
+          test -s "$APP_DIR/.env" || { echo "missing persistent env"; exit 11; }
+          mkdir -p "$APP_DIR/universal_bot" "$APP_DIR/scripts"
+          cp -a "$GITHUB_WORKSPACE/universal_bot/." "$APP_DIR/universal_bot/"
+          cp "$GITHUB_WORKSPACE/scripts/verify_elite_live_readonly.py" "$APP_DIR/scripts/verify_elite_live_readonly.py"
           test -f "$APP_DIR/universal_bot/adapters/bitget_elite.py" || { echo "missing deployed adapter"; exit 12; }
           grep -q 'def adaptive_ioc_entry' "$APP_DIR/universal_bot/adapters/bitget_elite.py" || { echo "deployed adapter is old"; exit 13; }
           test -f "$APP_DIR/universal_bot/config.py" || { echo "missing deployed config"; exit 14; }
           grep -q 'live_entry_execution_mode' "$APP_DIR/universal_bot/config.py" || { echo "deployed config is old"; exit 15; }
-          mkdir -p "$APP_DIR/scripts"
-          cp "$GITHUB_WORKSPACE/scripts/verify_elite_live_readonly.py" "$APP_DIR/scripts/verify_elite_live_readonly.py" || { echo "verifier copy failed"; exit 16; }
+          systemctl show -p WorkingDirectory universal-trading-bot-dashboard.service | grep -q "$APP_DIR" || { echo "service working directory mismatch"; exit 16; }
           BACKUP="$APP_DIR/.env.bak-before-ioc-live-$(date +%Y%m%d-%H%M%S)"
           cp "$APP_DIR/.env" "$BACKUP"
           echo "backup=$BACKUP" >> "$GITHUB_ENV"
@@ -41,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd /home/kpj3669/universal-trading-bot-dashboard
+          cd /home/kpj3669/universal-trading-bot
           PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
           "$PY" - <<'PY'
           from pathlib import Path
@@ -83,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd /home/kpj3669/universal-trading-bot-dashboard
+          cd /home/kpj3669/universal-trading-bot
           PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
           RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
           test -s "$RELAY"
@@ -111,7 +113,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
+          APP_DIR=/home/kpj3669/universal-trading-bot
           SERVICE=universal-trading-bot-dashboard.service
           rollback() {
             rc=$?
