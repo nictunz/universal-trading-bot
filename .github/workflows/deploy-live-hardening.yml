@@ -93,6 +93,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           BACKUP="$APP_DIR/data/deploy-backups/$GITHUB_SHA"
           mkdir -p "$BACKUP"
+          # Keep this explicit allow-list small; these are the reviewed LIVE files.
           for file in             universal_bot/runtime_engine.py             universal_bot/adapters/bitget_elite.py             universal_bot/trade_history.py             universal_bot/dashboard.py             universal_bot/dashboard_auth.py             universal_bot/live_settings_dashboard.py
           do
             mkdir -p "$BACKUP/$(dirname "$file")"
