@@ -30,7 +30,11 @@ def main() -> None:
     checks.append(check("persistent_mode_is_paper", s.bot_mode.upper() == "PAPER", value=s.bot_mode.upper()))
     checks.append(check("execution_profile", s.bitget_execution_profile.lower() == "elite", value=s.bitget_execution_profile))
     checks.append(check("leverage_setting", int(s.leverage) == 15, value=int(s.leverage)))
-    checks.append(check("entry_multiplier", float(s.live_entry_multiplier) == 8.6, value=float(s.live_entry_multiplier)))
+    checks.append(check("entry_multiplier", float(s.live_entry_multiplier) == 8.9, value=float(s.live_entry_multiplier)))
+    checks.append(check("entry_execution_mode", s.live_entry_execution_mode == "adaptive_ioc", value=s.live_entry_execution_mode))
+    checks.append(check("entry_slippage_cap", float(s.live_entry_max_adverse_slippage_percent) == 0.03, value=float(s.live_entry_max_adverse_slippage_percent)))
+    checks.append(check("entry_child_orders", int(s.live_entry_max_child_orders) == 5, value=int(s.live_entry_max_child_orders)))
+    checks.append(check("entry_window_seconds", float(s.live_entry_execution_window_seconds) == 3.0, value=float(s.live_entry_execution_window_seconds)))
     checks.append(check("max_entries", int(s.live_max_entries_per_position) == 1, value=int(s.live_max_entries_per_position)))
     checks.append(check("max_total_multiplier", float(s.live_max_total_multiplier) == 15.0, value=float(s.live_max_total_multiplier)))
     checks.append(check("exchange_protection_required", bool(s.require_exchange_protection), value=bool(s.require_exchange_protection)))
@@ -95,7 +99,10 @@ def main() -> None:
             # If a position exists, the full protection pair must already verify.
             if pos.get("side") == "FLAT":
                 try:
-                    bot_plans = adapter._bot_plan_orders(symbol)
+                    bot_plans = [
+                        row for row in adapter._pending_plan_orders(symbol)
+                        if str(row.get("clientOid") or "").startswith("utb-")
+                    ]
                     checks.append(check(
                         f"{symbol}_stale_bot_plans",
                         len(bot_plans) == 0,
