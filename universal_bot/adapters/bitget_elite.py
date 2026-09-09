@@ -993,3 +993,34 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 self._request("POST", "/api/v2/mix/order/cancel-plan-order", body=body)
             except Exception:
                 pass
+
+
+    def replace_full_protection(
+        self,
+        symbol: str,
+        position_side: str,
+        total_qty: float,
+        tp_price: float,
+        sl_price: float,
+    ) -> dict[str, Any]:
+        """Replace bot-owned TP/SL with one exact full-position pair."""
+        try:
+            self.cancel_protection(symbol)
+            qty = self._qty(symbol, total_qty)
+            orders = self._place_protection(
+                symbol,
+                str(position_side).lower(),
+                qty,
+                float(tp_price),
+                float(sl_price),
+            )
+            status = self.protection_status(symbol)
+            if not status.get("ok"):
+                return {
+                    "ok": False,
+                    "reason": status.get("reason") or "replacement TP/SL not verified",
+                    "orders": orders,
+                }
+            return {"ok": True, "orders": orders, "verified": status}
+        except Exception as exc:
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
