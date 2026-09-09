@@ -46,7 +46,6 @@ public class MobileMarketRelayService extends Service {
     // Boundary reads start at +1s so a just-closed exchange candle has time to roll over.
     private static final long RELAY_PHASE_MILLIS = 1_000L;
     private static final long TIMEFRAME_MILLIS = 15L * 60L * 1_000L;
-    private static final long BOUNDARY_CONFIRM_WINDOW_MILLIS = 12_000L;
     // First read at about +1s, then retry at about +2s and +4s if needed.
     private static final long[] ROLLOVER_RETRY_DELAYS_MS = {0L, 1_000L, 2_000L};
     private static final String RELAY_TIMEFRAME = "15m";
@@ -323,7 +322,10 @@ public class MobileMarketRelayService extends Service {
 
     private static boolean rolledOverForBoundary(JSONArray rows, long observedAtMs) {
         long elapsed = Math.floorMod(observedAtMs, TIMEFRAME_MILLIS);
-        if (elapsed > BOUNDARY_CONFIRM_WINDOW_MILLIS) return true;
+        // Outside the post-boundary focus window no rollover confirmation is
+        // needed. Inside it, never accept a stale previous candle merely
+        // because a slow network request crossed the short retry window.
+        if (elapsed >= BOUNDARY_WINDOW_MILLIS) return true;
         long expectedCurrentOpen = observedAtMs - elapsed;
         long latestOpen = Long.MIN_VALUE;
         for (int i = 0; i < rows.length(); i++) {
