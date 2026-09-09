@@ -1,0 +1,155 @@
+name: arm-elite-live
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/arm-elite-live.yml'
+
+concurrency:
+  group: arm-elite-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  arm:
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy latest runtime without touching credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
+          test -s "$APP_DIR/.env"
+          BACKUP="$APP_DIR/.env.bak-before-ioc-live-$(date +%Y%m%d-%H%M%S)"
+          cp "$APP_DIR/.env" "$BACKUP"
+          find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' ! -name 'data' ! -name '*.bak-before-*' -exec rm -rf {} +
+          tar --exclude='.git' --exclude='.env' --exclude='data' -cf - . | tar -xf - -C "$APP_DIR"
+          echo "backup=$BACKUP" >> "$GITHUB_ENV"
+
+      - name: Pin final PAPER preflight profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot-dashboard
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          "$PY" - <<'PY'
+          from pathlib import Path
+          p=Path('.env')
+          updates={
+              'BOT_MODE':'PAPER',
+              'SYMBOL':'BTC/USDT:USDT',
+              'SYMBOLS':'BTC/USDT:USDT',
+              'TIMEFRAME':'15m',
+              'BITGET_EXECUTION_PROFILE':'elite',
+              'BITGET_API_FAMILY':'classic-first',
+              'LEVERAGE':'15',
+              'MARGIN_MODE':'crossed',
+              'LIVE_REQUIRE_ONE_WAY_MODE':'true',
+              'MAX_PYRAMIDING':'1',
+              'LIVE_ENTRY_MULTIPLIER':'8.9',
+              'LIVE_ENTRY_EXECUTION_MODE':'adaptive_ioc',
+              'LIVE_ENTRY_MAX_ADVERSE_SLIPPAGE_PERCENT':'0.03',
+              'LIVE_ENTRY_MAX_CHILD_ORDERS':'5',
+              'LIVE_ENTRY_EXECUTION_WINDOW_SECONDS':'3.0',
+              'LIVE_ENTRY_DEPTH_PARTICIPATION':'0.20',
+              'LIVE_ENTRY_CHILD_PAUSE_SECONDS':'0.15',
+              'LIVE_MAX_ENTRIES_PER_POSITION':'1',
+              'LIVE_MAX_TOTAL_MULTIPLIER':'15',
+              'REQUIRE_EXCHANGE_PROTECTION':'true',
+          }
+          lines=p.read_text(encoding='utf-8').splitlines(); out=[]; seen=set()
+          for line in lines:
+              key=line.split('=',1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else ''
+              if key in updates:
+                  out.append(f'{key}={updates[key]}'); seen.add(key)
+              else: out.append(line)
+          out.extend(f'{k}={v}' for k,v in updates.items() if k not in seen)
+          p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          PY
+          chmod 600 .env
+
+      - name: Verify fresh mobile relay, account, protection and IOC order book
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot-dashboard
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
+          test -s "$RELAY"
+          AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY") ))
+          echo "mobile_relay_age_seconds=$AGE"
+          test "$AGE" -le 90
+          "$PY" scripts/verify_elite_live_readonly.py
+          BOT_MODE=LIVE "$PY" -m universal_bot.preflight > /tmp/elite-live-preflight.json
+          "$PY" - <<'PY'
+          import json
+          from universal_bot.config import Settings
+          from universal_bot.main import build_adapter
+          with open('/tmp/elite-live-preflight.json',encoding='utf-8') as f: data=json.load(f)
+          assert data.get('ready') is True, data
+          assert data.get('api_family') == 'classic-v2', data
+          s=Settings()
+          a=build_adapter(s.model_copy(update={'bot_mode':'LIVE'}))
+          book=a._public_order_book(s.symbol)
+          assert book['bids'] and book['asks'], book
+          assert book['bids'][0][0] < book['asks'][0][0], book
+          print({'preflight_ready':True,'api_family':data.get('api_family'),'bids':len(book['bids']),'asks':len(book['asks'])})
+          PY
+
+      - name: Activate LIVE with rollback guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
+          SERVICE=universal-trading-bot-dashboard.service
+          rollback() {
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+              echo "LIVE activation failed; restoring PAPER backup"
+              sudo cp "$backup" "$APP_DIR/.env"
+              sudo systemctl restart "$SERVICE" || true
+            fi
+            exit $rc
+          }
+          trap rollback EXIT
+          cd "$APP_DIR"
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          "$PY" - <<'PY'
+          from pathlib import Path
+          p=Path('.env'); lines=p.read_text(encoding='utf-8').splitlines(); out=[]; done=False
+          for line in lines:
+              if '=' in line and not line.lstrip().startswith('#') and line.split('=',1)[0].strip()=='BOT_MODE':
+                  out.append('BOT_MODE=LIVE'); done=True
+              else: out.append(line)
+          if not done: out.append('BOT_MODE=LIVE')
+          p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          PY
+          chmod 600 .env
+          sudo systemctl restart "$SERVICE"
+          sleep 8
+          systemctl is-active "$SERVICE"
+          curl -fsS -m 15 http://127.0.0.1:8000/health | tee /tmp/live-health.json
+          curl -fsS -m 20 http://127.0.0.1:8000/api/live-readiness | tee /tmp/live-readiness.json
+          "$PY" - <<'PY'
+          import json
+          from universal_bot.config import Settings
+          s=Settings()
+          assert s.bot_mode.upper() == 'LIVE'
+          assert s.live_entry_multiplier == 8.9
+          assert s.live_entry_execution_mode == 'adaptive_ioc'
+          assert s.live_entry_max_adverse_slippage_percent == 0.03
+          assert s.live_entry_max_child_orders == 5
+          with open('/tmp/live-health.json',encoding='utf-8') as f: health=json.load(f)
+          with open('/tmp/live-readiness.json',encoding='utf-8') as f: ready=json.load(f)
+          assert health.get('status') == 'ok', health
+          assert ready.get('ready') is True, ready
+          print({'mode':'LIVE','ready':True,'entry_multiplier':8.9,'execution':'adaptive_ioc','max_children':5,'slippage_cap_percent':0.03})
+          PY
+          trap - EXIT
