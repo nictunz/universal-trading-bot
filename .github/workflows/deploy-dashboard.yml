@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, trading-bot]
     timeout-minutes: 15
     steps:
