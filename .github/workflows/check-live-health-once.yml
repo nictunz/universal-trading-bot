@@ -45,3 +45,41 @@ jobs:
           cat /tmp/live-ready-final.json 2>/dev/null || true
           sudo journalctl -u universal-trading-bot-dashboard.service -n 120 --no-pager || true
           exit 1
+
+      - name: Print sanitized active settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          curl -fsS -m 10 http://127.0.0.1:8000/api/state > /tmp/active-state.json
+          "$PY" - <<'PY'
+          import json
+          from universal_bot.config import Settings
+          s=Settings()
+          names=[
+              'bot_mode','exchange','symbol','symbols','timeframe','poll_seconds',
+              'volume_lookback','volume_break_multiplier','use_four_crypto_exchanges',
+              'min_one_bar_vol','max_one_bar_vol','volatility_bars',
+              'tp_vol_multiplier','sl_vol_multiplier','min_tp_percent','max_tp_percent',
+              'min_sl_percent','max_sl_percent','use_nbar_volatility_block',
+              'nbar_volatility_bars','max_nbar_volatility','use_adx_filter','adx_length',
+              'adx_min','adx_max','use_rsi_filter','rsi_length','rsi_oversold_min',
+              'rsi_oversold_max','rsi_overbought_min','rsi_overbought_max','allow_long',
+              'allow_short','adaptive_regime_enabled','first_entry_consecutive_candles',
+              'apply_consecutive_candles_to_all_entries','max_pyramiding','cooldown_bars',
+              'reentry_bars','excluded_hours','leverage','margin_mode',
+              'live_entry_multiplier','live_entry_execution_mode',
+              'live_entry_max_adverse_slippage_percent','live_entry_max_child_orders',
+              'live_entry_execution_window_seconds','live_entry_depth_participation',
+              'live_entry_child_pause_seconds','live_max_entries_per_position',
+              'live_max_total_multiplier','require_exchange_protection',
+              'live_require_one_way_mode','backtest_fee_percent',
+              'backtest_slippage_percent'
+          ]
+          settings={name:getattr(s,name) for name in names}
+          with open('/tmp/active-state.json',encoding='utf-8') as f: state=json.load(f)
+          symbols=state.get('symbols') or []
+          runtime=symbols[0] if symbols else {}
+          print(json.dumps({'settings':settings,'runtime':runtime},ensure_ascii=False,default=str))
+          PY
