@@ -193,6 +193,28 @@ def _wait_for_relay_change(
         time.sleep(min(max(0.01, float(check_interval_seconds)), remaining))
 
 
+def _adaptive_runtime_poll_seconds(
+    timeframe: str,
+    default_seconds: float,
+    *,
+    now: pd.Timestamp | None = None,
+) -> float:
+    """Use a 1-second calculation cadence just after every candle boundary."""
+    fallback = max(1.0, float(default_seconds))
+    delta_seconds = timeframe_delta(timeframe).total_seconds()
+    if delta_seconds <= 0:
+        return fallback
+    current = now if now is not None else pd.Timestamp.now(tz="UTC")
+    if current.tzinfo is None:
+        current = current.tz_localize("UTC")
+    elapsed = current.timestamp() % delta_seconds
+    if elapsed < 60.0:
+        return 1.0
+    if delta_seconds - elapsed <= 60.0:
+        return min(fallback, 5.0)
+    return fallback
+
+
 def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
     """Initialize exchange runtimes and scan in the background.
 
@@ -258,7 +280,10 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
         scanner.step(frames)
         _wait_for_relay_change(
             relay_revision,
-            max(1, settings.poll_seconds),
+            _adaptive_runtime_poll_seconds(
+                settings.timeframe,
+                settings.poll_seconds,
+            ),
         )
 
 
