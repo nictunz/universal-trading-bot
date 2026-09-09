@@ -323,6 +323,7 @@ def test_replace_protection_places_and_verifies_new_pair_before_old_cancel(monke
 
     assert result["ok"] is True
     assert cancelled == ["old-tp", "old-sl"]
+    assert adapter._bot_protection_orders(pending_new) == pending_new
 
 
 def test_private_get_retries_429_but_post_is_never_replayed(monkeypatch):
