@@ -32,11 +32,31 @@ jobs:
           test "$AGE" -le 90
 
           curl -fsS -m 10 http://127.0.0.1:8000/health > /tmp/pre-health.json
-          curl -fsS -m 10 http://127.0.0.1:8000/api/state > /tmp/pre-state.json
+          cd "$APP_DIR"
           "$PY" - <<'PY'
           import json
+          import requests
+          from universal_bot.config import Settings
+
+          settings = Settings()
+          assert settings.dashboard_auth_enabled
+          assert settings.dashboard_username and settings.dashboard_password
+          session = requests.Session()
+          login = session.post(
+              'http://127.0.0.1:8000/login',
+              data={
+                  'username': settings.dashboard_username,
+                  'password': settings.dashboard_password,
+                  'next': '/',
+              },
+              allow_redirects=False,
+              timeout=10,
+          )
+          assert login.status_code == 303, login.status_code
+          state_response = session.get('http://127.0.0.1:8000/api/state', timeout=10)
+          state_response.raise_for_status()
           h=json.load(open('/tmp/pre-health.json'))
-          s=json.load(open('/tmp/pre-state.json'))
+          s=state_response.json()
           assert h.get('status') == 'ok', h
           rows=s.get('symbols') or []
           assert rows, s
@@ -73,21 +93,42 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           BACKUP="$APP_DIR/data/deploy-backups/$GITHUB_SHA"
           mkdir -p "$BACKUP"
-          for file in             universal_bot/runtime_engine.py             universal_bot/adapters/bitget_elite.py             universal_bot/trade_history.py             universal_bot/dashboard.py             universal_bot/live_settings_dashboard.py
+          for file in             universal_bot/runtime_engine.py             universal_bot/adapters/bitget_elite.py             universal_bot/trade_history.py             universal_bot/dashboard.py             universal_bot/dashboard_auth.py             universal_bot/live_settings_dashboard.py
           do
             mkdir -p "$BACKUP/$(dirname "$file")"
             cp "$APP_DIR/$file" "$BACKUP/$file"
             install -m 0644 "$file" "$APP_DIR/$file"
           done
 
+          cd "$APP_DIR"
           sudo systemctl start "$SERVICE"
           for attempt in $(seq 1 60); do
-            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/post-health.json               && curl -fsS -m 10 http://127.0.0.1:8000/api/live-readiness > /tmp/post-ready.json               && curl -fsS -m 10 http://127.0.0.1:8000/api/runtime-info > /tmp/post-runtime.json; then
+            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/post-health.json; then
               if "$PY" - <<'PY'
           import json
+          import requests
+          from universal_bot.config import Settings
+
+          settings = Settings()
+          session = requests.Session()
+          login = session.post(
+              'http://127.0.0.1:8000/login',
+              data={
+                  'username': settings.dashboard_username,
+                  'password': settings.dashboard_password,
+                  'next': '/',
+              },
+              allow_redirects=False,
+              timeout=10,
+          )
+          assert login.status_code == 303, login.status_code
+          ready_response = session.get('http://127.0.0.1:8000/api/live-readiness', timeout=10)
+          runtime_response = session.get('http://127.0.0.1:8000/api/runtime-info', timeout=10)
+          ready_response.raise_for_status()
+          runtime_response.raise_for_status()
           h=json.load(open('/tmp/post-health.json'))
-          r=json.load(open('/tmp/post-ready.json'))
-          v=json.load(open('/tmp/post-runtime.json'))
+          r=ready_response.json()
+          v=runtime_response.json()
           assert h.get('status') == 'ok', h
           assert r.get('ready') is True, r
           rows=v.get('runtimes') or []
