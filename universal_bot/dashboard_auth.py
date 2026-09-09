@@ -57,6 +57,15 @@ def _valid_token(settings: Settings, token: str | None) -> bool:
 def _is_protected(request: Request) -> bool:
     path = request.url.path
     method = request.method.upper()
+    # Keep only the liveness probe and authentication endpoints public.  The
+    # dashboard itself exposes account state, fills and private readiness
+    # checks, so it must use the same administrator login as strategy editing.
+    if path in {"/health", "/login", "/logout", "/api/auth-status"}:
+        return False
+    if path == "/" or path.startswith("/api/"):
+        return True
+    if path in {"/docs", "/redoc", "/openapi.json"}:
+        return True
     if path.startswith("/strategy"):
         return True
     if path.startswith("/api/strategy-") or path == "/api/strategy-settings":
@@ -75,7 +84,7 @@ def _login_page(message: str = "", next_url: str = "/strategy") -> str:
 *{{box-sizing:border-box}}body{{margin:0;background:#0b0f14;color:#eef2f7;font-family:system-ui;display:grid;place-items:center;min-height:100vh;padding:18px}}
 .card{{width:min(420px,100%);background:#17202c;border:1px solid #334155;border-radius:16px;padding:20px}}h1{{font-size:22px;margin-top:0}}label{{display:block;color:#9daabd;font-size:13px;margin:12px 0 5px}}input{{width:100%;padding:12px;border-radius:9px;border:1px solid #556579;background:#0b0f14;color:#eef2f7}}button{{width:100%;margin-top:16px;padding:12px;border:0;border-radius:9px;background:#2563a8;color:white;font-weight:800}}.msg{{color:#ffcc66;margin:10px 0}}a{{color:#7db7ff}}</style></head>
 <body><div class='card'><h1>🔐 관리자 로그인</h1><div style='color:#9daabd'>전략 설정과 LIVE 제어는 로그인 후 사용할 수 있습니다.</div>{msg}
-<form method='post' action='/login'><input type='hidden' name='next' value='{html.escape(next_url, quote=True)}'><label>아이디</label><input name='username' autocomplete='username' required><label>비밀번호</label><input name='password' type='password' autocomplete='current-password' required><button type='submit'>로그인</button></form><p><a href='/'>← 공개 대시보드로 돌아가기</a></p></div></body></html>"""
+<form method='post' action='/login'><input type='hidden' name='next' value='{html.escape(next_url, quote=True)}'><label>아이디</label><input name='username' autocomplete='username' required><label>비밀번호</label><input name='password' type='password' autocomplete='current-password' required><button type='submit'>로그인</button></form></div></body></html>"""
 
 
 def install_dashboard_auth(app: FastAPI) -> None:
@@ -108,7 +117,7 @@ def install_dashboard_auth(app: FastAPI) -> None:
         return response
 
     @app.get("/login", response_class=HTMLResponse)
-    def login_page(request: Request, next: str = "/strategy"):
+    def login_page(request: Request, next: str = "/"):
         current = Settings()
         if _configured(current) and _valid_token(current, request.cookies.get(COOKIE_NAME)):
             return RedirectResponse(next if next.startswith("/") else "/strategy", status_code=303)
@@ -121,7 +130,7 @@ def install_dashboard_auth(app: FastAPI) -> None:
         form = parse_qs(raw, keep_blank_values=True)
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
-        next_url = form.get("next", ["/strategy"])[0]
+        next_url = form.get("next", ["/"])[0]
         current = Settings()
         if not _configured(current):
             return HTMLResponse(_login_page("관리자 인증값이 아직 .env에 설정되지 않았습니다."), status_code=503)
