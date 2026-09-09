@@ -21,7 +21,11 @@ expected = {
     'MARGIN_MODE': (s.margin_mode, 'crossed'),
     'LIVE_REQUIRE_ONE_WAY_MODE': (s.live_require_one_way_mode, True),
     'MAX_PYRAMIDING': (s.max_pyramiding, 1),
-    'LIVE_ENTRY_MULTIPLIER': (s.live_entry_multiplier, 8.6),
+    'LIVE_ENTRY_MULTIPLIER': (s.live_entry_multiplier, 8.9),
+    'LIVE_ENTRY_EXECUTION_MODE': (s.live_entry_execution_mode, 'adaptive_ioc'),
+    'LIVE_ENTRY_MAX_ADVERSE_SLIPPAGE_PERCENT': (s.live_entry_max_adverse_slippage_percent, 0.03),
+    'LIVE_ENTRY_MAX_CHILD_ORDERS': (s.live_entry_max_child_orders, 5),
+    'LIVE_ENTRY_EXECUTION_WINDOW_SECONDS': (s.live_entry_execution_window_seconds, 3.0),
     'LIVE_MAX_ENTRIES_PER_POSITION': (s.live_max_entries_per_position, 1),
     'LIVE_MAX_TOTAL_MULTIPLIER': (s.live_max_total_multiplier, 15.0),
 }
@@ -97,4 +101,4 @@ echo "===== LIVE READINESS ====="
 curl -sS -m 15 http://127.0.0.1:8000/api/live-readiness; echo
 
 echo
-echo "LIVE 활성화 완료. BTC는 15x 계정 레버리지 상한, JSON 기준 8.6x 진입, 최대 1회으로 동작합니다."
+echo "LIVE 활성화 완료. BTC는 15x 계정 레버리지 상한, JSON 기준 8.9x 진입, 최대 1회으로 동작합니다."
