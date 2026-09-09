@@ -1,8 +1,10 @@
 from universal_bot.config import Settings
 from universal_bot.dashboard import create_dashboard
+from universal_bot.dashboard_auth import _is_protected
 from universal_bot.engine import TradingEngine
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy.v15 import UniversalV15Strategy
+from starlette.requests import Request
 
 
 class DummyAdapter:
@@ -47,3 +49,17 @@ def test_dashboard_html_contains_safety_and_cost_panels():
     assert "실시간 전략 상태" in html
     assert "/api/backtest" in html
     assert "/api/live-readiness" in html
+
+
+def test_dashboard_and_sensitive_apis_require_same_admin_login():
+    def request(path: str, method: str = "GET") -> Request:
+        return Request({"type": "http", "path": path, "method": method, "headers": []})
+
+    assert _is_protected(request("/")) is True
+    assert _is_protected(request("/api/state")) is True
+    assert _is_protected(request("/api/live-readiness")) is True
+    assert _is_protected(request("/api/runtime-info")) is True
+    assert _is_protected(request("/api/trades")) is True
+    assert _is_protected(request("/api/candles")) is True
+    assert _is_protected(request("/health")) is False
+    assert _is_protected(request("/login")) is False
