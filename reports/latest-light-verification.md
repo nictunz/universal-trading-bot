@@ -1,7 +1,7 @@
 # Latest light self-hosted verification
 
-- Generated UTC: 2026-09-09T08:22:54Z
-- Source commit: df3689c326c05d813a2900d2b2225ec50ce2260b
+- Generated UTC: 2026-09-09T08:36:20Z
+- Source commit: 76441f709e48187aadcac17414f6e51458e6ea00
 - Runner: trading-bot-new
 
 | Check | Outcome |
@@ -15,7 +15,7 @@
 ```text
 ........................................................................ [ 56%]
 .......................................................                  [100%]
-127 passed in 57.48s
+127 passed in 32.46s
 ```
 ## Dashboard
 ```text
