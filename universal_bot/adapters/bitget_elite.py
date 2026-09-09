@@ -111,6 +111,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         self._contract_cache: dict[str, dict[str, Any]] = {}
         self._account_mode_cache: dict[str, str] = {}
         self._rate_limiter = _EndpointRateLimiter()
+        self._known_protection_order_ids: set[str] = set()
 
     def _acquire_api_budget(self, method: str, path: str) -> None:
         # Tests and lightweight probes sometimes instantiate via __new__.
@@ -1070,9 +1071,14 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             return "sl"
         return None
 
-    @classmethod
-    def _bot_protection_orders(cls, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [order for order in orders if cls._protection_leg(order) is not None]
+    def _bot_protection_orders(self, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        known_ids = getattr(self, "_known_protection_order_ids", set())
+        return [
+            order
+            for order in orders
+            if self._protection_leg(order) is not None
+            or str(order.get("orderId") or "") in known_ids
+        ]
 
     @staticmethod
     def _order_identity(order: dict[str, Any]) -> tuple[str, str]:
@@ -1197,8 +1203,12 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     ) -> list[str]:
         sid = self._symbol_id(symbol)
         errors: list[str] = []
+        known_ids = getattr(self, "_known_protection_order_ids", set())
         for order in orders:
-            if self._protection_leg(order) is None:
+            if (
+                self._protection_leg(order) is None
+                and str(order.get("orderId") or "") not in known_ids
+            ):
                 continue
             order_id = order.get("orderId")
             client_oid = order.get("clientOid")
@@ -1224,6 +1234,9 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         orders = self._bot_protection_orders(self._pending_plan_orders(symbol))
         errors = self._cancel_plan_orders(symbol, orders)
         remaining = self._bot_protection_orders(self._pending_plan_orders(symbol))
+        self._known_protection_order_ids = {
+            str(order.get("orderId")) for order in remaining if order.get("orderId")
+        }
         return {
             "ok": not errors and not remaining,
             "cancelled": len(orders) - len(errors),
@@ -1281,6 +1294,9 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                     "orders": orders,
                     "verified": final,
                 }
+            self._known_protection_order_ids = {
+                str(order.get("orderId")) for order in orders if order.get("orderId")
+            }
             return {
                 "ok": True,
                 "orders": orders,
