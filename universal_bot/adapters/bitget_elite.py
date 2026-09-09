@@ -4,8 +4,11 @@ import base64
 import hashlib
 import hmac
 import json
+import random
+import threading
 import time
 import uuid
+from collections import defaultdict, deque
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 from urllib.parse import urlencode
@@ -32,6 +35,32 @@ class AmbiguousOrderResult(RuntimeError):
         self.side = side
         self.requested_qty = float(requested_qty)
         self.reduce_only = bool(reduce_only)
+
+
+class _EndpointRateLimiter:
+    """Small per-endpoint guard with headroom below Bitget's published limits."""
+
+    def __init__(self) -> None:
+        self._calls: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def acquire(self, method: str, path: str) -> None:
+        # Public market data is documented at 20/s.  Private endpoint limits
+        # vary; eight calls/s leaves headroom without delaying five IOC slices.
+        limit = 18 if "/market/" in path else 8
+        key = (method.upper(), path)
+        while True:
+            wait = 0.0
+            with self._lock:
+                now = time.monotonic()
+                calls = self._calls[key]
+                while calls and calls[0] <= now - 1.0:
+                    calls.popleft()
+                if len(calls) < limit:
+                    calls.append(now)
+                    return
+                wait = max(0.001, calls[0] + 1.0 - now)
+            time.sleep(wait)
 
 
 class BitgetEliteAdapter(HybridCCXTAdapter):
@@ -81,6 +110,15 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         self._session.headers.update({"Connection": "keep-alive"})
         self._contract_cache: dict[str, dict[str, Any]] = {}
         self._account_mode_cache: dict[str, str] = {}
+        self._rate_limiter = _EndpointRateLimiter()
+
+    def _acquire_api_budget(self, method: str, path: str) -> None:
+        # Tests and lightweight probes sometimes instantiate via __new__.
+        limiter = getattr(self, "_rate_limiter", None)
+        if limiter is None:
+            limiter = _EndpointRateLimiter()
+            self._rate_limiter = limiter
+        limiter.acquire(method, path)
 
     @staticmethod
     def _symbol_id(symbol: str) -> str:
@@ -130,37 +168,58 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
         query = urlencode([(str(k), str(v)) for k, v in clean_params.items()])
         body_text = "" if not body else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-        headers = self._signed_headers(method, path, query, body_text)
         url = self.BASE_URL + path + (f"?{query}" if query else "")
-        response = self._session.request(
-            method,
-            url,
-            headers=headers,
-            data=body_text or None,
-            timeout=self.timeout,
-        )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Bitget Elite returned non-JSON response: HTTP {response.status_code}"
-            ) from exc
-        if str(payload.get("code")) != "00000":
+        attempts = 3 if method == "GET" else 1
+        for attempt in range(attempts):
+            self._acquire_api_budget(method, path)
+            headers = self._signed_headers(method, path, query, body_text)
+            response = self._session.request(
+                method,
+                url,
+                headers=headers,
+                data=body_text or None,
+                timeout=self.timeout,
+            )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Bitget Elite returned non-JSON response: HTTP {response.status_code}"
+                ) from exc
+            code = str(payload.get("code"))
+            limited = response.status_code == 429 or code in {"429", "40010", "40500"}
+            if code == "00000":
+                return payload.get("data")
+            if limited and method == "GET" and attempt + 1 < attempts:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 0.15 * (2**attempt)
+                except (TypeError, ValueError):
+                    delay = 0.15 * (2**attempt)
+                time.sleep(min(1.0, max(0.05, delay) + random.uniform(0.0, 0.05)))
+                continue
             raise RuntimeError(
                 f"Bitget Elite API error HTTP {response.status_code} "
                 f"{payload.get('code')}: {payload.get('msg')}"
             )
-        return payload.get("data")
+        raise RuntimeError("Bitget Elite GET retry budget exhausted")
 
     def _public_get(self, path: str, params: dict[str, Any]) -> Any:
-        response = self._session.get(self.BASE_URL + path, params=params, timeout=self.timeout)
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError(f"Bitget public API returned HTTP {response.status_code}") from exc
-        if str(payload.get("code")) != "00000":
+        for attempt in range(3):
+            self._acquire_api_budget("GET", path)
+            response = self._session.get(self.BASE_URL + path, params=params, timeout=self.timeout)
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise RuntimeError(f"Bitget public API returned HTTP {response.status_code}") from exc
+            code = str(payload.get("code"))
+            if code == "00000":
+                return payload.get("data")
+            if (response.status_code == 429 or code == "429") and attempt < 2:
+                time.sleep(0.10 * (2**attempt) + random.uniform(0.0, 0.03))
+                continue
             raise RuntimeError(f"Bitget public API error {payload.get('code')}: {payload.get('msg')}")
-        return payload.get("data")
+        raise RuntimeError("Bitget public GET retry budget exhausted")
 
     def _contract(self, symbol: str) -> dict[str, Any]:
         sid = self._symbol_id(symbol)
@@ -384,7 +443,8 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         return (
             "non-json response" in text
             or "request timed out" in text
-            or any(f" {code}:" in text for code in ("40010", "40725", "45001"))
+            or "http 429" in text
+            or any(f" {code}:" in text for code in ("40010", "40500", "40725", "45001"))
         )
 
     def _order_detail(
@@ -573,28 +633,47 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         else:
             close_side = "sell" if position_side == "long" else "buy"
 
-        for kind, trigger in (("tp", tp_price), ("sl", sl_price)):
-            if trigger is None:
-                continue
-            body: dict[str, Any] = {
-                "planType": "normal_plan",
-                "symbol": sid,
-                "productType": self.PRODUCT_TYPE,
-                "marginMode": "crossed",
-                "marginCoin": self.MARGIN_COIN,
-                "size": qty,
-                "triggerPrice": self._price(symbol, float(trigger)),
-                "triggerType": self.TPSL_TRIGGER_TYPE,
-                "side": close_side,
-                "orderType": self.TPSL_ORDER_TYPE,
-                "clientOid": self._client_oid(f"utb-{kind}"),
-            }
-            if mode == "hedge_mode":
-                body["tradeSide"] = "close"
-            else:
-                body["reduceOnly"] = "yes"
-            data = self._request("POST", "/api/v2/mix/order/place-plan-order", body=body)
-            results.append(dict(data or {}))
+        try:
+            for kind, trigger in (("tp", tp_price), ("sl", sl_price)):
+                if trigger is None:
+                    continue
+                body: dict[str, Any] = {
+                    "planType": "normal_plan",
+                    "symbol": sid,
+                    "productType": self.PRODUCT_TYPE,
+                    "marginMode": "crossed",
+                    "marginCoin": self.MARGIN_COIN,
+                    "size": qty,
+                    "triggerPrice": self._price(symbol, float(trigger)),
+                    "triggerType": self.TPSL_TRIGGER_TYPE,
+                    "side": close_side,
+                    "orderType": self.TPSL_ORDER_TYPE,
+                    "clientOid": self._client_oid(f"utb-{kind}"),
+                }
+                if mode == "hedge_mode":
+                    body["tradeSide"] = "close"
+                else:
+                    body["reduceOnly"] = "yes"
+                data = dict(
+                    self._request("POST", "/api/v2/mix/order/place-plan-order", body=body)
+                    or {}
+                )
+                # Preserve the submitted semantics because some pending-order
+                # responses omit one of these fields briefly after creation.
+                data.update({
+                    "clientOid": data.get("clientOid") or body["clientOid"],
+                    "planType": body["planType"],
+                    "triggerPrice": body["triggerPrice"],
+                    "size": body["size"],
+                    "side": body["side"],
+                    "leg": kind,
+                })
+                results.append(data)
+        except Exception:
+            # If only one leg was accepted, remove that exact new leg while
+            # leaving the previously verified pair untouched.
+            self._cancel_plan_orders(symbol, results)
+            raise
         return results
 
     def _public_order_book(self, symbol: str, limit: int = 50) -> dict[str, list[tuple[float, float]]]:
@@ -713,6 +792,8 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         reference_price: float,
         tp_pct: float,
         sl_pct: float,
+        fixed_tp_price: float | None = None,
+        fixed_sl_price: float | None = None,
         max_adverse_slippage_percent: float = 0.03,
         max_child_orders: int = 5,
         execution_window_seconds: float = 3.0,
@@ -740,6 +821,12 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         adverse = max(0.0, float(max_adverse_slippage_percent)) / 100.0
         limit_price = reference_price * (1.0 + adverse if side == "buy" else 1.0 - adverse)
         participation = min(1.0, max(0.01, float(depth_participation)))
+        if position_side == "LONG":
+            fixed_tp = float(fixed_tp_price or reference_price * (1.0 + float(tp_pct) / 100.0))
+            fixed_sl = float(fixed_sl_price or reference_price * (1.0 - float(sl_pct) / 100.0))
+        else:
+            fixed_tp = float(fixed_tp_price or reference_price * (1.0 - float(tp_pct) / 100.0))
+            fixed_sl = float(fixed_sl_price or reference_price * (1.0 + float(sl_pct) / 100.0))
 
         for _ in range(max(1, int(max_child_orders))):
             remaining = requested - max(0.0, latest_size - before_size)
@@ -772,22 +859,15 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             current_size = float(position.get("size") or 0.0)
             avg_entry = float(position.get("entry_price") or 0.0)
             if current_size > latest_size + 1e-12 and avg_entry > 0:
-                if position_side == "LONG":
-                    tp_price = avg_entry * (1.0 + float(tp_pct) / 100.0)
-                    sl_price = avg_entry * (1.0 - float(sl_pct) / 100.0)
-                    protect_side = "long"
-                else:
-                    tp_price = avg_entry * (1.0 - float(tp_pct) / 100.0)
-                    sl_price = avg_entry * (1.0 + float(sl_pct) / 100.0)
-                    protect_side = "short"
+                protect_side = "long" if position_side == "LONG" else "short"
                 replaced = self.replace_full_protection(
-                    symbol, protect_side, current_size, tp_price, sl_price
+                    symbol, protect_side, current_size, fixed_tp, fixed_sl
                 )
                 protection_updates.append({
                     "qty": current_size,
                     "average": avg_entry,
-                    "tp": tp_price,
-                    "sl": sl_price,
+                    "tp": fixed_tp,
+                    "sl": fixed_sl,
                     "ok": bool(replaced.get("ok")),
                 })
                 protection_ok = bool(replaced.get("ok"))
@@ -821,6 +901,8 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "protection_ok": protection_ok,
             "execution_mode": "adaptive_ioc",
             "limit_price": limit_price,
+            "fixed_tp": fixed_tp,
+            "fixed_sl": fixed_sl,
         }
 
     def market_order(
@@ -952,6 +1034,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         sid = self._symbol_id(symbol)
         rows: list[dict[str, Any]] = []
         # Bitget has used both normal_plan and profit_loss for active TP/SL plans.
+        errors: list[Exception] = []
         for plan_type in ("normal_plan", "profit_loss"):
             try:
                 data = self._request(
@@ -965,30 +1048,158 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 ) or {}
                 items = data.get("entrustedList") if isinstance(data, dict) else data
                 rows.extend(dict(x) for x in (items or []))
-            except Exception:
-                continue
-        return rows
+            except Exception as exc:
+                errors.append(exc)
+        if len(errors) == 2:
+            raise RuntimeError(f"pending protection queries failed: {errors[-1]}")
+        unique: dict[str, dict[str, Any]] = {}
+        for index, row in enumerate(rows):
+            key = str(row.get("orderId") or row.get("clientOid") or f"row-{index}")
+            unique[key] = row
+        return list(unique.values())
 
-    def protection_status(self, symbol: str) -> dict[str, Any]:
+    @staticmethod
+    def _protection_leg(order: dict[str, Any]) -> str | None:
+        leg = str(order.get("leg") or "").lower()
+        client_oid = str(order.get("clientOid") or "").lower()
+        if leg in {"tp", "sl"}:
+            return leg
+        if client_oid.startswith("utb-tp-"):
+            return "tp"
+        if client_oid.startswith("utb-sl-"):
+            return "sl"
+        return None
+
+    @classmethod
+    def _bot_protection_orders(cls, orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [order for order in orders if cls._protection_leg(order) is not None]
+
+    @staticmethod
+    def _order_identity(order: dict[str, Any]) -> tuple[str, str]:
+        return str(order.get("orderId") or ""), str(order.get("clientOid") or "")
+
+    def protection_status(
+        self,
+        symbol: str,
+        *,
+        expected_orders: list[dict[str, Any]] | None = None,
+        require_only_expected: bool = False,
+    ) -> dict[str, Any]:
         last_error: Exception | None = None
         for _ in range(5):
             try:
                 orders = self._pending_plan_orders(symbol)
-                # Our implementation places TP and SL as two normal trigger orders.
-                prices = [str(x.get("triggerPrice") or "").strip() for x in orders]
-                active = [x for x, p in zip(orders, prices) if p and p != "0"]
-                if len(active) >= 2:
-                    return {"ok": True, "supported": True, "count": len(active), "orders": active}
+                bot_orders = self._bot_protection_orders(orders)
+                expected = expected_orders or []
+                if expected:
+                    expected_order_ids = {
+                        str(order.get("orderId")) for order in expected if order.get("orderId")
+                    }
+                    expected_client_oids = {
+                        str(order.get("clientOid")) for order in expected if order.get("clientOid")
+                    }
+                    active = []
+                    for pending in orders:
+                        order_id = str(pending.get("orderId") or "")
+                        client_oid = str(pending.get("clientOid") or "")
+                        wanted = next(
+                            (
+                                order
+                                for order in expected
+                                if (order_id and order_id == str(order.get("orderId") or ""))
+                                or (client_oid and client_oid == str(order.get("clientOid") or ""))
+                            ),
+                            None,
+                        )
+                        if wanted is not None:
+                            matched = dict(pending)
+                            # orderId is also a bot-ownership proof for the
+                            # just-created pair when Bitget briefly omits clientOid.
+                            matched.setdefault("leg", self._protection_leg(wanted))
+                            active.append(matched)
+                    owned_or_expected = {
+                        self._order_identity(order): order for order in bot_orders + active
+                    }
+                    bot_orders = list(owned_or_expected.values())
+                else:
+                    active = bot_orders
+                legs = [self._protection_leg(order) for order in active]
+                def number(order: dict[str, Any], *names: str) -> Decimal:
+                    for name in names:
+                        value = order.get(name)
+                        if value not in (None, ""):
+                            try:
+                                return Decimal(str(value))
+                            except Exception:
+                                return Decimal("0")
+                    return Decimal("0")
+
+                prices_ok = all(number(order, "triggerPrice") > 0 for order in active)
+                sizes = [number(order, "size", "sizeQty", "qty") for order in active]
+                sides = [str(order.get("side") or "").lower() for order in active]
+                pair_semantics_ok = (
+                    len(sizes) == 2
+                    and all(size > 0 for size in sizes)
+                    and sizes[0] == sizes[1]
+                    and len(set(sides)) == 1
+                    and sides[0] in {"buy", "sell"}
+                )
+                expected_semantics_ok = True
+                if expected and len(active) == 2:
+                    expected_by_leg = {self._protection_leg(order): order for order in expected}
+                    for order in active:
+                        leg = self._protection_leg(order)
+                        wanted = expected_by_leg.get(leg)
+                        if wanted is None:
+                            expected_semantics_ok = False
+                            break
+                        if (
+                            number(order, "triggerPrice") != number(wanted, "triggerPrice")
+                            or number(order, "size", "sizeQty", "qty")
+                            != number(wanted, "size", "sizeQty", "qty")
+                            or str(order.get("side") or "").lower()
+                            != str(wanted.get("side") or "").lower()
+                        ):
+                            expected_semantics_ok = False
+                            break
+                exact_pair = (
+                    len(active) == 2
+                    and sorted(legs) == ["sl", "tp"]
+                    and prices_ok
+                    and pair_semantics_ok
+                    and expected_semantics_ok
+                )
+                no_stale = not require_only_expected or len(bot_orders) == len(active)
+                if exact_pair and no_stale:
+                    return {
+                        "ok": True,
+                        "supported": True,
+                        "count": len(active),
+                        "orders": active,
+                        "bot_order_count": len(bot_orders),
+                    }
             except Exception as exc:
                 last_error = exc
             time.sleep(0.2)
         if last_error is not None:
             return {"ok": False, "supported": True, "reason": f"protection verification failed: {last_error}"}
-        return {"ok": False, "supported": True, "count": 0, "reason": "both Elite TP and SL were not verified"}
+        return {
+            "ok": False,
+            "supported": True,
+            "count": 0,
+            "reason": "one exact bot-owned Elite TP/SL pair was not verified",
+        }
 
-    def cancel_protection(self, symbol: str) -> None:
+    def _cancel_plan_orders(
+        self,
+        symbol: str,
+        orders: list[dict[str, Any]],
+    ) -> list[str]:
         sid = self._symbol_id(symbol)
-        for order in self._pending_plan_orders(symbol):
+        errors: list[str] = []
+        for order in orders:
+            if self._protection_leg(order) is None:
+                continue
             order_id = order.get("orderId")
             client_oid = order.get("clientOid")
             if not order_id and not client_oid:
@@ -1005,8 +1216,20 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 body["clientOid"] = str(client_oid)
             try:
                 self._request("POST", "/api/v2/mix/order/cancel-plan-order", body=body)
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(f"{order_id or client_oid}: {type(exc).__name__}: {exc}")
+        return errors
+
+    def cancel_protection(self, symbol: str) -> dict[str, Any]:
+        orders = self._bot_protection_orders(self._pending_plan_orders(symbol))
+        errors = self._cancel_plan_orders(symbol, orders)
+        remaining = self._bot_protection_orders(self._pending_plan_orders(symbol))
+        return {
+            "ok": not errors and not remaining,
+            "cancelled": len(orders) - len(errors),
+            "remaining": remaining,
+            "errors": errors,
+        }
 
 
     def replace_full_protection(
@@ -1019,7 +1242,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     ) -> dict[str, Any]:
         """Replace bot-owned TP/SL with one exact full-position pair."""
         try:
-            self.cancel_protection(symbol)
+            old_orders = self._bot_protection_orders(self._pending_plan_orders(symbol))
             qty = self._qty(symbol, total_qty)
             orders = self._place_protection(
                 symbol,
@@ -1028,13 +1251,41 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 float(tp_price),
                 float(sl_price),
             )
-            status = self.protection_status(symbol)
+            status = self.protection_status(symbol, expected_orders=orders)
             if not status.get("ok"):
+                self._cancel_plan_orders(symbol, orders)
                 return {
                     "ok": False,
-                    "reason": status.get("reason") or "replacement TP/SL not verified",
+                    "reason": status.get("reason") or "new TP/SL pair not verified; old pair retained",
                     "orders": orders,
                 }
-            return {"ok": True, "orders": orders, "verified": status}
+            new_order_ids = {str(order.get("orderId")) for order in orders if order.get("orderId")}
+            new_client_oids = {str(order.get("clientOid")) for order in orders if order.get("clientOid")}
+            stale = [
+                order
+                for order in old_orders
+                if str(order.get("orderId") or "") not in new_order_ids
+                and str(order.get("clientOid") or "") not in new_client_oids
+            ]
+            cancel_errors = self._cancel_plan_orders(symbol, stale)
+            final = self.protection_status(
+                symbol,
+                expected_orders=orders,
+                require_only_expected=True,
+            )
+            if not final.get("ok"):
+                return {
+                    "ok": False,
+                    "reason": "stale bot TP/SL cancellation or exact-pair verification failed",
+                    "cancel_errors": cancel_errors,
+                    "orders": orders,
+                    "verified": final,
+                }
+            return {
+                "ok": True,
+                "orders": orders,
+                "verified": final,
+                "cancel_warnings": cancel_errors,
+            }
         except Exception as exc:
             return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
