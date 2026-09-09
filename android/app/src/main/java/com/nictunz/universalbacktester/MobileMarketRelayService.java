@@ -39,8 +39,11 @@ public class MobileMarketRelayService extends Service {
 
     private static final String CHANNEL_ID = "market_relay";
     private static final int NOTIFICATION_ID = 4401;
-    private static final long RELAY_INTERVAL_MILLIS = 5_000L;
-    // Run on :01, :06, :11... so a just-closed exchange candle has time to roll over.
+    private static final long NORMAL_INTERVAL_MILLIS = 30_000L;
+    private static final long PRE_BOUNDARY_INTERVAL_MILLIS = 5_000L;
+    private static final long POST_BOUNDARY_INTERVAL_MILLIS = 1_000L;
+    private static final long BOUNDARY_WINDOW_MILLIS = 60_000L;
+    // Boundary reads start at +1s so a just-closed exchange candle has time to roll over.
     private static final long RELAY_PHASE_MILLIS = 1_000L;
     private static final long TIMEFRAME_MILLIS = 15L * 60L * 1_000L;
     private static final long BOUNDARY_CONFIRM_WINDOW_MILLIS = 12_000L;
@@ -55,6 +58,7 @@ public class MobileMarketRelayService extends Service {
     private SshBridge.RelayClient relayClient;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean continuous = false;
+    private volatile long confirmedBoundaryOpenMs = Long.MIN_VALUE;
 
     private interface VenueRequest {
         JSONArray fetch() throws Exception;
@@ -113,7 +117,7 @@ public class MobileMarketRelayService extends Service {
         if (scheduler != null && !scheduler.isShutdown()) return;
         continuous = true;
         ensureFetchPool();
-        appendHistory("시작", "15분봉 경계 우선 5초 중계를 시작했습니다.");
+        appendHistory("시작", "평상시 30초 · 경계 전 5초 · 경계 후 1초 중계를 시작했습니다.");
         scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduleNextRelay(true);
     }
@@ -130,9 +134,12 @@ public class MobileMarketRelayService extends Service {
 
     private synchronized void scheduleNextRelay(boolean first) {
         if (!continuous || scheduler == null || scheduler.isShutdown()) return;
-        long delay = millisUntilNextRelaySlot(System.currentTimeMillis());
+        long delay = millisUntilNextRelaySlot(
+                System.currentTimeMillis(),
+                confirmedBoundaryOpenMs
+        );
         // A completed cycle landing exactly on a slot must not run twice.
-        if (!first && delay < 50L) delay += RELAY_INTERVAL_MILLIS;
+        if (!first && delay < 50L) delay = 50L;
         try {
             scheduler.schedule(this::runScheduledCycle, delay, TimeUnit.MILLISECONDS);
         } catch (RejectedExecutionException ignored) {
@@ -140,9 +147,38 @@ public class MobileMarketRelayService extends Service {
         }
     }
 
-    static long millisUntilNextRelaySlot(long nowMs) {
-        long phase = Math.floorMod(nowMs - RELAY_PHASE_MILLIS, RELAY_INTERVAL_MILLIS);
-        return phase == 0L ? 0L : RELAY_INTERVAL_MILLIS - phase;
+    static long millisUntilNextRelaySlot(long nowMs, long confirmedBoundaryOpenMs) {
+        long currentBoundary = nowMs - Math.floorMod(nowMs, TIMEFRAME_MILLIS);
+        long elapsed = nowMs - currentBoundary;
+        boolean awaitingBoundary = elapsed < BOUNDARY_WINDOW_MILLIS
+                && confirmedBoundaryOpenMs != currentBoundary;
+
+        long interval;
+        long phase;
+        long regimeEnd;
+        if (awaitingBoundary) {
+            interval = POST_BOUNDARY_INTERVAL_MILLIS;
+            phase = currentBoundary + RELAY_PHASE_MILLIS;
+            regimeEnd = currentBoundary + BOUNDARY_WINDOW_MILLIS;
+        } else {
+            long nextBoundary = currentBoundary + TIMEFRAME_MILLIS;
+            long preBoundaryStart = nextBoundary - BOUNDARY_WINDOW_MILLIS;
+            if (nowMs >= preBoundaryStart) {
+                interval = PRE_BOUNDARY_INTERVAL_MILLIS;
+                phase = preBoundaryStart;
+                regimeEnd = nextBoundary + RELAY_PHASE_MILLIS;
+            } else {
+                interval = NORMAL_INTERVAL_MILLIS;
+                phase = currentBoundary + BOUNDARY_WINDOW_MILLIS;
+                regimeEnd = preBoundaryStart;
+            }
+        }
+
+        long offset = Math.floorMod(nowMs - phase, interval);
+        long next = nowMs < phase
+                ? phase
+                : (offset == 0L ? nowMs : nowMs + interval - offset);
+        return Math.max(0L, Math.min(next, regimeEnd) - nowMs);
     }
 
     private synchronized ExecutorService ensureFetchPool() {
@@ -232,7 +268,13 @@ public class MobileMarketRelayService extends Service {
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
         long now = System.currentTimeMillis();
-        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 5초 경계동기";
+        long boundary = now - Math.floorMod(now, TIMEFRAME_MILLIS);
+        if (now - boundary < BOUNDARY_WINDOW_MILLIS) {
+            // All four requests passed rollover validation and the atomic SSH upload
+            // completed, so the server has the newly opened candle snapshot.
+            confirmedBoundaryOpenMs = boundary;
+        }
+        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 적응형 경계동기";
         p.edit()
                 .putBoolean("relay_running", continuous)
                 .putLong("relay_last_ok_ms", now)
