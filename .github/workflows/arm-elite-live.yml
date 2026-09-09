@@ -29,6 +29,7 @@ jobs:
           test -s "$APP_DIR/.env"
           grep -q 'def adaptive_ioc_entry' "$APP_DIR/universal_bot/adapters/bitget_elite.py"
           grep -q 'live_entry_execution_mode' "$APP_DIR/universal_bot/config.py"
+          cp "$GITHUB_WORKSPACE/scripts/verify_elite_live_readonly.py" "$APP_DIR/scripts/verify_elite_live_readonly.py"
           BACKUP="$APP_DIR/.env.bak-before-ioc-live-$(date +%Y%m%d-%H%M%S)"
           cp "$APP_DIR/.env" "$BACKUP"
           echo "backup=$BACKUP" >> "$GITHUB_ENV"
