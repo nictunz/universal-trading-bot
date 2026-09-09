@@ -90,9 +90,16 @@ class Settings(BaseSettings):
     # Generic/standard LIVE safety limit retained for non-Elite routing.
     live_max_position_notional_percent: float = 10.0
     live_require_one_way_mode: bool = True
-    # Elite LIVE sizing follows 진입_비중_pct=860: current available USDT x 8.6.
+    # Elite LIVE sizing follows the final 8.9x entry decision.
     # LEVERAGE=15 is the exchange leverage ceiling, not the order-size multiplier.
-    live_entry_multiplier: float = 8.6
+    live_entry_multiplier: float = 8.9
+    # Entry-only execution controls. Exits and emergency flattening stay market orders.
+    live_entry_execution_mode: str = "adaptive_ioc"
+    live_entry_max_adverse_slippage_percent: float = 0.03
+    live_entry_max_child_orders: int = 5
+    live_entry_execution_window_seconds: float = 3.0
+    live_entry_depth_participation: float = 0.20
+    live_entry_child_pause_seconds: float = 0.15
     live_max_entries_per_position: int = 1
     live_max_total_multiplier: float = 15.0
 
