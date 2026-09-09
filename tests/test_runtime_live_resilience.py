@@ -121,6 +121,21 @@ def _frame() -> pd.DataFrame:
     )
 
 
+def test_live_signal_claim_survives_engine_restart(tmp_path, monkeypatch):
+    adapter = RuntimeAdapter({"side": "FLAT", "size": 0.0, "entry_price": 0.0})
+    first = _engine(tmp_path, monkeypatch, adapter)
+    first.current_bar_time = "2026-09-09T09:00:00+00:00"
+    claim = first._claim_live_execution("LONG", 0.1, 100_000.0)
+    assert claim is not None
+
+    restarted = _engine(tmp_path, monkeypatch, adapter)
+    restarted.current_bar_time = first.current_bar_time
+    assert restarted._claim_live_execution("LONG", 0.1, 100_000.0) is None
+    rows = restarted.trade_history.list_executions(symbol="BTC/USDT:USDT", mode="LIVE")
+    assert len(rows) == 1
+    assert rows[0]["status"] == "CLAIMED"
+
+
 def test_flat_live_heartbeat_never_queries_protection_orders(tmp_path, monkeypatch):
     adapter = RuntimeAdapter({"side": "FLAT", "size": 0.0, "entry_price": 0.0})
     engine = _engine(tmp_path, monkeypatch, adapter)

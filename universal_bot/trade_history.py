@@ -88,6 +88,28 @@ class TradeHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_trade_event_query ON trade_events(symbol, mode, event_time)"
             )
             con.execute(
+                """CREATE TABLE IF NOT EXISTS execution_claims (
+                mode TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                signal_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                status TEXT NOT NULL,
+                requested_qty REAL,
+                filled_qty REAL,
+                avg_fill_price REAL,
+                slippage_percent REAL,
+                child_orders INTEGER,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (mode, symbol, timeframe, signal_id)
+                )"""
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_claim_query ON execution_claims(symbol, mode, updated_at)"
+            )
+            con.execute(
                 """CREATE TABLE IF NOT EXISTS backtest_runs (
                 run_id TEXT PRIMARY KEY,
                 strategy TEXT NOT NULL,
@@ -170,6 +192,93 @@ class TradeHistoryStore:
                     json.dumps(event.get("metadata") or {}, ensure_ascii=False, default=str), self._now(),
                 ),
             )
+
+    def claim_execution_once(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        timeframe: str,
+        signal_id: str,
+        side: str,
+        requested_qty: float,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Atomically reserve one signal before any exchange order is sent."""
+        now = self._now()
+        with self._connect() as con:
+            cursor = con.execute(
+                """INSERT OR IGNORE INTO execution_claims
+                (mode,symbol,timeframe,signal_id,side,status,requested_qty,filled_qty,
+                 avg_fill_price,slippage_percent,child_orders,metadata_json,created_at,updated_at)
+                VALUES (?,?,?,?,?,'CLAIMED',?,0,NULL,NULL,0,?,?,?)""",
+                (
+                    mode.upper(), symbol, timeframe, signal_id, side,
+                    float(requested_qty),
+                    json.dumps(metadata or {}, ensure_ascii=False, default=str),
+                    now, now,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def update_execution_claim(
+        self,
+        *,
+        mode: str,
+        symbol: str,
+        timeframe: str,
+        signal_id: str,
+        status: str,
+        filled_qty: float | None = None,
+        avg_fill_price: float | None = None,
+        slippage_percent: float | None = None,
+        child_orders: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """UPDATE execution_claims SET status=?,filled_qty=COALESCE(?,filled_qty),
+                avg_fill_price=COALESCE(?,avg_fill_price),
+                slippage_percent=COALESCE(?,slippage_percent),
+                child_orders=COALESCE(?,child_orders),metadata_json=?,updated_at=?
+                WHERE mode=? AND symbol=? AND timeframe=? AND signal_id=?""",
+                (
+                    status.upper(), filled_qty, avg_fill_price, slippage_percent,
+                    child_orders,
+                    json.dumps(metadata or {}, ensure_ascii=False, default=str),
+                    self._now(), mode.upper(), symbol, timeframe, signal_id,
+                ),
+            )
+
+    def list_executions(
+        self,
+        *,
+        symbol: str | None = None,
+        mode: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if symbol:
+            clauses.append("symbol=?"); params.append(symbol)
+        if mode and mode.upper() != "ALL":
+            clauses.append("mode=?"); params.append(mode.upper())
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(int(limit), 2000)))
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM execution_claims" + where + " ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except (TypeError, ValueError):
+                item["metadata"] = {}
+            out.append(item)
+        return out
 
     def record_backtest(self, result: dict[str, Any], *, run_id: str, params: dict[str, Any] | None = None) -> None:
         with self._connect() as con:

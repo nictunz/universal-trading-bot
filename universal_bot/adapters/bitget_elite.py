@@ -695,6 +695,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "id": order_id or client_oid,
             "clientOid": data.get("clientOid") or client_oid,
             "amount": filled,
+            "requested": float(qty),
             "filled": filled,
             "average": average,
             "price": average,
@@ -719,6 +720,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         child_pause_seconds: float = 0.15,
     ) -> dict[str, Any]:
         """Fill an entry with bounded IOC slices; never market-chase a remainder."""
+        started = time.monotonic()
         side = side.lower()
         if side not in {"buy", "sell"}:
             raise ValueError(f"invalid order side: {side}")
@@ -733,6 +735,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         latest_size = before_size
         deadline = time.monotonic() + max(0.1, float(execution_window_seconds))
         children: list[dict[str, Any]] = []
+        protection_updates: list[dict[str, Any]] = []
         protection_ok = True
         adverse = max(0.0, float(max_adverse_slippage_percent)) / 100.0
         limit_price = reference_price * (1.0 + adverse if side == "buy" else 1.0 - adverse)
@@ -780,6 +783,13 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 replaced = self.replace_full_protection(
                     symbol, protect_side, current_size, tp_price, sl_price
                 )
+                protection_updates.append({
+                    "qty": current_size,
+                    "average": avg_entry,
+                    "tp": tp_price,
+                    "sl": sl_price,
+                    "ok": bool(replaced.get("ok")),
+                })
                 protection_ok = bool(replaced.get("ok"))
                 latest_size = current_size
                 if not protection_ok:
@@ -804,6 +814,10 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             "requested": requested,
             "unfilled": max(0.0, requested - filled),
             "children": children,
+            "child_order_count": len(children),
+            "elapsed_seconds": time.monotonic() - started,
+            "protected_qty": latest_size,
+            "protection_updates": protection_updates,
             "protection_ok": protection_ok,
             "execution_mode": "adaptive_ioc",
             "limit_price": limit_price,

@@ -255,5 +255,9 @@ def test_adaptive_ioc_accepts_price_improvement_and_protects_partial_fill(monkey
     assert result["average"] == pytest.approx(99_990.0)
     assert result["limit_price"] == pytest.approx(100_030.0)
     assert result["status"] == "filled"
+    assert result["child_order_count"] == 1
+    assert result["elapsed_seconds"] >= 0
+    assert result["protected_qty"] == pytest.approx(0.1)
+    assert result["protection_updates"][0]["ok"] is True
     assert protections[0][1] == "long"
     assert protections[0][2] == pytest.approx(0.1)

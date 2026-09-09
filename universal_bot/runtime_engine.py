@@ -24,6 +24,7 @@ class TradingEngine(_BaseTradingEngine):
         self._active_tp_pct: float | None = None
         self._active_sl_pct: float | None = None
         self._event_no = 0
+        self._active_execution_id: str | None = None
         # Entry and exit messages share one notifier, so a close can emit only
         # one Discord message even when the runtime wraps the base engine.
         self.notifier = self.discord
@@ -59,6 +60,7 @@ class TradingEngine(_BaseTradingEngine):
         price: float,
         qty: float,
         avg_price: float | None = None,
+        execution: dict | None = None,
     ) -> None:
         self._record_runtime_event(
             {
@@ -75,9 +77,85 @@ class TradingEngine(_BaseTradingEngine):
                     "tp": self.position.tp,
                     "sl": self.position.sl,
                     "live_entry_multiplier": float(self.settings.live_entry_multiplier) if self._elite_live() else None,
+                    "execution": execution or {},
                 },
             }
         )
+
+    def _execution_signal_id(self, side: str) -> str:
+        bar = self.current_bar_time or "unknown-bar"
+        return f"{self.settings.symbol}|{self.settings.timeframe}|{bar}|{side}|ENTRY"
+
+    def _claim_live_execution(self, side: str, requested_qty: float, reference_price: float) -> str | None:
+        signal_id = self._execution_signal_id(side)
+        claimed = self.trade_history.claim_execution_once(
+            mode="LIVE",
+            symbol=self.settings.symbol,
+            timeframe=self.settings.timeframe,
+            signal_id=signal_id,
+            side=side,
+            requested_qty=requested_qty,
+            metadata={"reference_price": reference_price, "bar_time": self.current_bar_time},
+        )
+        if not claimed:
+            self._record_runtime_event({
+                "event_time": self.current_bar_time or datetime.now(timezone.utc).isoformat(),
+                "event_type": "EXECUTION_SKIPPED",
+                "side": side,
+                "reason": "DUPLICATE_SIGNAL_ID",
+                "metadata": {"signal_id": signal_id},
+            })
+            return None
+        self._active_execution_id = signal_id
+        return signal_id
+
+    def _finish_live_execution(self, signal_id: str, status: str, **quality) -> None:
+        try:
+            try:
+                self.trade_history.update_execution_claim(
+                    mode="LIVE",
+                    symbol=self.settings.symbol,
+                    timeframe=self.settings.timeframe,
+                    signal_id=signal_id,
+                    status=status,
+                    filled_qty=quality.get("filled_qty"),
+                    avg_fill_price=quality.get("avg_fill_price"),
+                    slippage_percent=quality.get("slippage_percent"),
+                    child_orders=quality.get("child_orders"),
+                    metadata=quality,
+                )
+            except Exception:
+                # A filled/protected exchange position must not be disturbed by
+                # an observability-only SQLite failure.
+                pass
+        finally:
+            self._active_execution_id = None
+
+    @staticmethod
+    def _execution_quality(order: dict, reference_price: float, side: str) -> dict:
+        requested = float(order.get("requested") or 0.0)
+        filled = float(order.get("filled") or order.get("amount") or 0.0)
+        average = float(order.get("average") or order.get("price") or 0.0)
+        signed_slippage = 0.0
+        if reference_price > 0 and average > 0:
+            raw = (average / reference_price - 1.0) * 100.0
+            signed_slippage = raw if side == "LONG" else -raw
+        children = order.get("children") or []
+        return {
+            "execution_mode": order.get("execution_mode") or "market",
+            "order_status": order.get("status"),
+            "requested_qty": requested,
+            "filled_qty": filled,
+            "unfilled_qty": float(order.get("unfilled") or max(0.0, requested - filled)),
+            "fill_ratio": filled / requested if requested > 0 else None,
+            "reference_price": float(reference_price),
+            "avg_fill_price": average or None,
+            "slippage_percent": signed_slippage,
+            "child_orders": int(order.get("child_order_count") or len(children)),
+            "elapsed_seconds": order.get("elapsed_seconds"),
+            "protection_ok": order.get("protection_ok"),
+            "order_ids": [str(x.get("id")) for x in children if x.get("id")],
+        }
 
     def _notify_entry(self, *, side: str, fill_price: float, qty: float) -> None:
         if not self.live:
@@ -448,6 +526,10 @@ class TradingEngine(_BaseTradingEngine):
         if not self.safety.can_open:
             return
 
+        execution_id = self._claim_live_execution(side, amount, price)
+        if execution_id is None:
+            return
+
         order_side = "buy" if side == "LONG" else "sell"
         recovered_exchange_pos = None
         try:
@@ -506,6 +588,13 @@ class TradingEngine(_BaseTradingEngine):
                     clientOid=exc.client_oid,
                     안내="동일 주문을 재전송하지 않고 안전중지했습니다. Bitget 주문/포지션을 확인하세요.",
                 )
+                self._finish_live_execution(
+                    execution_id,
+                    "OUTCOME_UNKNOWN",
+                    filled_qty=0.0,
+                    reference_price=price,
+                    client_oid=exc.client_oid,
+                )
                 return
             delta_qty = recovered_size - before_size
             recovered_avg = float(recovered_exchange_pos.get("entry_price") or price)
@@ -519,10 +608,23 @@ class TradingEngine(_BaseTradingEngine):
                 "status": "position-recovered",
                 "recovered_by_position": True,
             }
+        except Exception as exc:
+            self._finish_live_execution(
+                execution_id,
+                "ERROR_UNKNOWN",
+                filled_qty=0.0,
+                reference_price=price,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
         if not order:
             self.safety.fail("ENTRY_ORDER_EMPTY_RESPONSE")
+            self._finish_live_execution(execution_id, "EMPTY_RESPONSE", filled_qty=0.0)
             return
 
+        order.setdefault("requested", amount)
+        order.setdefault("unfilled", max(0.0, amount - float(order.get("filled") or 0.0)))
+        execution_quality = self._execution_quality(order, price, side)
         actual_amount = float(order.get("filled") or order.get("amount") or 0.0)
         if actual_amount <= 0:
             # IOC may legitimately expire without a fill. Never invent the
@@ -531,6 +633,7 @@ class TradingEngine(_BaseTradingEngine):
                 self._live_entry_equity_basis = None
                 self._active_tp_pct = None
                 self._active_sl_pct = None
+            self._finish_live_execution(execution_id, "UNFILLED", **execution_quality)
             return
         actual_price = float(order.get("average") or order.get("price") or price)
         signed_amount = actual_amount if side == "LONG" else -actual_amount
@@ -572,6 +675,11 @@ class TradingEngine(_BaseTradingEngine):
         if not verified_exchange_position or total_qty <= 0 or avg_entry <= 0:
             self._flatten_full_position_after_protection_failure(side, max(total_qty, fallback_qty))
             self.safety.fail("ENTRY_FILLED_BUT_EXCHANGE_POSITION_NOT_VERIFIED")
+            self._finish_live_execution(
+                execution_id,
+                "FLATTENED_UNVERIFIED",
+                **execution_quality,
+            )
             return
 
         # Use Bitget's final position delta for the entry journal/notification,
@@ -593,6 +701,11 @@ class TradingEngine(_BaseTradingEngine):
         if not hasattr(self.adapter, "replace_full_protection"):
             self._flatten_full_position_after_protection_failure(side, total_qty)
             self.safety.fail("FULL_POSITION_PROTECTION_REPLACE_UNSUPPORTED")
+            self._finish_live_execution(
+                execution_id,
+                "FLATTENED_NO_PROTECTION",
+                **execution_quality,
+            )
             return
         try:
             replaced = self.adapter.replace_full_protection(
@@ -610,6 +723,11 @@ class TradingEngine(_BaseTradingEngine):
             self.safety.fail(
                 f"FULL_POSITION_PROTECTION_REPLACE_FAILED: {replaced.get('reason', replaced)}"
             )
+            self._finish_live_execution(
+                execution_id,
+                "FLATTENED_PROTECTION_FAILED",
+                **execution_quality,
+            )
             return
 
         # Align the internal position with Bitget and the final full-position TP/SL.
@@ -626,6 +744,12 @@ class TradingEngine(_BaseTradingEngine):
             price=actual_price,
             qty=actual_amount,
             avg_price=avg_entry,
+            execution=execution_quality,
+        )
+        self._finish_live_execution(
+            execution_id,
+            "PROTECTED",
+            **{**execution_quality, "protected_qty": total_qty, "tp": full_tp, "sl": full_sl},
         )
         self._notify_entry(side=side, fill_price=actual_price, qty=actual_amount)
         self.safety.reconcile(self._internal_position_dict(), exchange_pos)
