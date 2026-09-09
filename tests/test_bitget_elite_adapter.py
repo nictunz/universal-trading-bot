@@ -185,3 +185,75 @@ def test_close_fill_summary_prefers_fee_detail_over_duplicate_aggregate():
     assert summary["price"] == pytest.approx(111.2)
     assert summary["fee"] == pytest.approx(0.1)
     assert summary["realized_pnl"] == pytest.approx(11.2)
+
+
+def test_ioc_entry_child_uses_limit_ioc_and_never_market(monkeypatch):
+    adapter, calls = _fake_adapter(monkeypatch, "one_way_mode")
+    result = adapter._ioc_limit_child(
+        "BTC/USDT:USDT",
+        "buy",
+        0.1,
+        100_030.0,
+    )
+
+    place = next(x for x in calls if x[1] == "/api/v2/mix/order/place-order")
+    assert place[3]["orderType"] == "limit"
+    assert place[3]["force"] == "ioc"
+    assert place[3]["price"] == "100030.0"
+    assert place[3]["reduceOnly"] == "no"
+    assert result["filled"] == pytest.approx(0.1)
+
+
+def test_adaptive_ioc_accepts_price_improvement_and_protects_partial_fill(monkeypatch):
+    adapter = BitgetEliteAdapter.__new__(BitgetEliteAdapter)
+    positions = iter(
+        [
+            {"side": "FLAT", "size": 0.0, "entry_price": 0.0},
+            {"side": "LONG", "size": 0.1, "entry_price": 99_990.0},
+            {"side": "LONG", "size": 0.1, "entry_price": 99_990.0},
+        ]
+    )
+    protections = []
+    monkeypatch.setattr(adapter, "position", lambda symbol: next(positions))
+    monkeypatch.setattr(
+        adapter,
+        "_public_order_book",
+        lambda symbol: {"asks": [(99_990.0, 1.0)], "bids": [(99_980.0, 1.0)]},
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_ioc_limit_child",
+        lambda symbol, side, amount, limit_price: {
+            "id": "ioc-1",
+            "clientOid": "utb-ioc-1",
+            "filled": amount,
+            "average": 99_990.0,
+            "status": "filled",
+        },
+    )
+
+    def protect(symbol, side, qty, tp, sl):
+        protections.append((symbol, side, qty, tp, sl))
+        return {"ok": True}
+
+    monkeypatch.setattr(adapter, "replace_full_protection", protect)
+    result = adapter.adaptive_ioc_entry(
+        "BTC/USDT:USDT",
+        "buy",
+        0.1,
+        reference_price=100_000.0,
+        tp_pct=1.0,
+        sl_pct=1.0,
+        max_adverse_slippage_percent=0.03,
+        max_child_orders=5,
+        execution_window_seconds=3.0,
+        depth_participation=0.2,
+        child_pause_seconds=0.0,
+    )
+
+    assert result["filled"] == pytest.approx(0.1)
+    assert result["average"] == pytest.approx(99_990.0)
+    assert result["limit_price"] == pytest.approx(100_030.0)
+    assert result["status"] == "filled"
+    assert protections[0][1] == "long"
+    assert protections[0][2] == pytest.approx(0.1)
