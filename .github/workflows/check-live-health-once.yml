@@ -53,6 +53,7 @@ jobs:
           cd /home/kpj3669/universal-trading-bot
           PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
           curl -fsS -m 10 http://127.0.0.1:8000/api/state > /tmp/active-state.json
+          curl -fsS -m 10 http://127.0.0.1:8000/api/strategy-settings > /tmp/active-strategy-settings.json
           "$PY" - <<'PY'
           import json
           from universal_bot.config import Settings
@@ -79,7 +80,30 @@ jobs:
           ]
           settings={name:getattr(s,name) for name in names}
           with open('/tmp/active-state.json',encoding='utf-8') as f: state=json.load(f)
+          with open('/tmp/active-strategy-settings.json',encoding='utf-8') as f: strategy_api=json.load(f)
+          with open('data/dashboard-strategy-settings.json',encoding='utf-8') as f: strategy_file=json.load(f)
+          active=strategy_api.get('values') or {}
+          expected={
+              'volume_lookback':41,'volume_break_multiplier':6.4,
+              'min_one_bar_vol':0.1,'max_one_bar_vol':3.6,'volatility_bars':36,
+              'tp_vol_multiplier':3.8,'sl_vol_multiplier':1.0,
+              'min_tp_percent':0.3,'max_tp_percent':2.1,
+              'min_sl_percent':0.3,'max_sl_percent':1.9,
+              'use_nbar_volatility_block':True,'nbar_volatility_bars':200,
+              'max_nbar_volatility':6.1,'use_adx_filter':False,'adx_length':7,
+              'adx_min':11.6,'adx_max':80.5,'use_rsi_filter':True,'rsi_length':10,
+              'rsi_oversold_min':20.0,'rsi_oversold_max':41.5,
+              'rsi_overbought_min':65.6,'rsi_overbought_max':74.7,
+              'allow_long':True,'allow_short':True,'max_pyramiding':1,
+              'cooldown_bars':3,'reentry_bars':7,'block_weekend':False,
+              'excluded_hours':'','order_percent_of_equity':890.0,
+              'initial_capital':1000.0,'backtest_fee_percent':0.02,
+              'backtest_slippage_percent':0.01,
+          }
+          assert strategy_file == active, {'file_vs_api': [strategy_file,active]}
+          mismatch={k:{'expected':v,'active':active.get(k)} for k,v in expected.items() if active.get(k)!=v}
+          assert not mismatch, mismatch
           symbols=state.get('symbols') or []
           runtime=symbols[0] if symbols else {}
-          print(json.dumps({'settings':settings,'runtime':runtime},ensure_ascii=False,default=str))
+          print(json.dumps({'settings':settings,'persisted_strategy':strategy_file,'strategy_api':active,'expected_match':True,'runtime':runtime},ensure_ascii=False,default=str))
           PY
