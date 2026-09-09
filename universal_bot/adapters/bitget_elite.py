@@ -597,6 +597,218 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             results.append(dict(data or {}))
         return results
 
+    def _public_order_book(self, symbol: str, limit: int = 50) -> dict[str, list[tuple[float, float]]]:
+        data = self._public_get(
+            "/api/v2/mix/market/merge-depth",
+            {
+                "symbol": self._symbol_id(symbol),
+                "productType": self.PRODUCT_TYPE,
+                "precision": "scale0",
+                "limit": str(max(1, min(150, int(limit)))),
+            },
+        ) or {}
+
+        def levels(name: str) -> list[tuple[float, float]]:
+            out: list[tuple[float, float]] = []
+            for row in data.get(name) or []:
+                try:
+                    price = float(row[0])
+                    qty = float(row[1])
+                except (IndexError, TypeError, ValueError):
+                    continue
+                if price > 0 and qty > 0:
+                    out.append((price, qty))
+            return out
+
+        return {"bids": levels("bids"), "asks": levels("asks")}
+
+    def _ioc_limit_child(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        limit_price: float,
+    ) -> dict[str, Any]:
+        side = side.lower()
+        qty = self._qty(symbol, amount)
+        client_oid = self._client_oid("utb-ioc")
+        body: dict[str, Any] = {
+            "symbol": self._symbol_id(symbol),
+            "productType": self.PRODUCT_TYPE,
+            "marginCoin": self.MARGIN_COIN,
+            "marginMode": "crossed",
+            "orderType": "limit",
+            "force": "ioc",
+            "side": side,
+            "size": qty,
+            "price": self._price(symbol, limit_price),
+            "clientOid": client_oid,
+        }
+        mode = self._position_mode(symbol)
+        if mode == "hedge_mode":
+            body["tradeSide"] = "open"
+        else:
+            body["reduceOnly"] = "no"
+
+        detail: dict[str, Any] = {}
+        recovered = False
+        try:
+            data = self._request("POST", "/api/v2/mix/order/place-order", body=body) or {}
+        except Exception as exc:
+            if not self._is_ambiguous_order_error(exc):
+                raise
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                try:
+                    detail = self._order_detail(symbol, client_oid=client_oid)
+                    if detail:
+                        recovered = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+            if not detail:
+                raise AmbiguousOrderResult(
+                    f"Bitget IOC outcome is unknown after clientOid recovery: {client_oid}",
+                    client_oid=client_oid,
+                    side=side,
+                    requested_qty=float(qty),
+                    reduce_only=False,
+                ) from exc
+            data = detail
+
+        order_id = str(data.get("orderId") or detail.get("orderId") or "")
+        if order_id and not detail:
+            deadline = time.monotonic() + 0.45
+            while time.monotonic() < deadline:
+                try:
+                    detail = self._order_detail(symbol, order_id)
+                    state = str(detail.get("state") or "").lower()
+                    if state in {"filled", "cancelled", "canceled", "partially_filled"}:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        filled = self._fill_number(detail, "baseVolume", "filledQty", "fillQty", "sizeQty")
+        average = self._fill_number(detail, "priceAvg", "fillPrice", "price") or None
+        return {
+            "id": order_id or client_oid,
+            "clientOid": data.get("clientOid") or client_oid,
+            "amount": filled,
+            "filled": filled,
+            "average": average,
+            "price": average,
+            "status": detail.get("state") or "accepted",
+            "recovered_by_client_oid": recovered,
+            "raw": detail or data,
+        }
+
+    def adaptive_ioc_entry(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        *,
+        reference_price: float,
+        tp_pct: float,
+        sl_pct: float,
+        max_adverse_slippage_percent: float = 0.03,
+        max_child_orders: int = 5,
+        execution_window_seconds: float = 3.0,
+        depth_participation: float = 0.20,
+        child_pause_seconds: float = 0.15,
+    ) -> dict[str, Any]:
+        """Fill an entry with bounded IOC slices; never market-chase a remainder."""
+        side = side.lower()
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"invalid order side: {side}")
+        requested = max(0.0, float(amount))
+        if requested <= 0 or reference_price <= 0:
+            return {"filled": 0.0, "status": "not-submitted"}
+
+        position_side = "LONG" if side == "buy" else "SHORT"
+        before = self.position(symbol)
+        before_size = float(before.get("size") or 0.0) if before.get("side") == position_side else 0.0
+        before_notional = before_size * float(before.get("entry_price") or 0.0)
+        latest_size = before_size
+        deadline = time.monotonic() + max(0.1, float(execution_window_seconds))
+        children: list[dict[str, Any]] = []
+        protection_ok = True
+        adverse = max(0.0, float(max_adverse_slippage_percent)) / 100.0
+        limit_price = reference_price * (1.0 + adverse if side == "buy" else 1.0 - adverse)
+        participation = min(1.0, max(0.01, float(depth_participation)))
+
+        for _ in range(max(1, int(max_child_orders))):
+            remaining = requested - max(0.0, latest_size - before_size)
+            if remaining <= 1e-12 or time.monotonic() >= deadline:
+                break
+            book = self._public_order_book(symbol)
+            levels = book["asks"] if side == "buy" else book["bids"]
+            eligible = [qty for price, qty in levels if price <= limit_price] if side == "buy" else [qty for price, qty in levels if price >= limit_price]
+            eligible_qty = sum(eligible)
+            child_qty = min(remaining, eligible_qty * participation)
+            if child_qty <= 0:
+                break
+            try:
+                child = self._ioc_limit_child(symbol, side, child_qty, limit_price)
+            except RuntimeError as exc:
+                if "below Bitget minimum" in str(exc):
+                    break
+                raise
+            children.append(child)
+
+            # Position state is authoritative for partial IOC fills and protects
+            # against delayed or incomplete order-detail responses.
+            position = self.position(symbol)
+            if position.get("side") != position_side:
+                if position.get("side") == "FLAT":
+                    if time.monotonic() < deadline:
+                        time.sleep(min(max(0.0, child_pause_seconds), max(0.0, deadline - time.monotonic())))
+                    continue
+                raise RuntimeError(f"unexpected exchange position during IOC entry: {position.get('side')}")
+            current_size = float(position.get("size") or 0.0)
+            avg_entry = float(position.get("entry_price") or 0.0)
+            if current_size > latest_size + 1e-12 and avg_entry > 0:
+                if position_side == "LONG":
+                    tp_price = avg_entry * (1.0 + float(tp_pct) / 100.0)
+                    sl_price = avg_entry * (1.0 - float(sl_pct) / 100.0)
+                    protect_side = "long"
+                else:
+                    tp_price = avg_entry * (1.0 - float(tp_pct) / 100.0)
+                    sl_price = avg_entry * (1.0 + float(sl_pct) / 100.0)
+                    protect_side = "short"
+                replaced = self.replace_full_protection(
+                    symbol, protect_side, current_size, tp_price, sl_price
+                )
+                protection_ok = bool(replaced.get("ok"))
+                latest_size = current_size
+                if not protection_ok:
+                    break
+            if time.monotonic() < deadline:
+                time.sleep(min(max(0.0, child_pause_seconds), max(0.0, deadline - time.monotonic())))
+
+        final_position = self.position(symbol)
+        final_size = float(final_position.get("size") or 0.0) if final_position.get("side") == position_side else before_size
+        filled = max(0.0, final_size - before_size)
+        final_notional = final_size * float(final_position.get("entry_price") or 0.0)
+        fill_notional = max(0.0, final_notional - before_notional)
+        average = fill_notional / filled if filled > 0 and fill_notional > 0 else None
+        return {
+            "id": children[-1].get("id") if children else None,
+            "clientOid": children[-1].get("clientOid") if children else None,
+            "amount": filled,
+            "filled": filled,
+            "average": average,
+            "price": average,
+            "status": "filled" if filled >= requested - 1e-12 else "partial" if filled > 0 else "unfilled",
+            "requested": requested,
+            "unfilled": max(0.0, requested - filled),
+            "children": children,
+            "protection_ok": protection_ok,
+            "execution_mode": "adaptive_ioc",
+            "limit_price": limit_price,
+        }
+
     def market_order(
         self,
         symbol: str,
