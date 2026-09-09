@@ -139,10 +139,22 @@ jobs:
           PY
           chmod 600 .env
           sudo systemctl restart "$SERVICE"
-          sleep 8
           systemctl is-active "$SERVICE"
-          curl -fsS -m 15 http://127.0.0.1:8000/health | tee /tmp/live-health.json
-          curl -fsS -m 20 http://127.0.0.1:8000/api/live-readiness | tee /tmp/live-readiness.json
+          ready_http=false
+          for attempt in $(seq 1 90); do
+            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/live-health.json \
+              && curl -fsS -m 10 http://127.0.0.1:8000/api/live-readiness > /tmp/live-readiness.json; then
+              ready_http=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready_http" != true ]]; then
+            sudo journalctl -u "$SERVICE" -n 120 --no-pager || true
+            exit 21
+          fi
+          cat /tmp/live-health.json
+          cat /tmp/live-readiness.json
           "$PY" - <<'PY'
           import json
           from universal_bot.config import Settings
