@@ -21,16 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy latest runtime without touching credentials
+      - name: Confirm deployed runtime and preserve credentials
         shell: bash
         run: |
           set -euo pipefail
           APP_DIR=/home/kpj3669/universal-trading-bot-dashboard
           test -s "$APP_DIR/.env"
+          grep -q 'def adaptive_ioc_entry' "$APP_DIR/universal_bot/adapters/bitget_elite.py"
+          grep -q 'live_entry_execution_mode' "$APP_DIR/universal_bot/config.py"
           BACKUP="$APP_DIR/.env.bak-before-ioc-live-$(date +%Y%m%d-%H%M%S)"
           cp "$APP_DIR/.env" "$BACKUP"
-          find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' ! -name 'data' ! -name '*.bak-before-*' -exec rm -rf {} +
-          tar --exclude='.git' --exclude='.env' --exclude='data' -cf - . | tar -xf - -C "$APP_DIR"
           echo "backup=$BACKUP" >> "$GITHUB_ENV"
 
       - name: Pin final PAPER preflight profile
