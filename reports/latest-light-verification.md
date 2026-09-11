@@ -1,7 +1,7 @@
 # Latest light self-hosted verification
 
-- Generated UTC: 2026-09-11T11:37:21Z
-- Source commit: ca629326a2a6706a8c9f74aeb16980be7024570a
+- Generated UTC: 2026-09-11T23:14:30Z
+- Source commit: 90d708a53eafd67cd421a01d42a9a5910fbcc878
 - Runner: trading-bot-new
 
 | Check | Outcome |
@@ -13,13 +13,14 @@
 
 ## Pytest
 ```text
-........................................................................ [ 51%]
-.....................................................................    [100%]
-141 passed in 30.71s
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 21.29s
 ```
 ## Dashboard
 ```text
-{"health": {"status": "ok", "strategy": "Volume Strategy FINAL Universal v15", "symbols": 1, "errors": [], "live_halted": []}, "state_symbols": 1, "html_bytes": 24094}
+{"health": {"status": "ok", "strategy": "Volume Strategy FINAL Universal v15", "symbols": 1, "errors": [], "live_halted": []}, "state_symbols": 1, "html_bytes": 24288}
 ```
 ## Provider
 ```text
