@@ -188,6 +188,7 @@ public class MainActivity extends android.app.Activity {
     private EditText pendingJsonInput;
 
     private String lastDbPath = "";
+    private String selectedDbPath = "";
     private String lastResultPath = "";
     private String privateKeyPath = "";
     private boolean lastUploadEligible = false;
@@ -210,6 +211,9 @@ public class MainActivity extends android.app.Activity {
             Python.start(new AndroidPlatform(this));
         }
         setContentView(buildUi());
+        selectedDbPath = getSharedPreferences("universal_bot", MODE_PRIVATE)
+                .getString("selected_db_path", "");
+        if (!new File(selectedDbPath).isFile()) selectedDbPath = "";
         restorePinnedSelections();
         loadPhoneKey();
         loadSavedResults(true);
@@ -456,6 +460,16 @@ public class MainActivity extends android.app.Activity {
         runButton = actionButton("▶ 백그라운드 캐시 생성 + 백테스트", PRIMARY);
         runButton.setOnClickListener(v -> runBacktest());
         backtestCard.addView(runButton, marginTop(12));
+        Button downloadDbButton = actionButton("⬇ 코인·기간·주기 DB만 다운로드", SUCCESS);
+        downloadDbButton.setOnClickListener(v -> downloadDatabaseOnly());
+        backtestCard.addView(downloadDbButton, marginTop(8));
+        Button selectDbButton = actionButton("🗄 저장된 DB 선택 · DB별 수치", Color.rgb(30, 41, 59));
+        selectDbButton.setOnClickListener(v -> showSavedDatabasePicker());
+        backtestCard.addView(selectDbButton, marginTop(8));
+        backtestCard.addView(text(
+                "현재 선택한 코인·타임프레임·시작일~종료일의 Binance/Bitget/OKX/Bybit SQLite만 저장하고 백테스트는 실행하지 않습니다.",
+                11, MUTED, false
+        ), marginTop(5));
 
         Button topStrategiesButton = actionButton("🏆 수익률 TOP10 전략 선택", Color.rgb(30, 41, 59));
         topStrategiesButton.setOnClickListener(v -> showTopStrategies(false));
@@ -1318,6 +1332,7 @@ enableResultActions(false);
             row.put("manual_edit_count", row.optInt("manual_edit_count", 0) + changed);
             selectedStrategyParameters = edited;
             selectedStrategyRow = row;
+            persistDbStrategyParameters();
 
             initialCapitalInput.setText(compactNumber(capital));
             sizingModeInput.setText(compounding ? "복리식" : "고정식", false);
@@ -1652,6 +1667,7 @@ enableResultActions(false);
         intent.putExtra("username", userInput.getText().toString().trim());
         intent.putExtra("remote_dir", remoteInput.getText().toString().trim());
         intent.putExtra("key_path", privateKeyPath);
+        intent.putExtra("database_path", selectedDbPath);
         intent.putExtra("risk_profile", riskProfile);
         intent.putExtra("optimization_trials", broadOptimizationTrials);
         intent.putExtra("broad_optimization_trials", broadOptimizationTrials);
@@ -1740,6 +1756,149 @@ enableResultActions(false);
             setBacktestControlState("STOPPING");
             toast("중지 중입니다. 체크포인트는 보존됩니다.");
         }
+    }
+
+    private void downloadDatabaseOnly() {
+        String symbol = symbolInput.getText().toString().trim();
+        String timeframe = timeframeInput.getText().toString().trim();
+        String start = startInput.getText().toString().trim();
+        String end = endInput.getText().toString().trim();
+        if (symbol.isEmpty() || timeframe.isEmpty() || parseDate(start) == null || parseDate(end) == null) {
+            toast("DB 다운로드 전 코인, 주기, 시작일, 종료일을 확인하세요.");
+            return;
+        }
+        Calendar startCal = parseDate(start);
+        Calendar endCal = parseDate(end);
+        long rangeDays = (endCal.getTimeInMillis() - startCal.getTimeInMillis()) / 86_400_000L + 1L;
+        if (rangeDays <= 0L || rangeDays > 3660L) {
+            toast("DB 다운로드 기간은 1일 이상 최대 10년(3660일)까지 가능합니다.");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("DB만 다운로드")
+                .setMessage(symbol + " · " + timeframe + "\n" + start + " ~ " + end
+                        + "\n\n4개 거래소 원본 캔들을 SQLite로 저장합니다. 백테스트는 실행하지 않습니다.")
+                .setPositiveButton("다운로드", (dialog, which) -> {
+                    Intent intent = new Intent(this, BacktestForegroundService.class);
+                    intent.setAction(BacktestForegroundService.ACTION_DOWNLOAD_DB);
+                    intent.putExtra("symbol", symbol);
+                    intent.putExtra("timeframe", timeframe);
+                    intent.putExtra("start", start);
+                    intent.putExtra("end", end);
+                    startService(intent);
+                    setBacktestControlState("RUNNING");
+                    setBusy(true, "DB 다운로드 중");
+                    toast("DB 다운로드를 시작했습니다. 화면을 꺼도 계속됩니다.");
+                })
+                .setNegativeButton("취소", null)
+                .show();
+    }
+
+    private void showSavedDatabasePicker() {
+        File root = new File(getFilesDir(), "UniversalTradingBotCache");
+        java.util.ArrayList<File> files = new java.util.ArrayList<>();
+        collectDatabaseFiles(root, files);
+        if (files.isEmpty()) {
+            toast("저장된 DB가 없습니다. 먼저 DB만 다운로드를 실행하세요.");
+            return;
+        }
+        files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        String[] labels = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) {
+            File f = files.get(i);
+            labels[i] = f.getName() + " · " + readableBytes(f.length());
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("백테스트에 사용할 저장 DB 선택")
+                .setItems(labels, (dialog, which) -> {
+                    File chosen = files.get(which);
+                    selectedDbPath = chosen.getAbsolutePath();
+                    lastDbPath = selectedDbPath;
+                    getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                            .putString("selected_db_path", selectedDbPath).apply();
+                    applySavedDatabaseSelection(chosen);
+                })
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void collectDatabaseFiles(File dir, java.util.ArrayList<File> out) {
+        if (dir == null || !dir.isDirectory()) return;
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        for (File child : children) {
+            if (child.isDirectory()) collectDatabaseFiles(child, out);
+            else if (child.isFile() && child.getName().toLowerCase(Locale.US).endsWith(".db")) out.add(child);
+        }
+    }
+
+    private String readableBytes(long bytes) {
+        if (bytes >= 1_000_000_000L) return String.format(Locale.US, "%.1f GB", bytes / 1_000_000_000.0);
+        if (bytes >= 1_000_000L) return String.format(Locale.US, "%.1f MB", bytes / 1_000_000.0);
+        return String.format(Locale.US, "%.1f KB", bytes / 1_000.0);
+    }
+
+    private String dbSettingsKey(String path) {
+        return "db_strategy_" + Integer.toHexString(path == null ? 0 : path.hashCode());
+    }
+
+    private JSONObject defaultDbStrategyParameters() {
+        JSONObject out = new JSONObject();
+        try {
+            for (String[] spec : STRATEGY_EDITOR_FIELDS) {
+                String type = spec[0], key = spec[2];
+                if ("section".equals(type)) continue;
+                if ("bool".equals(type)) out.put(key, Boolean.parseBoolean(spec[5]));
+                else if ("int".equals(type)) out.put(key, Integer.parseInt(spec[5]));
+                else if ("decimal".equals(type)) out.put(key, Double.parseDouble(spec[5]));
+                else if ("choice".equals(type)) out.put(key, spec[5]);
+                else out.put(key, spec[5]);
+            }
+            out.put("entry_multiplier", out.optDouble("order_percent_of_equity", 100.0) / 100.0);
+            out.put("database_defaults", true);
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private JSONObject loadDbStrategyParameters(String path) {
+        String raw = getSharedPreferences("universal_bot", MODE_PRIVATE)
+                .getString(dbSettingsKey(path), "");
+        if (!raw.isEmpty()) {
+            try { return new JSONObject(raw); } catch (Exception ignored) { }
+        }
+        JSONObject defaults = defaultDbStrategyParameters();
+        getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                .putString(dbSettingsKey(path), defaults.toString())
+                .apply();
+        return defaults;
+    }
+
+    private void persistDbStrategyParameters() {
+        if (selectedDbPath == null || selectedDbPath.isEmpty() || selectedStrategyParameters == null) return;
+        getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                .putString(dbSettingsKey(selectedDbPath), selectedStrategyParameters.toString())
+                .apply();
+    }
+
+    private void applySavedDatabaseSelection(File chosen) {
+        JSONObject parameters = loadDbStrategyParameters(chosen.getAbsolutePath());
+        selectedStrategyParameters = parameters;
+        selectedStrategyRow = new JSONObject();
+        try {
+            selectedStrategyRow.put("parameters", parameters);
+            selectedStrategyRow.put("effective_parameters", parameters);
+            selectedStrategyRow.put("manually_edited", true);
+            selectedStrategyRow.put("database_path", chosen.getAbsolutePath());
+        } catch (Exception ignored) {
+        }
+        syncMainControlsFromStrategy(parameters);
+        selectedStrategyText.setText(
+                "DB 선택됨 · " + chosen.getName() + "\nDB별 전략 수치를 수정한 뒤 선택 DB로 백테스트합니다."
+        );
+        selectedStrategyText.setTextColor(ACCENT);
+        toast("DB를 선택했습니다. '불러온/선택한 전략 수치 직접 수정'에서 DB별 값을 바꿀 수 있습니다.");
+        showStrategyParameterEditor();
     }
 
     private void refreshBackgroundBacktestStatus() {
@@ -1858,7 +2017,11 @@ enableResultActions(false);
                 wrapper.put("label", "백그라운드 백테스트 완료");
                 main.post(() -> {
                     applySavedResult(wrapper, false);
-                    toast("백그라운드 백테스트가 완료됐습니다.");
+                    boolean cacheOnly = lastSummary != null && lastSummary.optBoolean("cache_only", false);
+                    toast(cacheOnly ? "DB 다운로드가 완료됐습니다. 코인 DB 차트에서 확인하세요." : "백그라운드 백테스트가 완료됐습니다.");
+                    if (cacheOnly) {
+                        return;
+                    }
                     if (lastSummary != null && !lastSummary.optBoolean("selected_strategy_retest", false)) {
                         showTopStrategies(true);
                     } else if (lastSummary != null) {
@@ -2223,6 +2386,11 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         lastSummary = summary;
         lastResultPath = item.optString("path", "");
         lastDbPath = item.optString("db", summary.optString("database", ""));
+        if (!lastDbPath.isEmpty() && new File(lastDbPath).isFile()) {
+            selectedDbPath = lastDbPath;
+            getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                    .putString("selected_db_path", selectedDbPath).apply();
+        }
         lastUploadEligible = summary.optBoolean("server_upload_eligible", false);
         String savedSymbol = summary.optString("symbol", "");
         String savedTimeframe = summary.optString("timeframe", "");

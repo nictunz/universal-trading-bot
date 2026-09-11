@@ -244,6 +244,7 @@ def build_cache_and_backtest(
     log: Callable[[str], None],
     strategy_overrides: dict | None = None,
     control_check: Callable[[], None] | None = None,
+    run_backtest: bool = True,
 ) -> tuple[Path, Path, dict]:
     os.environ["CRYPTO_VOLUME_PROVIDER"] = "none"
     os.environ["COINAPI_API_KEY"] = ""
@@ -346,6 +347,41 @@ def build_cache_and_backtest(
     checkpoint["completed_chunks"] = sorted(completed_chunks)
     checkpoint["last_error"] = None
     _save_checkpoint(checkpoint_path, checkpoint)
+    if not run_backtest:
+        # Keep DB-only downloads independent from strategy execution.  The
+        # metadata file lets the Android picker discover the finished cache
+        # without manufacturing a misleading performance result.
+        checkpoint["stage"] = "COMPLETE_CACHE_ONLY"
+        checkpoint["result"] = ""
+        _save_checkpoint(checkpoint_path, checkpoint)
+        row = con = None
+        try:
+            with sqlite3.connect(db) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM ohlcv"
+                ).fetchone()
+        except Exception:
+            row = (0, None, None)
+        summary = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "requested_start": start_text,
+            "requested_end": end_text,
+            "range_days": range_days,
+            "database": str(db),
+            "cache_only": True,
+            "bars": int(row[0] or 0),
+            "data_start": row[1],
+            "data_end": row[2],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        result_path = db.with_name(db.stem + "-db-only.json")
+        result_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        log(f"DB 다운로드 완료 · {summary['bars']}개 원시 봉 · 백테스트는 실행하지 않음")
+        return db, result_path, summary
     log("\n===== CACHE ONLY BACKTEST =====")
     if control_check is not None:
         control_check()

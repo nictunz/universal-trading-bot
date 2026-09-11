@@ -28,6 +28,7 @@ public class BacktestForegroundService extends Service {
     public static final String ACTION_PAUSE = "com.nictunz.universalbacktester.BACKTEST_PAUSE";
     public static final String ACTION_RESUME = "com.nictunz.universalbacktester.BACKTEST_RESUME";
     public static final String ACTION_STOP = "com.nictunz.universalbacktester.BACKTEST_STOP";
+    public static final String ACTION_DOWNLOAD_DB = "com.nictunz.universalbacktester.DB_DOWNLOAD";
 
     private static final String CHANNEL_ID = "backtest_worker";
     private static final int NOTIFICATION_ID = 4501;
@@ -79,9 +80,10 @@ public class BacktestForegroundService extends Service {
 
         JSONObject request;
         try {
-            if (ACTION_START.equals(action) && intent != null) {
+            if ((ACTION_START.equals(action) || ACTION_DOWNLOAD_DB.equals(action)) && intent != null) {
                 stopRequested = false;
                 request = requestFromIntent(intent);
+                request.put("db_only", ACTION_DOWNLOAD_DB.equals(action));
                 prefs().edit().putString("backtest_request", request.toString())
                         .putBoolean("backtest_requested", true)
                         .putBoolean("backtest_paused", false)
@@ -123,8 +125,21 @@ public class BacktestForegroundService extends Service {
             if (prefs().getBoolean("backtest_paused", false)) {
                 bridge.callAttr("set_optimization_paused", true);
             }
-            updateNotification("백테스트 실행 중 · 화면을 꺼도 계속됩니다");
-            String response = bridge.callAttr(
+            updateNotification(request.optBoolean("db_only", false)
+                    ? "DB 다운로드 중 · 화면을 꺼도 계속됩니다"
+                    : "백테스트 실행 중 · 화면을 꺼도 계속됩니다");
+            String response;
+            if (request.optBoolean("db_only", false)) {
+                response = bridge.callAttr(
+                        "download_cache_only",
+                        request.getString("symbol"),
+                        request.getString("timeframe"),
+                        request.getString("start"),
+                        request.getString("end"),
+                        request.getString("output_dir")
+                ).toString();
+            } else {
+                response = bridge.callAttr(
                     "run_backtest",
                     request.getString("symbol"),
                     request.getString("timeframe"),
@@ -146,8 +161,10 @@ public class BacktestForegroundService extends Service {
                     request.optString("optimization_speed", "quick"),
                     request.optBoolean("precheck_enabled", true),
                     request.optBoolean("adaptive_regime_enabled", false),
-                    request.optDouble("initial_capital", 1000.0)
-            ).toString();
+                    request.optDouble("initial_capital", 1000.0),
+                    request.optString("database_path", "")
+                ).toString();
+            }
             JSONObject obj = new JSONObject(response);
             StringBuilder logs = new StringBuilder();
             JSONArray rows = obj.optJSONArray("logs");
@@ -163,7 +180,9 @@ public class BacktestForegroundService extends Service {
                     .putString("backtest_log", trimLog(logs.toString()))
                     .putString("backtest_error", "")
                     .apply();
-            updateNotification("백테스트 완료 · 앱에서 결과 확인");
+            updateNotification(request.optBoolean("db_only", false)
+                    ? "DB 다운로드 완료 · 앱에서 차트를 열 수 있습니다"
+                    : "백테스트 완료 · 앱에서 결과 확인");
         } catch (Exception e) {
             if (!prefs().getBoolean("backtest_requested", false)) {
                 prefs().edit().putString("backtest_status", "STOPPED")
@@ -205,6 +224,7 @@ public class BacktestForegroundService extends Service {
         request.put("optimization_speed", intent.getStringExtra("optimization_speed"));
         request.put("precheck_enabled", intent.getBooleanExtra("precheck_enabled", true));
         request.put("adaptive_regime_enabled", intent.getBooleanExtra("adaptive_regime_enabled", false));
+        request.put("database_path", intent.getStringExtra("database_path"));
         return request;
     }
 

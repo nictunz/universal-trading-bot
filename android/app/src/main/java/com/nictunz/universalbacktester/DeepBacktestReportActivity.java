@@ -159,6 +159,7 @@ public class DeepBacktestReportActivity extends Activity {
             double pnl = t.optDouble("pnl", 0.0);
             card.addView(text("#" + t.optInt("trade", i + 1) + "  " + t.optString("side", "-"), 14, pnl >= 0 ? GOOD : BAD, true));
             card.addView(text("진입 " + t.optString("entry_time", "-") + "  @ " + formatMaybe(t, "entry_price"), 11, MUTED, false), mt(4));
+            card.addView(text("고정 TP " + formatMaybe(t, "tp_price") + "  ·  고정 SL " + formatMaybe(t, "sl_price"), 11, ACCENT, false), mt(2));
             card.addView(text("청산 " + t.optString("exit_time", "-") + "  @ " + formatMaybe(t, "exit_price"), 11, MUTED, false), mt(2));
             card.addView(text(String.format(Locale.US, "손익 %.2f · %s", pnl, t.optString("reason", "EXIT")), 12, TEXT, true), mt(4));
             content.addView(card, mt(7));
@@ -245,4 +246,3 @@ public class DeepBacktestReportActivity extends Activity {
 
     private static final class PeriodStats { double pnl; int trades; int wins; }
 }
-

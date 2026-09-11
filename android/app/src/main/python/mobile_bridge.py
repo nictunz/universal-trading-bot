@@ -1610,6 +1610,7 @@ def run_backtest(
     precheck_enabled: bool = True,
     adaptive_regime_enabled: bool = False,
     initial_capital: float = 1000.0,
+    database_path: str = "",
 ) -> str:
     logs: list[str] = []
     progress_path = Path(output_dir) / "backtest-progress.log"
@@ -1796,6 +1797,46 @@ def run_backtest(
     )
     log(f"3틱룰 적용: {'모든 진입' if all_entries_three_tick else '첫 진입만'}")
     log(f"자동 시장국면 전환: {'사용' if adaptive_regime_enabled else '사용 안 함'} · 상승=롱 · 하락=숏 · 횡보=양방향 · 고변동성=진입 50%")
+
+    # A selected local DB is an explicit fixed-strategy replay.  It avoids
+    # silently downloading another cache and keeps the chosen DB reusable for
+    # comparing per-DB strategy settings.
+    selected_db = Path(str(database_path or "").strip())
+    if selected_db.is_file():
+        log(f"선택 DB 사용: {selected_db}")
+        selected_result = run_cached_symbol_backtest(
+            symbol=symbol.strip(),
+            asset_class="crypto",
+            exchange="bitget",
+            timeframe=timeframe.strip(),
+            start=start_text.strip(),
+            end=end_text.strip(),
+            overrides=overrides,
+            database_path=selected_db,
+            include_details=True,
+            control_check=_wait_for_optimization_control,
+        )
+        summary = dict(selected_result)
+        summary.update({
+            "database": str(selected_db),
+            "requested_start": start_text.strip(),
+            "requested_end": end_text.strip(),
+            "selected_database": True,
+            "optimization_pipeline": {"stage": "selected_database", "paper_live_applied": False},
+            "initial_capital": initial_capital,
+            "final_equity": initial_capital + float(summary.get("pnl") or 0),
+            "strategy_overrides": dict(overrides),
+        })
+        _attach_result_insights(summary, overrides, speed_mode, "selected_database")
+        history_dir = Path(output_dir) / "BacktestResults"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", symbol.strip()).strip("-").lower()
+        archive = history_dir / f"{stamp}-{slug}-{timeframe.strip()}-selected-db-backtest.json"
+        summary["result_path"] = str(archive)
+        archive.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        log(f"선택 DB 백테스트 완료 · 거래 {int(summary.get('trades') or 0)} · 수익률 {float(summary.get('return_percent') or 0):.2f}%")
+        return json.dumps({"db": str(selected_db), "result": str(archive), "summary": summary, "logs": logs}, ensure_ascii=False)
 
     db, result, summary = build_cache_and_backtest(
         symbol.strip(),
@@ -2100,6 +2141,43 @@ def run_backtest(
     )
 
 
+def download_cache_only(
+    symbol: str,
+    timeframe: str,
+    start_text: str,
+    end_text: str,
+    output_dir: str,
+) -> str:
+    """Download and validate the four-exchange SQLite cache without running a backtest."""
+    logs: list[str] = []
+    progress_path = Path(output_dir) / "backtest-progress.log"
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    progress_path.write_text("", encoding="utf-8")
+
+    def log(message: object) -> None:
+        line = str(message)
+        logs.append(line)
+        with progress_path.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+
+    log("DB 다운로드 시작 · 백테스트는 실행하지 않습니다.")
+    db, result, summary = build_cache_and_backtest(
+        symbol.strip(),
+        timeframe.strip(),
+        start_text.strip(),
+        end_text.strip(),
+        Path(output_dir),
+        log,
+        strategy_overrides={},
+        control_check=_wait_for_optimization_control,
+        run_backtest=False,
+    )
+    return json.dumps(
+        {"db": str(db), "result": str(result), "summary": summary, "logs": logs},
+        ensure_ascii=False,
+    )
+
+
 _HEAVY_SAVED_RESULT_FIELDS = {
     "trades_log",
     "equity_curve",
@@ -2121,6 +2199,7 @@ def list_saved_results(output_dir: str, limit: int = 20) -> str:
     history_dir = Path(output_dir) / "BacktestResults"
     items: list[dict] = []
     candidates = list(history_dir.glob("*-backtest.json")) if history_dir.is_dir() else []
+    candidates.extend(history_dir.glob("*-db-only.json") if history_dir.is_dir() else [])
     candidates.extend(Path(output_dir).glob("*backtest.json"))
     # Android only needs recent entries for the picker. Reading and returning every
     # multi-year result here can exceed the app heap before the screen is displayed.
