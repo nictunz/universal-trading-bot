@@ -1,0 +1,386 @@
+//@version=6
+// ============================================================================
+// 거래량 전략 FINAL Universal v19 · APP SIGNAL PARITY
+// ============================================================================
+// 목적
+// - Android/Server Universal Vector Engine v5의 BTC/USDT 15m 기본값과 신호식을 맞춘다.
+// - 거래 기준 OHLC는 반드시 BITGET:BTCUSDT.P 일반 선물 캔들이다.
+// - Binance/Bitget/OKX/Bybit 네 거래소 거래량이 같은 봉에 모두 있어야 한다.
+// - 진입은 확정된 신호봉 종가(signal_close), TP/SL은 최초 진입가 기준 고정이다.
+// - 앱의 수수료 0.02% + 슬리피지 비용 0.01%를 TradingView에서는
+//   합산 체결비용 0.03%/side commission으로 재현한다.
+// - 890% 주문은 8.9x 진입이며 15x는 포지션 크기가 아닌 최대 레버리지다.
+// - percent_of_equity가 앱의 복리를 재현한다. 자동 시장국면과 연속봉 필터는 OFF다.
+//
+// 중요 제한
+// - TradingView와 앱의 원시 거래량 공급자가 다르면 경계 신호는 달라질 수 있다.
+// - TradingView 브로커 에뮬레이터는 한 봉에서 TP/SL이 모두 닿는 경우 앱의
+//   강제 SL 우선 규칙을 보장하지 않는다. 검증한 5년 DB의 182개 거래에서는
+//   TP/SL 동시 터치 청산봉이 0개였다.
+//
+// 2026-07-24 13:00 UTC 진입 감사 기준 (제공된 5년 DB)
+// - 4거래소 거래량 배수 6.401173, RSI(10) 20.056149
+// - 1봉 변동폭 0.607780%, N봉 차단 변동폭 3.204887%
+// - 캔들 하락봉이므로 LONG 진입. 데이터 창 값이 다르면 원시 TV 데이터 차이다.
+// ============================================================================
+
+strategy(
+     "거래량 전략 FINAL Universal v19 · APP SIGNAL PARITY",
+     shorttitle = "VOL v19 PARITY",
+     overlay = true,
+     pyramiding = 1,
+     initial_capital = 1000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 890,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.03,
+     margin_long = 6.6666667,
+     margin_short = 6.6666667,
+     process_orders_on_close = true,
+     calc_on_order_fills = false,
+     calc_on_every_tick = false
+)
+
+const string ENGINE_SCHEMA = "universal-vector-event-v5"
+
+// ============================================================================
+// ① 차트와 거래량 소스
+// ============================================================================
+
+string G_MARKET = "① 차트·4거래소"
+string tradeFeedSymbol = input.symbol("BITGET:BTCUSDT.P", "앱 OHLC 기준", group = G_MARKET)
+string signalTimeframe = input.timeframe("15", "신호 타임프레임", group = G_MARKET)
+bool enforceChart = input.bool(true, "BITGET·15분 차트 강제", group = G_MARKET)
+bool useFourCryptoExchanges = input.bool(true, "4개 거래소 정규화 거래량", group = G_MARKET)
+string binanceSymbol = input.symbol("BINANCE:BTCUSDT.P", "Binance 선물", group = G_MARKET)
+string bitgetSymbol = input.symbol("BITGET:BTCUSDT.P", "Bitget 선물", group = G_MARKET)
+string okxSymbol = input.symbol("OKX:BTCUSDT.P", "OKX 선물", group = G_MARKET)
+string bybitSymbol = input.symbol("BYBIT:BTCUSDT.P", "Bybit 선물", group = G_MARKET)
+
+// ============================================================================
+// ② 앱과 동일한 전략 수치
+// ============================================================================
+
+string G_ENTRY = "② 거래량·진입"
+int volumeLookback = input.int(41, "거래량 평균 기간", minval = 2, group = G_ENTRY)
+float volumeBreakMultiplier = input.float(6.4, "거래량 돌파 배수", minval = 0.1, step = 0.1, group = G_ENTRY)
+float minOneBarVol = input.float(0.1, "1봉 변동 최소 (%)", minval = 0.0, step = 0.1, group = G_ENTRY)
+float maxOneBarVol = input.float(3.6, "1봉 변동 최대 (%)", minval = 0.01, step = 0.1, group = G_ENTRY)
+bool allowLong = input.bool(true, "LONG 허용", group = G_ENTRY)
+bool allowShort = input.bool(true, "SHORT 허용", group = G_ENTRY)
+int maxPyramiding = input.int(1, "최대 진입 횟수 (v19 고정)", options = [1], group = G_ENTRY)
+
+string G_TPSL = "③ TP·SL"
+int volatilityBars = input.int(36, "변동성 계산 봉", minval = 2, group = G_TPSL)
+float tpVolMultiplier = input.float(3.8, "TP 변동성 배수", minval = 0.01, step = 0.1, group = G_TPSL)
+float slVolMultiplier = input.float(1.0, "SL 변동성 배수", minval = 0.01, step = 0.1, group = G_TPSL)
+float minTPPercent = input.float(0.3, "최소 TP (%)", minval = 0.01, step = 0.1, group = G_TPSL)
+float maxTPPercent = input.float(2.1, "최대 TP (%)", minval = 0.01, step = 0.1, group = G_TPSL)
+float minSLPercent = input.float(0.3, "최소 SL (%)", minval = 0.01, step = 0.1, group = G_TPSL)
+float maxSLPercent = input.float(1.9, "최대 SL (%)", minval = 0.01, step = 0.1, group = G_TPSL)
+
+string G_NBAR = "④ N봉 급변동"
+bool useNBarVolatilityBlock = input.bool(true, "N봉 차단 사용", group = G_NBAR)
+int nBarVolatilityBars = input.int(200, "N봉 차단 기간", minval = 2, group = G_NBAR)
+float maxNBarVolatility = input.float(6.1, "N봉 최대 변동 (%)", minval = 0.01, step = 0.1, group = G_NBAR)
+
+string G_RSI = "⑤ RSI"
+bool useRsiFilter = input.bool(true, "RSI 사용", group = G_RSI)
+int rsiLength = input.int(10, "RSI 기간", minval = 2, group = G_RSI)
+float rsiOversoldMin = input.float(20.0, "LONG 과매도 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = G_RSI)
+float rsiOversoldMax = input.float(41.5, "LONG 과매도 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = G_RSI)
+float rsiOverboughtMin = input.float(65.6, "SHORT 과매수 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = G_RSI)
+float rsiOverboughtMax = input.float(74.7, "SHORT 과매수 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = G_RSI)
+
+string G_ADX = "⑥ ADX"
+bool useAdxFilter = input.bool(false, "ADX 사용", group = G_ADX)
+int adxLength = input.int(7, "ADX 기간", minval = 2, group = G_ADX)
+float adxMin = input.float(11.6, "ADX 최소", minval = 0.0, maxval = 100.0, step = 0.1, group = G_ADX)
+float adxMax = input.float(80.5, "ADX 최대", minval = 0.0, maxval = 100.0, step = 0.1, group = G_ADX)
+
+string G_TIME = "⑦ 시간·재진입"
+int cooldownBars = input.int(3, "진입 후 쿨다운 봉", minval = 0, group = G_TIME)
+int reentryBars = input.int(7, "청산 후 재진입 봉", minval = 0, group = G_TIME)
+bool useStartDate = input.bool(true, "시작일 사용", group = G_TIME)
+int startDate = input.time(timestamp("26 Aug 2021 00:00 +0000"), "시작일 (UTC)", group = G_TIME)
+bool blockWeekend = input.bool(false, "주말 차단", group = G_TIME)
+string excludedHoursUtc = input.string("", "제외 시간 UTC", group = G_TIME, tooltip = "예: 00,13,23")
+
+string G_VIEW = "⑧ 표시·진단"
+bool showPanel = input.bool(true, "진단 패널", group = G_VIEW)
+bool showSignals = input.bool(true, "진입·청산 표시", group = G_VIEW)
+bool showWarnings = input.bool(true, "차트·데이터 경고", group = G_VIEW)
+string panelPositionInput = input.string("오른쪽 위", "패널 위치", options = ["오른쪽 위", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group = G_VIEW)
+
+// ============================================================================
+// ③ 보조 함수
+// ============================================================================
+
+f_hour_excluded(string hoursText, int currentHour) =>
+    string compact = str.replace_all(hoursText, " ", "")
+    string padded = currentHour < 10 ? "0" + str.tostring(currentHour) : str.tostring(currentHour)
+    string raw = str.tostring(currentHour)
+    string wrapped = "," + compact + ","
+    compact != "" and (str.contains(wrapped, "," + padded + ",") or str.contains(wrapped, "," + raw + ","))
+
+f_yes_no(bool value) =>
+    value ? "PASS" : "FAIL"
+
+f_block_reason(bool chartOK, bool parametersOK, bool warmupOK, bool volumeReady, bool volumeOK, bool oneBarOK, bool nBarOK, bool adxOK, bool timeOK, bool cooldownOK, bool rsiLongOK, bool rsiShortOK, bool bearish, bool bullish, bool flatOK) =>
+    string reason = "READY"
+    if not chartOK
+        reason := "표준 BITGET·15분 차트 필요"
+    else if not parametersOK
+        reason := "입력 범위 오류"
+    else if not warmupOK
+        reason := "시작 후 200봉 워밍업"
+    else if not volumeReady
+        reason := "4거래소 동일봉 데이터 부족"
+    else if not volumeOK
+        reason := "거래량 6.4배 미달"
+    else if not oneBarOK
+        reason := "1봉 변동폭 범위 밖"
+    else if not nBarOK
+        reason := "N봉 급변동 차단"
+    else if not adxOK
+        reason := "ADX 범위 밖"
+    else if not timeOK
+        reason := "시간 필터 차단"
+    else if not cooldownOK
+        reason := "쿨다운/재진입 대기"
+    else if not flatOK
+        reason := "포지션 보유/진입 한도"
+    else if bearish and not rsiLongOK
+        reason := "LONG RSI 범위 밖"
+    else if bullish and not rsiShortOK
+        reason := "SHORT RSI 범위 밖"
+    else if not bearish and not bullish
+        reason := "도지 봉"
+    else if bearish and not allowLong
+        reason := "LONG 비활성"
+    else if bullish and not allowShort
+        reason := "SHORT 비활성"
+    else if bearish
+        reason := "LONG READY"
+    else if bullish
+        reason := "SHORT READY"
+    reason
+
+// ============================================================================
+// ④ 4거래소 거래량: 각 거래소 자체 SMA로 정규화 후 네 곳 모두 있을 때만 평균
+// ============================================================================
+
+[binanceVolume, binanceVolumeSma] = request.security(binanceSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[bitgetVolume, bitgetVolumeSma] = request.security(bitgetSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[okxVolume, okxVolumeSma] = request.security(okxSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+[bybitVolume, bybitVolumeSma] = request.security(bybitSymbol, signalTimeframe, [volume, ta.sma(volume, volumeLookback)], gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+float binanceRatio = not na(binanceVolume) and not na(binanceVolumeSma) and binanceVolumeSma > 0 ? binanceVolume / binanceVolumeSma : na
+float bitgetRatio = not na(bitgetVolume) and not na(bitgetVolumeSma) and bitgetVolumeSma > 0 ? bitgetVolume / bitgetVolumeSma : na
+float okxRatio = not na(okxVolume) and not na(okxVolumeSma) and okxVolumeSma > 0 ? okxVolume / okxVolumeSma : na
+float bybitRatio = not na(bybitVolume) and not na(bybitVolumeSma) and bybitVolumeSma > 0 ? bybitVolume / bybitVolumeSma : na
+bool fourVolumesReady = not na(binanceRatio) and not na(bitgetRatio) and not na(okxRatio) and not na(bybitRatio)
+float fourExchangeVolumeRatio = fourVolumesReady ? (binanceRatio + bitgetRatio + okxRatio + bybitRatio) / 4.0 : na
+
+float chartVolumeSma = ta.sma(volume, volumeLookback)
+float chartVolumeRatio = not na(volume) and not na(chartVolumeSma) and chartVolumeSma > 0 ? volume / chartVolumeSma : na
+float normalizedVolumeRatio = useFourCryptoExchanges ? fourExchangeVolumeRatio : chartVolumeRatio
+bool volumeDataReady = useFourCryptoExchanges ? fourVolumesReady : not na(chartVolumeRatio)
+
+// ============================================================================
+// ⑤ 앱과 동일한 지표·필터
+// ============================================================================
+
+float oneBarVolatility = open != 0 ? math.abs(close - open) / open * 100.0 : 0.0
+float volatilityLow = ta.lowest(low, volatilityBars)
+float volatilityRange = volatilityLow > 0 ? (ta.highest(high, volatilityBars) - volatilityLow) / volatilityLow * 100.0 : na
+float blockLow = ta.lowest(low, nBarVolatilityBars)
+float nBarBlockRange = blockLow > 0 ? (ta.highest(high, nBarVolatilityBars) - blockLow) / blockLow * 100.0 : na
+float rawTPPercent = volatilityRange * tpVolMultiplier
+float rawSLPercent = volatilityRange * slVolMultiplier
+float finalTPPercent = math.max(minTPPercent, math.min(maxTPPercent, rawTPPercent))
+float finalSLPercent = math.max(minSLPercent, math.min(maxSLPercent, rawSLPercent))
+float rsiValue = ta.rsi(close, rsiLength)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLength, adxLength)
+
+bool volumeOK = volumeDataReady and normalizedVolumeRatio >= volumeBreakMultiplier
+bool oneBarOK = oneBarVolatility >= minOneBarVol and oneBarVolatility <= maxOneBarVol
+bool nBarOK = not useNBarVolatilityBlock or (not na(nBarBlockRange) and nBarBlockRange <= maxNBarVolatility)
+bool adxRangeOK = not na(adxValue) and adxValue >= adxMin and adxValue <= adxMax
+bool adxOK = not useAdxFilter or adxRangeOK
+bool rsiLongOK = not useRsiFilter or (not na(rsiValue) and rsiValue >= rsiOversoldMin and rsiValue <= rsiOversoldMax)
+bool rsiShortOK = not useRsiFilter or (not na(rsiValue) and rsiValue >= rsiOverboughtMin and rsiValue <= rsiOverboughtMax)
+bool bearishCandle = close < open
+bool bullishCandle = close > open
+
+int currentHourUtc = hour(time, "UTC")
+bool weekend = dayofweek(time, "UTC") == dayofweek.saturday or dayofweek(time, "UTC") == dayofweek.sunday
+bool timeOK = (not useStartDate or time >= startDate) and (not blockWeekend or not weekend) and not f_hour_excluded(excludedHoursUtc, currentHourUtc)
+
+int warmupBars = math.max(200, math.max(volumeLookback, math.max(volatilityBars, math.max(nBarVolatilityBars, math.max(adxLength * 3, rsiLength + 10)))))
+var int requestedStartBar = na
+if na(requestedStartBar) and (not useStartDate or time >= startDate)
+    requestedStartBar := bar_index
+int barsFromRequestedStart = na(requestedStartBar) ? -1 : bar_index - requestedStartBar
+bool warmupOK = not na(requestedStartBar) and barsFromRequestedStart >= warmupBars
+
+bool chartSymbolOK = syminfo.tickerid == tradeFeedSymbol
+bool chartTimeframeOK = timeframe.period == signalTimeframe
+bool chartTypeOK = chart.is_standard
+bool chartOK = not enforceChart or (chartSymbolOK and chartTimeframeOK and chartTypeOK)
+bool parametersOK = minOneBarVol <= maxOneBarVol and minTPPercent <= maxTPPercent and minSLPercent <= maxSLPercent and rsiOversoldMin <= rsiOversoldMax and rsiOversoldMax < rsiOverboughtMin and rsiOverboughtMin <= rsiOverboughtMax and adxMin <= adxMax and (allowLong or allowShort)
+
+// ============================================================================
+// ⑥ 포지션 상태·진입
+// ============================================================================
+
+var int lastEntryBar = na
+var int lastExitBar = na
+var int entryCount = 0
+var int seenClosedTrades = 0
+var float fixedLongTP = na
+var float fixedLongSL = na
+var float fixedShortTP = na
+var float fixedShortSL = na
+
+bool newClosedTrade = strategy.closedtrades > seenClosedTrades
+if newClosedTrade
+    seenClosedTrades := strategy.closedtrades
+    entryCount := 0
+    fixedLongTP := na
+    fixedLongSL := na
+    fixedShortTP := na
+    fixedShortSL := na
+
+bool entryCooldownOK = na(lastEntryBar) or bar_index - lastEntryBar >= cooldownBars
+bool reentryCooldownOK = na(lastExitBar) or bar_index - lastExitBar >= reentryBars
+bool cooldownOK = entryCooldownOK and reentryCooldownOK
+bool flatPosition = strategy.position_size == 0
+bool entryLimitOK = entryCount < maxPyramiding
+// 앱 v5는 현재 봉의 진입 조건과 쿨다운을 먼저 계산하고, 그 뒤 TP/SL 청산을
+// 처리한 다음 같은 봉 종가 진입을 평가한다. 따라서 청산봉 자체에 새 신호가
+// 있으면 reentryBars보다 먼저 재진입할 수 있다. 5년 결과의 8건이 이 순서에
+// 해당하므로 v19도 현재 앱과의 결과 일치를 위해 같은 이벤트 순서를 보존한다.
+bool ready = barstate.isconfirmed and chartOK and parametersOK and warmupOK and volumeDataReady and volumeOK and oneBarOK and nBarOK and adxOK and timeOK and cooldownOK and flatPosition and entryLimitOK
+bool longSignal = ready and allowLong and bearishCandle and rsiLongOK
+bool shortSignal = ready and allowShort and bullishCandle and rsiShortOK
+bool newEntryThisBar = na(lastEntryBar) or lastEntryBar != bar_index
+bool longEntry = longSignal and newEntryThisBar
+bool shortEntry = shortSignal and newEntryThisBar
+
+if longEntry
+    fixedLongTP := close * (1.0 + finalTPPercent / 100.0)
+    fixedLongSL := close * (1.0 - finalSLPercent / 100.0)
+    fixedShortTP := na
+    fixedShortSL := na
+    strategy.entry("LONG", strategy.long, comment = "LONG")
+    strategy.exit("LONG-TP-SL", from_entry = "LONG", limit = fixedLongTP, stop = fixedLongSL, comment = "FIXED TP/SL")
+    lastEntryBar := bar_index
+    entryCount += 1
+
+if shortEntry
+    fixedShortTP := close * (1.0 - finalTPPercent / 100.0)
+    fixedShortSL := close * (1.0 + finalSLPercent / 100.0)
+    fixedLongTP := na
+    fixedLongSL := na
+    strategy.entry("SHORT", strategy.short, comment = "SHORT")
+    strategy.exit("SHORT-TP-SL", from_entry = "SHORT", limit = fixedShortTP, stop = fixedShortSL, comment = "FIXED TP/SL")
+    lastEntryBar := bar_index
+    entryCount += 1
+
+// 같은 봉 재진입 판정을 마친 뒤 청산 시각을 기록한다. 다음 봉부터는
+// reentryBars=7이 정상 적용된다.
+if newClosedTrade
+    lastExitBar := bar_index
+
+// 최초 진입 때 계산한 보호 가격을 이후 봉에서도 같은 값으로 유지한다.
+if strategy.position_size > 0 and not na(fixedLongTP) and not na(fixedLongSL)
+    strategy.exit("LONG-TP-SL", from_entry = "LONG", limit = fixedLongTP, stop = fixedLongSL, comment = "FIXED TP/SL")
+if strategy.position_size < 0 and not na(fixedShortTP) and not na(fixedShortSL)
+    strategy.exit("SHORT-TP-SL", from_entry = "SHORT", limit = fixedShortTP, stop = fixedShortSL, comment = "FIXED TP/SL")
+
+bool longDualTouch = strategy.position_size > 0 and not na(fixedLongTP) and not na(fixedLongSL) and high >= fixedLongTP and low <= fixedLongSL
+bool shortDualTouch = strategy.position_size < 0 and not na(fixedShortTP) and not na(fixedShortSL) and low <= fixedShortTP and high >= fixedShortSL
+bool dualTouch = longDualTouch or shortDualTouch
+
+// ============================================================================
+// ⑦ 차트·데이터 창 진단
+// ============================================================================
+
+plot(strategy.position_size > 0 ? fixedLongTP : na, "LONG 고정 TP", color = color.lime, linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? fixedLongSL : na, "LONG 고정 SL", color = color.red, linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size < 0 ? fixedShortTP : na, "SHORT 고정 TP", color = color.lime, linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size < 0 ? fixedShortSL : na, "SHORT 고정 SL", color = color.red, linewidth = 2, style = plot.style_linebr)
+
+plot(normalizedVolumeRatio, "AUDIT · 4거래소 거래량 배수", display = display.data_window)
+plot(binanceRatio, "AUDIT · Binance 배수", display = display.data_window)
+plot(bitgetRatio, "AUDIT · Bitget 배수", display = display.data_window)
+plot(okxRatio, "AUDIT · OKX 배수", display = display.data_window)
+plot(bybitRatio, "AUDIT · Bybit 배수", display = display.data_window)
+plot(oneBarVolatility, "AUDIT · 1봉 변동폭 %", display = display.data_window)
+plot(volatilityRange, "AUDIT · TP/SL N봉 변동폭 %", display = display.data_window)
+plot(nBarBlockRange, "AUDIT · N봉 차단 변동폭 %", display = display.data_window)
+plot(rsiValue, "AUDIT · RSI", display = display.data_window)
+plot(adxValue, "AUDIT · ADX", display = display.data_window)
+plot(volumeOK ? 1 : 0, "AUDIT · 거래량 조건", display = display.data_window)
+plot(rsiLongOK ? 1 : 0, "AUDIT · LONG RSI 조건", display = display.data_window)
+plot(rsiShortOK ? 1 : 0, "AUDIT · SHORT RSI 조건", display = display.data_window)
+plot(ready ? 1 : 0, "AUDIT · 최종 진입 준비", display = display.data_window)
+
+plotshape(showSignals and longEntry, title = "LONG 진입", text = "LONG", style = shape.labelup, location = location.belowbar, color = color.lime, textcolor = color.black, size = size.tiny)
+plotshape(showSignals and shortEntry, title = "SHORT 진입", text = "SHORT", style = shape.labeldown, location = location.abovebar, color = color.red, textcolor = color.white, size = size.tiny)
+plotshape(showWarnings and dualTouch, title = "TP/SL 동시 터치", text = "DUAL\nAPP=SL", style = shape.labeldown, location = location.abovebar, color = color.orange, textcolor = color.black, size = size.tiny)
+bgcolor(showWarnings and not chartOK ? color.new(color.red, 82) : showWarnings and not volumeDataReady ? color.new(color.orange, 86) : na, title = "Parity 경고")
+
+// ============================================================================
+// ⑧ 마지막 봉 상태 패널
+// ============================================================================
+
+panelPos = panelPositionInput == "오른쪽 위" ? position.top_right : panelPositionInput == "오른쪽 아래" ? position.bottom_right : panelPositionInput == "왼쪽 위" ? position.top_left : position.bottom_left
+var table panel = table.new(panelPos, 2, 18, bgcolor = color.rgb(12, 16, 22), frame_color = color.rgb(100, 110, 125), frame_width = 1)
+
+if barstate.islast and showPanel
+    table.clear(panel, 0, 0, 1, 17)
+    string blockReason = f_block_reason(chartOK, parametersOK, warmupOK, volumeDataReady, volumeOK, oneBarOK, nBarOK, adxOK, timeOK, cooldownOK, rsiLongOK, rsiShortOK, bearishCandle, bullishCandle, flatPosition and entryLimitOK)
+    color passColor = color.rgb(40, 235, 125)
+    color failColor = color.rgb(255, 75, 90)
+    color neutralColor = color.rgb(195, 205, 220)
+    color headerBg = color.rgb(25, 35, 50)
+    color bodyBg = color.rgb(12, 16, 22)
+    table.cell(panel, 0, 0, "VOL v19", text_color = color.white, bgcolor = headerBg)
+    table.cell(panel, 1, 0, "APP SIGNAL PARITY", text_color = color.aqua, bgcolor = headerBg)
+    table.cell(panel, 0, 1, "엔진", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 1, ENGINE_SCHEMA, text_color = color.aqua, bgcolor = bodyBg)
+    table.cell(panel, 0, 2, "차트", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 2, f_yes_no(chartOK), text_color = chartOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 3, "4거래소 완전성", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 3, f_yes_no(volumeDataReady), text_color = volumeDataReady ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 4, "거래량", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 4, "x" + str.tostring(normalizedVolumeRatio, "#.######") + " / x" + str.tostring(volumeBreakMultiplier, "#.##"), text_color = volumeOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 5, "Bin/Bitget", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 5, str.tostring(binanceRatio, "#.######") + " / " + str.tostring(bitgetRatio, "#.######"), text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 6, "OKX/Bybit", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 6, str.tostring(okxRatio, "#.######") + " / " + str.tostring(bybitRatio, "#.######"), text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 7, "1봉 변동", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 7, str.tostring(oneBarVolatility, "#.######") + "%", text_color = oneBarOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 8, "N봉 차단", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 8, str.tostring(nBarBlockRange, "#.######") + "% / 6.1%", text_color = nBarOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 9, "RSI", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 9, str.tostring(rsiValue, "#.######"), text_color = rsiLongOK or rsiShortOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 10, "ADX", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 10, useAdxFilter ? str.tostring(adxValue, "#.######") : "OFF", text_color = useAdxFilter ? (adxOK ? passColor : failColor) : neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 11, "TP / SL", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 11, str.tostring(finalTPPercent, "#.##") + "% / " + str.tostring(finalSLPercent, "#.##") + "%", text_color = color.yellow, bgcolor = bodyBg)
+    table.cell(panel, 0, 12, "쿨다운", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 12, f_yes_no(cooldownOK), text_color = cooldownOK ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 13, "포지션", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 13, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT", text_color = strategy.position_size == 0 ? neutralColor : color.yellow, bgcolor = bodyBg)
+    table.cell(panel, 0, 14, "진입 판정", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 14, blockReason, text_color = ready ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 15, "거래 / 승률", text_color = neutralColor, bgcolor = bodyBg)
+    float winRate = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100.0 : 0.0
+    table.cell(panel, 1, 15, str.tostring(strategy.closedtrades) + " / " + str.tostring(winRate, "#.##") + "%", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 16, "순손익", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 16, str.tostring(strategy.netprofit, "#.##"), text_color = strategy.netprofit >= 0 ? passColor : failColor, bgcolor = bodyBg)
+    table.cell(panel, 0, 17, "비용 모델", text_color = neutralColor, bgcolor = bodyBg)
+    table.cell(panel, 1, 17, "0.02% fee + 0.01% slip", text_color = color.orange, bgcolor = bodyBg)
