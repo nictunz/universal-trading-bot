@@ -764,11 +764,17 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                 try:
                     detail = self._order_detail(symbol, order_id)
                     state = str(detail.get("state") or "").lower()
-                    if state in {"filled", "cancelled", "canceled", "partially_filled"}:
+                    if state in {"filled", "cancelled", "canceled"}:
                         break
                 except Exception:
                     pass
                 time.sleep(0.05)
+        if str(detail.get("state") or "").lower() not in {"filled", "cancelled", "canceled"}:
+            raise AmbiguousOrderResult(
+                "IOC has no terminal exchange acknowledgement",
+                client_oid=client_oid, side=side,
+                requested_qty=float(qty), reduce_only=False,
+            )
         filled = self._fill_number(detail, "baseVolume", "filledQty", "fillQty", "sizeQty")
         average = self._fill_number(detail, "priceAvg", "fillPrice", "price") or None
         return {
@@ -815,6 +821,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
         before_size = float(before.get("size") or 0.0) if before.get("side") == position_side else 0.0
         before_notional = before_size * float(before.get("entry_price") or 0.0)
         latest_size = before_size
+        confirmed_filled = 0.0
         deadline = time.monotonic() + max(0.1, float(execution_window_seconds))
         children: list[dict[str, Any]] = []
         protection_updates: list[dict[str, Any]] = []
@@ -830,7 +837,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
             fixed_sl = float(fixed_sl_price or reference_price * (1.0 + float(sl_pct) / 100.0))
 
         for _ in range(max(1, int(max_child_orders))):
-            remaining = requested - max(0.0, latest_size - before_size)
+            remaining = requested - max(confirmed_filled, latest_size - before_size, 0.0)
             if remaining <= 1e-12 or time.monotonic() >= deadline:
                 break
             book = self._public_order_book(symbol)
@@ -847,10 +854,29 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                     break
                 raise
             children.append(child)
+            confirmed_filled += max(0.0, float(child.get("filled") or 0.0))
 
-            # Position state is authoritative for partial IOC fills and protects
-            # against delayed or incomplete order-detail responses.
-            position = self.position(symbol)
+            # Never re-spend a confirmed fill while position reads lag. Do not
+            # send another child until the position includes all known fills.
+            position = {}
+            minimum_size = max(latest_size, before_size + confirmed_filled)
+            for attempt in range(7):
+                position = self.position(symbol)
+                visible_size = float(position.get("size") or 0.0)
+                if (position.get("side") == position_side
+                        and visible_size + 1e-9 >= minimum_size
+                        and float(position.get("entry_price") or 0.0) > 0):
+                    break
+                if minimum_size <= 1e-9 and position.get("side") == "FLAT":
+                    break
+                if attempt < 6:
+                    time.sleep(0.1)
+            else:
+                raise AmbiguousOrderResult(
+                    "IOC fill is not yet reconciled with the exchange position",
+                    client_oid=str(child.get("clientOid") or child.get("id") or ""),
+                    side=side, requested_qty=float(child_qty), reduce_only=False,
+                )
             if position.get("side") != position_side:
                 if position.get("side") == "FLAT":
                     if time.monotonic() < deadline:
@@ -880,6 +906,12 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
 
         final_position = self.position(symbol)
         final_size = float(final_position.get("size") or 0.0) if final_position.get("side") == position_side else before_size
+        if final_size + 1e-9 < max(latest_size, before_size + confirmed_filled):
+            raise AmbiguousOrderResult(
+                "Final IOC position regressed; further entry is blocked",
+                client_oid=str(children[-1].get("clientOid") or children[-1].get("id") or "") if children else "",
+                side=side, requested_qty=requested, reduce_only=False,
+            )
         filled = max(0.0, final_size - before_size)
         final_notional = final_size * float(final_position.get("entry_price") or 0.0)
         fill_notional = max(0.0, final_notional - before_notional)
@@ -1084,6 +1116,20 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
     def _order_identity(order: dict[str, Any]) -> tuple[str, str]:
         return str(order.get("orderId") or ""), str(order.get("clientOid") or "")
 
+    @staticmethod
+    def _safe_protection_semantics(order: dict[str, Any]) -> bool:
+        """Verify exchange-returned fields; missing values are not evidence."""
+        trigger = str(order.get("triggerType") or "").lower()
+        order_type = str(order.get("orderType") or "").lower()
+        reduce_only = str(order.get("reduceOnly") or "").lower()
+        mode = str(order.get("posMode") or "").lower()
+        trade_side = str(order.get("tradeSide") or "").lower()
+        closes_only = (
+            reduce_only in {"yes", "true"}
+            or (mode == "hedge_mode" and trade_side == "close")
+        )
+        return trigger == "fill_price" and order_type == "market" and closes_only
+
     def protection_status(
         self,
         symbol: str,
@@ -1149,6 +1195,7 @@ class BitgetEliteAdapter(HybridCCXTAdapter):
                     and sizes[0] == sizes[1]
                     and len(set(sides)) == 1
                     and sides[0] in {"buy", "sell"}
+                    and all(self._safe_protection_semantics(order) for order in active)
                 )
                 expected_semantics_ok = True
                 if expected and len(active) == 2:

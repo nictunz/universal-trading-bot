@@ -304,6 +304,8 @@ def test_replace_protection_places_and_verifies_new_pair_before_old_cancel(monke
     ]
     # Bitget may briefly omit clientOid/leg in the pending response. The exact
     # returned orderId still proves ownership of this just-created pair.
+    for order in new:
+        order.update(triggerType="fill_price", orderType="market", reduceOnly="YES")
     pending_new = [
         {k: v for k, v in order.items() if k not in {"clientOid", "leg"}}
         for order in new

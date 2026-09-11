@@ -108,46 +108,57 @@ public class LauncherActivity extends android.app.Activity {
         scroll.addView(root);
 
         root.addView(text("Universal Trading Bot", 25, TEXT, true));
-        root.addView(text("모바일 백테스트 · Binance/Bybit 선물 데이터 중계 · 안전 업데이트", 13, MUTED, false), mt(5));
+        root.addView(text("실행 상태 확인 · 전략 검증 · 거래 관리", 13, MUTED, false), mt(5));
 
         LinearLayout relay = panel();
         root.addView(relay, mt(16));
         relay.addView(section("📡 LIVE 시장데이터 중계"));
         relay.addView(text(
-                "휴대폰에서 Binance/Bybit 공개 USDT 선물 15분봉을 읽고 기존 SSH 키로 서버에 전송합니다. Bitget 주문 API 키는 휴대폰에 저장하지 않습니다.",
+                "15분봉 갱신 직후 1초 간격으로 확인합니다. 서버 전송이 확인되면 평상시 주기로 돌아갑니다.",
                 12, MUTED, false
         ), mt(6));
 
+        LinearLayout connection = panel();
+        boolean showConnection = p.getString("relay_key_path", "").isEmpty();
+        Button connectionToggle = actionButton("서버 연결 설정 " + (showConnection ? "접기 ▴" : "펼치기 ▾"), Color.rgb(30, 41, 59));
+        relay.addView(connectionToggle, mt(10));
+        relay.addView(connection, mt(8));
+        connection.setVisibility(showConnection ? View.VISIBLE : View.GONE);
+        connectionToggle.setOnClickListener(v -> {
+            boolean open = connection.getVisibility() != View.VISIBLE;
+            connection.setVisibility(open ? View.VISIBLE : View.GONE);
+            connectionToggle.setText("서버 연결 설정 " + (open ? "접기 ▴" : "펼치기 ▾"));
+        });
         hostInput = edit(p.getString("relay_host", "34.132.172.40"));
         userInput = edit(p.getString("relay_user", "kpj3669"));
         remoteInput = edit(p.getString("relay_remote_dir", "/home/kpj3669/.cache/universal-trading-bot"));
-        relay.addView(labeled("서버", hostInput), mt(12));
-        relay.addView(labeled("사용자", userInput), mt(8));
-        relay.addView(labeled("서버 캐시 폴더", remoteInput), mt(8));
+        connection.addView(labeled("서버", hostInput), mt(12));
+        connection.addView(labeled("사용자", userInput), mt(8));
+        connection.addView(labeled("서버 캐시 폴더", remoteInput), mt(8));
 
         Button keyButton = actionButton("🔑 휴대폰 SSH 키 준비 / 확인", Color.rgb(30, 41, 59));
         keyButton.setOnClickListener(v -> ensureKeyOnly());
-        relay.addView(keyButton, mt(10));
+        connection.addView(keyButton, mt(10));
 
         keyStatus = text("SSH 키 상태 확인 중...", 11, MUTED, false);
-        relay.addView(keyStatus, mt(6));
+        connection.addView(keyStatus, mt(6));
 
         Button copyKeyButton = actionButton("📋 SSH 공개키 보기 / 복사", Color.rgb(30, 41, 59));
         copyKeyButton.setOnClickListener(v -> showAndCopyPublicKey());
-        relay.addView(copyKeyButton, mt(8));
+        connection.addView(copyKeyButton, mt(8));
 
         publicKeyText = text("", 10, MUTED, false);
         publicKeyText.setTextIsSelectable(true);
         publicKeyText.setPadding(dp(10), dp(10), dp(10), dp(10));
         publicKeyText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
         publicKeyText.setVisibility(View.GONE);
-        relay.addView(publicKeyText, mt(8));
+        connection.addView(publicKeyText, mt(8));
 
-        oneShotButton = actionButton("🧪 Binance/Bybit + 서버 1회 중계 테스트", WARNING);
+        oneShotButton = actionButton("연결 테스트 · 1회 전송", WARNING);
         oneShotButton.setOnClickListener(v -> prepareRelay(MobileMarketRelayService.ACTION_ONCE));
         relay.addView(oneShotButton, mt(10));
 
-        startRelayButton = actionButton("▶ 5초 실시간 중계 시작", SUCCESS);
+        startRelayButton = actionButton("▶ 시장데이터 중계 시작", SUCCESS);
         startRelayButton.setOnClickListener(v -> {
             requestNotificationPermissionIfNeeded();
             prepareRelay(MobileMarketRelayService.ACTION_START);
@@ -181,7 +192,7 @@ public class LauncherActivity extends android.app.Activity {
         updateStatus = text("현재 버전: " + (current.isEmpty() ? "확인 불가" : current), 12, MUTED, false);
         update.addView(updateStatus, mt(5));
         update.addView(text(
-                "GitHub 테스트와 Android 빌드가 모두 성공한 안정 서명 APK만 서버 업데이트 채널에 게시됩니다. 휴대폰에는 GitHub 토큰을 저장하지 않고 기존 SSH 키로 APK를 받아 SHA-256과 Android 서명을 확인합니다.",
+                "테스트를 통과한 업데이트를 확인합니다. 설치 전 파일과 서명을 검증합니다.",
                 11, MUTED, false
         ), mt(7));
         updateButton = actionButton("업데이트 확인", PRIMARY);
@@ -206,11 +217,28 @@ public class LauncherActivity extends android.app.Activity {
         LinearLayout backtest = panel();
         root.addView(backtest, mt(14));
         backtest.addView(section("🧪 로컬 백테스터"));
-        backtest.addView(text("기존 캐시 생성 · 1년 백테스트 · 서버 업로드 화면은 그대로 유지됩니다.", 12, MUTED, false), mt(5));
+        backtest.addView(text("저장된 DB와 선택한 전략으로 검증하고, 거래내역·차트·결과를 확인하세요.", 12, MUTED, false), mt(5));
         Button openBacktester = actionButton("Universal Backtester 열기", Color.rgb(30, 41, 59));
         openBacktester.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         backtest.addView(openBacktester, mt(10));
 
+        // Frequent destinations come before connection maintenance.
+        root.removeView(dashboard);
+        root.removeView(backtest);
+        root.addView(dashboard, 2, mt(14));
+        root.addView(backtest, 3, mt(14));
+        relay.removeView(relayStatus);
+        relay.addView(relayStatus, 2, mt(10));
+        Button copyDiagnostics = actionButton("진단 정보 복사", Color.rgb(30, 41, 59));
+        copyDiagnostics.setOnClickListener(v -> {
+            String summary = "앱 " + AppUpdateManager.currentVersionName(this)
+                    + "\n확인 시각: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.KOREA).format(new Date())
+                    + "\n" + relayStatus.getText();
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("중계 진단", summary));
+            toast("진단 정보를 복사했습니다");
+        });
+        relay.addView(copyDiagnostics, mt(8));
         return scroll;
     }
 
@@ -426,156 +454,4 @@ public class LauncherActivity extends android.app.Activity {
                     updateStatus.setText("APK 검증 완료 · Android 설치 확인을 진행하세요.");
                     boolean launched = AppUpdateManager.requestInstall(this, apk);
                     if (!launched) toast("'이 출처 허용'을 켠 뒤 업데이트 버튼을 다시 누르세요.");
-                });
-            } catch (Exception e) {
-                main.post(() -> {
-                    updateButton.setEnabled(true);
-                    updateStatus.setText("업데이트 실패: " + shortError(e));
-                });
-            }
-        });
-    }
-
-    private void resumeRequestedRelay() {
-        SharedPreferences p = prefs();
-        if (!p.getBoolean("relay_requested", false)) return;
-        Intent intent = new Intent(this, MobileMarketRelayService.class);
-        intent.setAction(MobileMarketRelayService.ACTION_START);
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
-            else startService(intent);
-        } catch (Exception e) {
-            p.edit()
-                    .putBoolean("relay_running", false)
-                    .putString("relay_status", "자동 복구 대기 · " + shortError(e))
-                    .apply();
-        }
-    }
-
-    private void requestUnlimitedBattery() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            toast("이 Android 버전은 별도 배터리 제한 해제가 필요하지 않습니다.");
-            return;
-        }
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        String packageName = getPackageName();
-        if (pm.isIgnoringBatteryOptimizations(packageName)) {
-            toast("배터리 사용량이 이미 제한 없음 상태입니다.");
-            return;
-        }
-        try {
-            Intent intent = new Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:" + packageName)
-            );
-            startActivity(intent);
-        } catch (Exception e) {
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-        }
-    }
-
-    private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 3101);
-        }
-    }
-
-    private void setRelayButtons(boolean enabled) {
-        startRelayButton.setEnabled(enabled);
-        oneShotButton.setEnabled(enabled);
-    }
-
-    private SharedPreferences prefs() {
-        return getSharedPreferences("universal_bot", MODE_PRIVATE);
-    }
-
-    private String formatTime(long millis) {
-        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.KOREA);
-        f.setTimeZone(TimeZone.getDefault());
-        return f.format(new Date(millis));
-    }
-
-    private String shortError(Exception e) {
-        String text = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
-        return text.length() > 220 ? text.substring(0, 220) : text;
-    }
-
-    private void toast(String text) {
-        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
-    }
-
-    private LinearLayout panel() {
-        LinearLayout p = new LinearLayout(this);
-        p.setOrientation(LinearLayout.VERTICAL);
-        p.setPadding(dp(14), dp(14), dp(14), dp(14));
-        p.setBackground(rounded(PANEL, 14, BORDER));
-        return p;
-    }
-
-    private View labeled(String label, EditText field) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.addView(text(label, 12, TEXT, true));
-        box.addView(field, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-        return box;
-    }
-
-    private TextView section(String text) {
-        return text(text, 16, TEXT, true);
-    }
-
-    private TextView text(String value, int sp, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextColor(color);
-        t.setTextSize(sp);
-        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        t.setLineSpacing(0f, 1.15f);
-        return t;
-    }
-
-    private EditText edit(String initial) {
-        EditText e = new EditText(this);
-        e.setText(initial);
-        e.setSingleLine(true);
-        e.setTextColor(TEXT);
-        e.setTextSize(14);
-        e.setPadding(dp(12), 0, dp(12), 0);
-        e.setBackground(rounded(Color.rgb(15, 23, 42), 10, BORDER));
-        return e;
-    }
-
-    private Button actionButton(String label, int color) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(14);
-        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        b.setGravity(Gravity.CENTER);
-        b.setBackground(rounded(color, 10, color));
-        b.setMinHeight(dp(50));
-        return b;
-    }
-
-    private GradientDrawable rounded(int color, int radiusDp, int stroke) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(dp(radiusDp));
-        d.setStroke(dp(1), stroke);
-        return d;
-    }
-
-    private LinearLayout.LayoutParams mt(int topDp) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-        );
-        p.topMargin = dp(topDp);
-        return p;
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-}
+   
