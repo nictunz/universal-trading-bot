@@ -251,7 +251,7 @@ public class MainActivity extends android.app.Activity {
 
         TextView title = text("전략 백테스트", 24, TEXT, true);
         root.addView(title);
-        TextView subtitle = text("설정과 결과를 나눠 확인하세요. 선택한 전략과 기존 기능은 유지됩니다.", 13, MUTED, false);
+        TextView subtitle = text("설정과 결과를 한 화면에서 확인합니다 · 기존 기능 유지", 13, MUTED, false);
         root.addView(subtitle, marginTop(4));
         Button engineStatusButton = actionButton(
                 "⚡ Universal Vector Engine 5 · 상태 확인",
@@ -259,8 +259,10 @@ public class MainActivity extends android.app.Activity {
         );
         engineStatusButton.setOnClickListener(v -> showEngineStatus());
         root.addView(engineStatusButton, marginTop(10));
-        TextView engineHint = text("동일 데이터·전체 설정·엔진 코드가 모두 같을 때만 TOP10 체크포인트를 재사용합니다.", 11, MUTED, false);
-        root.addView(engineHint, marginTop(5));
+        root.addView(text(
+                "동일 데이터·전체 설정·엔진 코드가 모두 같을 때만 TOP10 체크포인트를 재사용합니다.",
+                11, MUTED, false
+        ), marginTop(5));
 
         LinearLayout backtestCard = panel();
         root.addView(backtestCard, marginTop(16));
@@ -525,8 +527,7 @@ public class MainActivity extends android.app.Activity {
         TextView rangeHint = text("모든 USDT 무기한 선물 심볼 직접 입력 가능 · 최대 10년 · 실제 시작일은 4개 거래소 공통 상장 이력에 따라 달라집니다.", 11, MUTED, false);
         backtestCard.addView(rangeHint, marginTop(8));
 
-        View metricsPanel = buildMetrics();
-        root.addView(metricsPanel, 2, marginTop(14));
+        root.addView(buildMetrics(), 2, marginTop(14));
 
 LinearLayout resultActions = panel();
 root.addView(resultActions, 3, marginTop(12));
@@ -659,37 +660,6 @@ enableResultActions(false);
         TextView logHint = text("최근 10줄만 표시 · 누르면 최신 로그부터 전체 내용이 열립니다.", 11, ACCENT, false);
         logCard.addView(logHint, marginTop(7));
 
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setOrientation(LinearLayout.HORIZONTAL);
-        root.addView(navigation, 2, marginTop(14));
-        logCard.removeView(statusRow);
-        logTitle.setText("작업 상태");
-        root.addView(statusRow, 3, marginTop(10));
-        View[] pages = {backtestCard, resultActions, serverCard, logCard};
-        String[] labels = {"설정", "결과", "서버", "로그"};
-        Button[] tabs = new Button[labels.length];
-        android.content.SharedPreferences uiPrefs = getSharedPreferences("backtester_ui", MODE_PRIVATE);
-        java.util.function.IntConsumer selectTab = selected -> {
-            for (int i = 0; i < pages.length; i++) {
-                pages[i].setVisibility(i == selected ? View.VISIBLE : View.GONE);
-                tabs[i].setSelected(i == selected);
-                tabs[i].setBackground(rounded(i == selected ? PRIMARY : Color.rgb(30, 41, 59), 10, BORDER));
-                tabs[i].setContentDescription(labels[i] + (i == selected ? " · 선택됨" : ""));
-            }
-            metricsPanel.setVisibility(selected == 1 ? View.VISIBLE : View.GONE);
-            engineStatusButton.setVisibility(selected == 3 ? View.VISIBLE : View.GONE);
-            engineHint.setVisibility(selected == 3 ? View.VISIBLE : View.GONE);
-            uiPrefs.edit().putInt("selected_tab", selected).apply();
-        };
-        for (int i = 0; i < labels.length; i++) {
-            final int selected = i;
-            tabs[i] = smallButton(labels[i], v -> selectTab.accept(selected));
-            tabs[i].setMinHeight(dp(48));
-            LinearLayout.LayoutParams tabParams = smallButtonParams();
-            tabParams.height = dp(48);
-            navigation.addView(tabs[i], tabParams);
-        }
-        selectTab.accept(Math.max(0, Math.min(3, uiPrefs.getInt("selected_tab", 0))));
         return scroll;
     }
 
