@@ -384,6 +384,8 @@ def run_backtest(
                     "entry_price": initial_entry,
                     "avg_entry_price": avg_entry,
                     "exit_price": exit_price,
+                    "tp_price": position_tp,
+                    "sl_price": position_sl,
                     "qty": qty,
                     "pnl": pnl,
                     "pnl_percent": pnl / abs(avg_entry * qty) * 100 if avg_entry and qty else 0.0,

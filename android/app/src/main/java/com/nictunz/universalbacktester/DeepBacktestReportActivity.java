@@ -81,8 +81,8 @@ public class DeepBacktestReportActivity extends Activity {
         JSONObject metrics = summary.optJSONObject("metrics");
         if (metrics == null) metrics = summary;
         addSection("핵심 성과");
-        addMetric("순수익률", pct(first(metrics, "return_pct", "total_return_pct", "return")), true);
-        addMetric("최대 낙폭 MDD", pct(first(metrics, "mdd_pct", "max_drawdown_pct", "mdd")), false);
+        addMetric("순수익률", pct(first(metrics, "return_percent", "return_pct", "total_return_pct", "return")), true);
+        addMetric("최대 낙폭 MDD", pct(first(metrics, "max_drawdown_percent", "mdd_pct", "max_drawdown_pct", "mdd")), false);
         addMetric("Profit Factor", num(first(metrics, "profit_factor", "pf"), 2), true);
         addMetric("승률", pct(first(metrics, "win_rate_pct", "win_rate")), true);
         addMetric("총 거래", integer(first(metrics, "trades", "trade_count", "total_trades")), true);

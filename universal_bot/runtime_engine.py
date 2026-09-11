@@ -307,9 +307,20 @@ class TradingEngine(_BaseTradingEngine):
         if exit_price <= 0:
             exit_price = avg_entry
         reason = self._infer_external_exit_reason(fill, exit_price) if exact else "EXCHANGE_EXIT"
+        # A price close to TP/SL alone does not prove the exit was protection:
+        # manual and emergency market closes must not gain a reentry exception.
+        fill_tags = " ".join(
+            str(row.get(key) or "").lower()
+            for row in (fill or {}).get("raw", [])
+            for key in ("clientOid", "delegateType", "orderSource", "planType")
+        )
+        protection_fill = any(tag in fill_tags for tag in (
+            "utb-tp", "utb-sl", "take_profit", "take-profit", "stop_profit", "stop_loss", "stop-loss"
+        ))
         metadata = {
             "fill_source": (fill or {}).get("source") or "fill-history-unavailable",
             "fill_exact": exact,
+            "close_bar_reentry_allowed": exact and protection_fill,
             "order_id": (fill or {}).get("order_id"),
             "client_oid": (fill or {}).get("client_oid"),
             "exchange_fill_qty": (fill or {}).get("qty"),

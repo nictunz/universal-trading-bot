@@ -215,7 +215,8 @@ def _prepare_market_data(df: pd.DataFrame) -> PreparedMarketData:
         lows=lows,
         closes=closes,
         one_bar_volatility=one_bar,
-        timestamp_ns=prepared.index.asi8,
+        # Pandas 3 preserves millisecond input resolution; compare dates in ns.
+        timestamp_ns=prepared.index.as_unit("ns").asi8,
         hours=np.asarray(prepared.index.hour, dtype=np.int8),
         weekdays=np.asarray(prepared.index.weekday, dtype=np.int8),
     )

@@ -36,6 +36,9 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
 
+        <activity android:name=".LocalMarketChartActivity"
+            android:exported="false" android:screenOrientation="unspecified" />
+
         <activity
             android:name=".ServerDashboardActivity"
             android:exported="false"

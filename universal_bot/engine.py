@@ -42,6 +42,8 @@ class TradingEngine:
         self.position = Position()
         self.last_entry_bar: int | None = None
         self.last_exit_bar: int | None = None
+        self._exit_signal_bar_time: datetime | None = None
+        self._previous_exit_bar: int | None = None
         self.last_processed_timestamp = None
         self.bar_number = 0
         self.last_state = None
@@ -398,6 +400,24 @@ class TradingEngine:
         self.position = Position()
         self.entry_notional = 0.0
         self.position_entry_time = None
+        self._previous_exit_bar = self.last_exit_bar
+        self._exit_signal_bar_time = None
+        # Only an exact, verified exchange TP/SL fill may use the backtest's
+        # close-bar exception. Unknown fills and emergency/manual exits wait.
+        if (self.live and reason in {"TP", "SL"} and exit_time
+                and (metadata or {}).get("fill_exact") is True
+                and (metadata or {}).get("close_bar_reentry_allowed", True)):
+            try:
+                stamp = pd.Timestamp(exit_time)
+                stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+                unit = {"m": 60, "h": 3600, "d": 86400, "w": 604800}[self.settings.timeframe[-1]]
+                seconds = int(self.settings.timeframe[:-1]) * unit
+                if seconds > 0:
+                    self._exit_signal_bar_time = datetime.fromtimestamp(
+                        int(stamp.timestamp()) // seconds * seconds, timezone.utc
+                    )
+            except (KeyError, ValueError, TypeError, OverflowError):
+                pass
         self.last_exit_bar = self.bar_number
         self._external_flat_notified = False
         if self.live:
@@ -479,10 +499,19 @@ class TradingEngine:
             if self.safety.halted:
                 return self._halted_state(df)
 
-        # Reconciliation may have just detected an exchange-side TP/SL. Compute
-        # cooldowns afterwards so that close bar is bar 0 and cannot re-enter.
+        # Backtest event order: the exit candle uses the PREVIOUS exit cooldown;
+        # later candles use this exit. Match by exchange fill time, not poll time.
+        # A heartbeat may detect the fill before this completed candle arrives.
+        exit_bar_for_signal = self.last_exit_bar
+        same_exit_candle = (
+            self.live and self.position.flat and self._exit_signal_bar_time is not None
+            and pd.Timestamp(bar_timestamp) == pd.Timestamp(self._exit_signal_bar_time)
+        )
+        if same_exit_candle:
+            self.last_exit_bar = self.bar_number
+            exit_bar_for_signal = self._previous_exit_bar
         bars_since_entry = None if self.last_entry_bar is None else self.bar_number - self.last_entry_bar
-        bars_since_exit = None if self.last_exit_bar is None else self.bar_number - self.last_exit_bar
+        bars_since_exit = None if exit_bar_for_signal is None else self.bar_number - exit_bar_for_signal
         normalized_volume = self._normalized_live_volume(df) if precomputed is None else None
         result = self.strategy.evaluate(df, self.settings.symbol, self.settings.timeframe, self.position, bars_since_entry, bars_since_exit, normalized_volume, precomputed)
         price = float(df.close.iloc[-1])
