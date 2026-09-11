@@ -79,8 +79,9 @@ def deploy(source, app, python, commit):
         result = subprocess.run([str(python), '-c', code], cwd=app, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
         if result.returncode:
-            # Raw output may include account details; retain it off the CI log.
-            raise RuntimeError('runtime read-only check failed (details withheld)')
+            detail = (result.stderr or result.stdout).strip().splitlines()[-1:]
+            safe = ' '.join(detail)[:400] if detail else 'no diagnostic output'
+            raise RuntimeError(f'runtime read-only check failed: {safe}')
         return json.loads(result.stdout.strip().splitlines()[-1]) if capture else None
     def service(action):
         subprocess.run(['sudo', 'systemctl', action, SERVICE], check=True, timeout=90)
