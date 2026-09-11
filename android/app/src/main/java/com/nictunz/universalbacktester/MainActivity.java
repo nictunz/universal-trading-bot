@@ -214,6 +214,7 @@ public class MainActivity extends android.app.Activity {
         selectedDbPath = getSharedPreferences("universal_bot", MODE_PRIVATE)
                 .getString("selected_db_path", "");
         if (!new File(selectedDbPath).isFile()) selectedDbPath = "";
+        else restoreSelectedDatabaseSettings(new File(selectedDbPath));
         restorePinnedSelections();
         loadPhoneKey();
         loadSavedResults(true);
@@ -1882,6 +1883,18 @@ enableResultActions(false);
     }
 
     private void applySavedDatabaseSelection(File chosen) {
+        restoreSelectedDatabaseSettings(chosen);
+        JSONObject parameters = selectedStrategyParameters;
+        syncMainControlsFromStrategy(parameters);
+        selectedStrategyText.setText(
+                "DB 선택됨 · " + chosen.getName() + "\nDB별 전략 수치를 수정한 뒤 선택 DB로 백테스트합니다."
+        );
+        selectedStrategyText.setTextColor(ACCENT);
+        toast("DB를 선택했습니다. '불러온/선택한 전략 수치 직접 수정'에서 DB별 값을 바꿀 수 있습니다.");
+        showStrategyParameterEditor();
+    }
+
+    private void restoreSelectedDatabaseSettings(File chosen) {
         JSONObject parameters = loadDbStrategyParameters(chosen.getAbsolutePath());
         selectedStrategyParameters = parameters;
         selectedStrategyRow = new JSONObject();
@@ -1893,12 +1906,6 @@ enableResultActions(false);
         } catch (Exception ignored) {
         }
         syncMainControlsFromStrategy(parameters);
-        selectedStrategyText.setText(
-                "DB 선택됨 · " + chosen.getName() + "\nDB별 전략 수치를 수정한 뒤 선택 DB로 백테스트합니다."
-        );
-        selectedStrategyText.setTextColor(ACCENT);
-        toast("DB를 선택했습니다. '불러온/선택한 전략 수치 직접 수정'에서 DB별 값을 바꿀 수 있습니다.");
-        showStrategyParameterEditor();
     }
 
     private void refreshBackgroundBacktestStatus() {
