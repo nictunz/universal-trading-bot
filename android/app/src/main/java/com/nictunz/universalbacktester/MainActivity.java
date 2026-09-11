@@ -540,13 +540,8 @@ tradeHistoryButton = actionButton("📋 전체 거래내역 보기", Color.rgb(3
 tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
-Button localChartButton = actionButton("🕯 코인 DB 차트 · 캔들 / TP·SL / 거래", PRIMARY);
-localChartButton.setOnClickListener(v -> {
-    Intent chartIntent = new Intent(this, LocalMarketChartActivity.class);
-    chartIntent.putExtra("db_path", lastDbPath);
-    chartIntent.putExtra("result_path", lastResultPath);
-    startActivity(chartIntent);
-});
+Button localChartButton = actionButton("🕯 코인 DB 차트 · DB 선택 / 캔들 / TP·SL", PRIMARY);
+localChartButton.setOnClickListener(v -> showDatabaseChartPicker());
 resultActions.addView(localChartButton, marginTop(6));
 deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
 deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
@@ -1821,6 +1816,46 @@ enableResultActions(false);
                 })
                 .setNegativeButton("닫기", null)
                 .show();
+    }
+
+    private void showDatabaseChartPicker() {
+        File root = new File(getFilesDir(), "UniversalTradingBotCache");
+        java.util.ArrayList<File> files = new java.util.ArrayList<>();
+        collectDatabaseFiles(root, files);
+        if (files.isEmpty()) {
+            toast("차트에 표시할 DB가 없습니다. 먼저 DB만 다운로드를 실행하세요.");
+            return;
+        }
+        files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        String[] labels = new String[files.size()];
+        for (int i = 0; i < files.size(); i++) {
+            File f = files.get(i);
+            String marker = f.getAbsolutePath().equals(lastDbPath) ? " ✓ 현재 결과 DB" : "";
+            labels[i] = f.getName() + " · " + readableBytes(f.length()) + marker;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("차트로 열 DB 선택")
+                .setItems(labels, (dialog, which) -> openLocalMarketChart(files.get(which)))
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    private void openLocalMarketChart(File database) {
+        if (database == null || !database.isFile()) {
+            toast("선택한 DB 파일을 찾을 수 없습니다.");
+            return;
+        }
+        String databasePath = database.getAbsolutePath();
+        getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
+                .putString("chart_db_path", databasePath)
+                .apply();
+        Intent chartIntent = new Intent(this, LocalMarketChartActivity.class);
+        chartIntent.putExtra("db_path", databasePath);
+        chartIntent.putExtra(
+                "result_path",
+                databasePath.equals(lastDbPath) ? lastResultPath : ""
+        );
+        startActivity(chartIntent);
     }
 
     private void collectDatabaseFiles(File dir, java.util.ArrayList<File> out) {

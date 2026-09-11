@@ -18,10 +18,14 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final AtomicInteger generation=new AtomicInteger();
     private final ArrayList<String[]> markets=new ArrayList<>();
+    private final ArrayList<String[]> allMarkets=new ArrayList<>();
+    private final ArrayList<File> databaseFiles=new ArrayList<>();
     private CandleChartView chart;
     private TextView status;
     private Spinner selector;
+    private Button databaseSelector;
     private String[] market;
+    private String selectedDatabasePath="";
     private int total,offset,width=160;
     private JSONArray trades=new JSONArray();
     private String resultPath="";
@@ -33,10 +37,22 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
         resultPath=getIntent().getStringExtra("result_path");
+        if(resultPath==null)resultPath="";
+        String requested=getIntent().getStringExtra("db_path");
+        if(requested==null||requested.isEmpty())requested=getSharedPreferences("universal_bot",MODE_PRIVATE).getString("chart_db_path","");
+        selectedDatabasePath=requested==null?"":requested;
         LinearLayout root=new LinearLayout(this);root.setOrientation(1);root.setBackgroundColor(Color.rgb(16,19,24));
         LinearLayout bar=new LinearLayout(this);
         Button back=new Button(this);back.setText("‹");back.setOnClickListener(v->finish());bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        databaseSelector=new Button(this);databaseSelector.setAllCaps(false);databaseSelector.setText("DB 선택");databaseSelector.setOnClickListener(v->showDatabasePicker());bar.addView(databaseSelector,new LinearLayout.LayoutParams(dp(132),dp(48)));
         selector=new Spinner(this);bar.addView(selector,new LinearLayout.LayoutParams(0,dp(48),1));
+        selector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            public void onNothingSelected(AdapterView<?> p){}
+            public void onItemSelected(AdapterView<?> p,View v,int pos,long id){
+                if(pos<0||pos>=markets.size())return;
+                market=markets.get(pos);total=Integer.parseInt(market[4]);offset=Math.max(0,total-width);trades=new JSONArray();load();
+            }
+        });
         root.addView(bar);
         status=new TextView(this);status.setTextColor(Color.LTGRAY);status.setTextSize(12);status.setPadding(dp(10),0,dp(10),0);status.setText("저장된 코인 DB 검색 중…");root.addView(status);
         chart=new CandleChartView(this,this);root.addView(chart,new LinearLayout.LayoutParams(-1,0,1));
@@ -48,7 +64,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         root.addView(actions);setContentView(root);
         worker.execute(()->{
             ArrayList<File> dbs=new ArrayList<>();collect(new File(getFilesDir(),"UniversalTradingBotCache"),".db",dbs,4);
-            String requested=getIntent().getStringExtra("db_path");if(requested!=null&&!requested.isEmpty()&&!dbs.contains(new File(requested)))dbs.add(0,new File(requested));
+            File requestedFile=selectedDatabasePath.isEmpty()?null:new File(selectedDatabasePath);
+            if(requestedFile!=null&&requestedFile.isFile()&&!containsPath(dbs,requestedFile))dbs.add(0,requestedFile);
             ArrayList<String[]> found=new ArrayList<>();
             for(File file:dbs){
                 try(SQLiteDatabase db=SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,SQLiteDatabase.OPEN_READONLY);
@@ -57,20 +74,39 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 }catch(Exception ignored){}
             }
             runOnUiThread(()->{
-                if(disposed)return;markets.addAll(found);
-                if(markets.isEmpty()){status.setText("다운로드한 DB가 없습니다. 백테스터에서 코인 DB를 먼저 받으세요.");return;}
-                ArrayList<String> labels=new ArrayList<>();for(String[] m:markets)labels.add(m[2]+" · "+m[1]+" · "+m[3]+" · "+new File(m[0]).getName());
-                ArrayAdapter<String> a=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels);selector.setAdapter(a);
-                selector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
-                    public void onNothingSelected(AdapterView<?> p){}
-                    public void onItemSelected(AdapterView<?> p,View v,int pos,long id){market=markets.get(pos);total=Integer.parseInt(market[4]);offset=Math.max(0,total-width);trades=new JSONArray();load();}
-                });
+                if(disposed)return;
+                allMarkets.clear();allMarkets.addAll(found);databaseFiles.clear();
+                for(String[] row:allMarkets){File file=new File(row[0]);if(!containsPath(databaseFiles,file))databaseFiles.add(file);}
+                if(databaseFiles.isEmpty()){databaseSelector.setText("DB 선택");status.setText("다운로드한 DB가 없습니다. 백테스터에서 코인 DB를 먼저 받으세요.");return;}
+                File initial=null;for(File file:databaseFiles)if(samePath(file.getAbsolutePath(),selectedDatabasePath)){initial=file;break;}
+                selectDatabase(initial==null?databaseFiles.get(0):initial);
             });
         });
     }
     private void addButton(LinearLayout row,String label,Runnable action){Button b=new Button(this);b.setText(label);b.setOnClickListener(v->action.run());row.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));}
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density);}
-    private static void collect(File dir,String suffix,List<File> out,int depth){if(depth<0)return;File[] fs=dir.listFiles();if(fs==null)return;for(File f:fs){if(f.isDirectory())collect(f,suffix,out,depth-1);else if(f.getName().endsWith(suffix))out.add(f);}}
+    private static void collect(File dir,String suffix,List<File> out,int depth){if(depth<0)return;File[] fs=dir.listFiles();if(fs==null)return;for(File f:fs){if(f.isDirectory())collect(f,suffix,out,depth-1);else if(f.getName().toLowerCase(Locale.US).endsWith(suffix))out.add(f);}}
+    private static boolean samePath(String left,String right){return left!=null&&!left.isEmpty()&&right!=null&&!right.isEmpty()&&new File(left).getAbsolutePath().equals(new File(right).getAbsolutePath());}
+    private static boolean containsPath(List<File> files,File target){if(target==null)return false;for(File file:files)if(samePath(file.getAbsolutePath(),target.getAbsolutePath()))return true;return false;}
+    private String readableBytes(long bytes){if(bytes>=1_000_000_000L)return String.format(Locale.US,"%.1f GB",bytes/1_000_000_000.0);if(bytes>=1_000_000L)return String.format(Locale.US,"%.1f MB",bytes/1_000_000.0);return String.format(Locale.US,"%.1f KB",bytes/1_000.0);}
+    private void selectDatabase(File database){
+        if(database==null)return;
+        selectedDatabasePath=database.getAbsolutePath();
+        getSharedPreferences("universal_bot",MODE_PRIVATE).edit().putString("chart_db_path",selectedDatabasePath).apply();
+        databaseSelector.setText("DB · "+database.getName());
+        markets.clear();for(String[] row:allMarkets)if(samePath(row[0],selectedDatabasePath))markets.add(row);
+        market=null;total=0;offset=0;trades=new JSONArray();
+        ArrayList<String> labels=new ArrayList<>();for(String[] row:markets)labels.add(row[2]+" · "+row[1]+" · "+row[3]);
+        selector.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels));
+        if(markets.isEmpty()){status.setText("선택한 DB에 암호화폐 캔들 데이터가 없습니다.");return;}
+        status.setText("DB: "+database.getName()+" · 차트 시장을 선택하세요.");selector.setSelection(0);
+    }
+    private void showDatabasePicker(){
+        if(databaseFiles.isEmpty()){new AlertDialog.Builder(this).setMessage("선택할 DB가 없습니다. 백테스터에서 DB를 먼저 다운로드하세요.").setPositiveButton("확인",null).show();return;}
+        final ArrayList<File> choices=new ArrayList<>(databaseFiles);String[] labels=new String[choices.size()];int checked=0;
+        for(int i=0;i<choices.size();i++){File file=choices.get(i);int marketCount=0;for(String[] row:allMarkets)if(samePath(row[0],file.getAbsolutePath()))marketCount++;if(samePath(file.getAbsolutePath(),selectedDatabasePath))checked=i;labels[i]=file.getName()+" · "+readableBytes(file.length())+" · "+marketCount+"개 시장";}
+        new AlertDialog.Builder(this).setTitle("차트 DB 선택").setSingleChoiceItems(labels,checked,(dialog,which)->{selectDatabase(choices.get(which));dialog.dismiss();}).setNegativeButton("닫기",null).show();
+    }
     private static JSONObject readResult(String path)throws Exception{
         if(path==null||path.isEmpty())return new JSONObject();
         File f=new File(path);if(!f.isFile()||f.length()>64L*1024*1024)throw new IOException("결과 파일을 읽을 수 없습니다.");
