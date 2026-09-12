@@ -40,3 +40,8 @@ def test_runtime_fingerprint_detects_disk_change_without_relabelling_boot(monkey
 
 def test_deploy_hash_inventory_matches_runtime_inventory():
     assert set(deploy.SOURCE_FILES) == set(dashboard.SOURCE_FILES)
+
+
+def test_live_readiness_fix_is_deployed_and_fingerprinted():
+    assert 'universal_bot/preflight.py' in deploy.SOURCE_FILES
+    assert 'universal_bot/preflight.py' in dashboard.SOURCE_FILES

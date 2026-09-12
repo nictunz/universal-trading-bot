@@ -15,6 +15,7 @@ import subprocess
 import time
 
 SOURCE_FILES = (
+    "universal_bot/preflight.py",
     'universal_bot/config.py', 'universal_bot/engine.py', 'universal_bot/main.py',
     'universal_bot/runtime_engine.py', 'universal_bot/adapters/bitget_elite.py',
     'universal_bot/providers/mobile_relay.py', 'universal_bot/trade_history.py',

@@ -240,33 +240,52 @@ public class MainActivity extends android.app.Activity {
     }
 
     private View buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BG);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16), dp(16), dp(16), dp(28));
-        scroll.addView(root, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+        root.setBackgroundColor(BG);
 
-        TextView title = text("전략 백테스트", 24, TEXT, true);
-        root.addView(title);
-        TextView subtitle = text("설정과 결과를 한 화면에서 확인합니다 · 기존 기능 유지", 13, MUTED, false);
-        root.addView(subtitle, marginTop(4));
-        Button engineStatusButton = actionButton(
-                "⚡ Universal Vector Engine 5 · 상태 확인",
-                SUCCESS
-        );
-        engineStatusButton.setOnClickListener(v -> showEngineStatus());
-        root.addView(engineStatusButton, marginTop(10));
-        root.addView(text(
-                "동일 데이터·전체 설정·엔진 코드가 모두 같을 때만 TOP10 체크포인트를 재사용합니다.",
-                11, MUTED, false
-        ), marginTop(5));
+        root.addView(text("전략 검증", 24, TEXT, true));
+        root.addView(text("JSON 전략을 불러오고 저장된 DB로 검증하세요.", 13, MUTED, false), marginTop(4));
+        LinearLayout navigation = new LinearLayout(this);
+        navigation.setOrientation(LinearLayout.HORIZONTAL);
+        Button databaseChart = actionButton("DB 선택 · 캔들 차트", PRIMARY);
+        databaseChart.setOnClickListener(v -> showDatabaseChartPicker());
+        root.addView(databaseChart, marginTop(10));
+        root.addView(navigation, marginTop(12));
+        LinearLayout strategyPage = new LinearLayout(this);
+        LinearLayout resultsPage = new LinearLayout(this);
+        LinearLayout connectionPage = new LinearLayout(this);
+        LinearLayout[] pages = {strategyPage, resultsPage, connectionPage};
+        String[] labels = {"전략", "결과", "연결"};
+        Button[] tabs = new Button[3];
+        for (LinearLayout page : pages) {
+            page.setOrientation(LinearLayout.VERTICAL);
+            page.setPadding(0, 0, 0, dp(12));
+        }
+        for (int i = 0; i < tabs.length; i++) {
+            final int index = i;
+            tabs[i] = smallButton(labels[i], v -> {
+                for (int j = 0; j < pages.length; j++) {
+                    pages[j].setVisibility(j == index ? View.VISIBLE : View.GONE);
+                    tabs[j].setAlpha(j == index ? 1f : 0.55f);
+                    tabs[j].setSelected(j == index);
+                }
+            });
+            navigation.addView(tabs[i], smallButtonParams());
+        }
+        ScrollView contentScroll = new ScrollView(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        for (LinearLayout page : pages) content.addView(page);
+        contentScroll.addView(content);
+        root.addView(contentScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        tabs[0].performClick();
 
         LinearLayout backtestCard = panel();
-        root.addView(backtestCard, marginTop(16));
-        backtestCard.addView(sectionTitle("로컬 캐시 / 백테스트"));
+        strategyPage.addView(backtestCard, marginTop(8));
+        backtestCard.addView(sectionTitle("검증할 데이터와 전략"));
 
         symbolInput = autocomplete(new String[]{
                 "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
@@ -275,30 +294,10 @@ public class MainActivity extends android.app.Activity {
                 "TRX/USDT:USDT", "TON/USDT:USDT", "SUI/USDT:USDT", "APT/USDT:USDT",
                 "NEAR/USDT:USDT", "UNI/USDT:USDT", "FIL/USDT:USDT", "ATOM/USDT:USDT",
                 "ETC/USDT:USDT", "AAVE/USDT:USDT", "ARB/USDT:USDT", "OP/USDT:USDT"
-        }, "ETH/USDT:USDT");
-        timeframeInput = autocomplete(new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}, "5m");
+        }, "BTC/USDT:USDT");
+        timeframeInput = autocomplete(new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}, "15m");
         backtestCard.addView(labeled("심볼 (목록 선택 또는 직접 입력)", symbolInput));
-        backtestCard.addView(quickChoiceRow(
-                "자주 쓰는 코인",
-                symbolInput,
-                new String[]{"BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "AVAX", "LINK", "DOT", "LTC", "BCH", "TRX", "TON", "SUI", "APT", "NEAR", "UNI", "FIL", "ATOM", "ETC", "AAVE", "ARB", "OP"},
-                new String[]{
-                        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
-                        "BNB/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "AVAX/USDT:USDT",
-                        "LINK/USDT:USDT", "DOT/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT",
-                        "TRX/USDT:USDT", "TON/USDT:USDT", "SUI/USDT:USDT", "APT/USDT:USDT",
-                        "NEAR/USDT:USDT", "UNI/USDT:USDT", "FIL/USDT:USDT", "ATOM/USDT:USDT",
-                        "ETC/USDT:USDT", "AAVE/USDT:USDT", "ARB/USDT:USDT", "OP/USDT:USDT"
-                }
-        ), marginTop(8));
         backtestCard.addView(labeled("타임프레임 (목록 선택 또는 직접 입력)", timeframeInput), marginTop(10));
-        backtestCard.addView(quickChoiceRow(
-                "자주 쓰는 주기",
-                timeframeInput,
-                new String[]{"1분", "3분", "5분", "15분", "30분", "1시간", "4시간", "1일"},
-                new String[]{"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}
-        ), marginTop(8));
-
         Calendar today = Calendar.getInstance();
         Calendar start = (Calendar) today.clone();
         start.add(Calendar.DAY_OF_YEAR, -364);
@@ -313,29 +312,11 @@ public class MainActivity extends android.app.Activity {
         quickRow.addView(text("빠른 기간", 12, MUTED, true));
         quickRow.addView(smallButton("30일", v -> setQuickRange(30)), smallButtonParams());
         quickRow.addView(smallButton("1년", v -> setQuickRange(365)), smallButtonParams());
-        quickRow.addView(smallButton("2년", v -> setQuickRange(730)), smallButtonParams());
-        quickRow.addView(smallButton("3년", v -> setQuickRange(1095)), smallButtonParams());
-        quickRow.addView(smallButton("5년", v -> setQuickRange(1826)), smallButtonParams());
         quickRow.addView(smallButton("10년", v -> setQuickRange(3653)), smallButtonParams());
         backtestCard.addView(quickRow, marginTop(10));
 
+        // Legacy job metadata remains initialized for saved results and running jobs.
         riskProfileInput = autocomplete(new String[]{"공격형", "중간형", "안전형", "3봉 분할형"}, "공격형");
-        riskProfileInput.setOnItemClickListener((parent, view, position, id) ->
-                applyRiskProfile(parent.getItemAtPosition(position).toString()));
-        backtestCard.addView(labeled("백테스트 위험 프로필", riskProfileInput), marginTop(12));
-
-        LinearLayout profileRow = new LinearLayout(this);
-        profileRow.setOrientation(LinearLayout.HORIZONTAL);
-        profileRow.setGravity(Gravity.CENTER_VERTICAL);
-        profileRow.addView(smallButton("공격형", v -> applyRiskProfile("공격형")), smallButtonParams());
-        profileRow.addView(smallButton("중간형", v -> applyRiskProfile("중간형")), smallButtonParams());
-        profileRow.addView(smallButton("안전형", v -> applyRiskProfile("안전형")), smallButtonParams());
-        profileRow.addView(smallButton("3봉 분할", v -> applyRiskProfile("3봉 분할형")), smallButtonParams());
-        backtestCard.addView(profileRow, marginTop(8));
-        backtestCard.addView(text(
-                "기간은 직접 선택합니다. 3봉 분할형=첫 진입 3연속 하락/상승봉 역추세·회당 1~3배·최대 1~5회(총 15배)이며, 나머지 전략 수치를 함께 최적화합니다.",
-                11, MUTED, false
-        ), marginTop(7));
 
         initialCapitalInput = edit("1000");
         backtestCard.addView(labeled("초기자산 (USDT)", initialCapitalInput), marginTop(12));
@@ -369,84 +350,17 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(7));
 
-        optimizationSpeedInput = autocomplete(
-                new String[]{"빠른 탐색 · 추천", "표준 탐색", "정밀 탐색"},
-                "빠른 탐색 · 추천"
-        );
-        backtestCard.addView(labeled("휴대폰 최적화 속도", optimizationSpeedInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "속도 선택", optimizationSpeedInput,
-                new String[]{"빠른(추천)", "표준", "정밀"},
-                new String[]{"빠른 탐색 · 추천", "표준 탐색", "정밀 탐색"}
-        ), marginTop(8));
-        backtestCard.addView(text(
-                "빠른=1차 100·TOP3×100 · 표준=1차 500·TOP5×300 · 정밀=입력값·TOP10. 동일 설정은 체크포인트를 재사용합니다.",
-                11, MUTED, false
-        ), marginTop(7));
-
-        adaptiveRegimeInput = autocomplete(
-                new String[]{"자동 전환 사용", "고정 전략 사용 · 기본"},
-                "고정 전략 사용 · 기본"
-        );
+        optimizationSpeedInput = autocomplete(new String[]{"빠른 탐색 · 추천"}, "빠른 탐색 · 추천");
+        optimizationStageInput = autocomplete(new String[]{"전체 자동 실행"}, "전체 자동 실행");
+        broadTrialCountInput = autocomplete(new String[]{"100"}, "100");
+        refineTrialCountInput = autocomplete(new String[]{"100"}, "100");
+        precheckInput = autocomplete(new String[]{"사용 · 추천"}, "사용 · 추천");
+        adaptiveRegimeInput = autocomplete(new String[]{"자동 전환 사용", "고정 전략 사용 · 기본"}, "고정 전략 사용 · 기본");
         backtestCard.addView(binaryChoiceRow(
                 "시장 국면별 전략 자동 전환", adaptiveRegimeInput,
-                new String[]{"자동 전환", "고정 전략(기본)"},
+                new String[]{"자동 전환", "고정 전략"},
                 new String[]{"자동 전환 사용", "고정 전략 사용 · 기본"}
         ), marginTop(12));
-        backtestCard.addView(text(
-                "기본값은 고정 전략입니다. 필요할 때만 자동 전환을 켜면 과거 288개 마감봉으로 시장 국면을 판단합니다.",
-                11, MUTED, false
-        ), marginTop(7));
-
-        precheckInput = autocomplete(
-                new String[]{"사용 · 추천", "사용 안 함"},
-                "사용 · 추천"
-        );
-        backtestCard.addView(binaryChoiceRow(
-                "최근 30일 빠른 사전검사", precheckInput,
-                new String[]{"사용(추천)", "사용 안 함"},
-                new String[]{"사용 · 추천", "사용 안 함"}
-        ), marginTop(12));
-        backtestCard.addView(text(
-                "거래 없음·청산·과도한 낙폭 후보만 먼저 제외합니다. 통과 후보가 너무 적으면 자동으로 전체 검사를 수행합니다.",
-                11, MUTED, false
-        ), marginTop(7));
-
-        optimizationStageInput = autocomplete(
-                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"},
-                "전체 자동 실행"
-        );
-        backtestCard.addView(labeled("자동 최적화 단계", optimizationStageInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "단계 선택",
-                optimizationStageInput,
-                new String[]{"1차 탐색", "정밀 탐색", "6→3개월 롤링", "전체 자동"},
-                new String[]{"1차 전체 탐색", "상위 후보 정밀 탐색", "6개월 → 3개월 롤링 + 최종 선정", "전체 자동 실행"}
-        ), marginTop(8));
-        backtestCard.addView(text(
-                "후속 단계는 앞 단계 체크포인트를 자동 재사용합니다. 전체 자동은 1차→TOP10 후보별 정밀→6개월 롤링→3개월 롤링→최종 선정을 순서대로 실행합니다.",
-                11, MUTED, false
-        ), marginTop(7));
-
-        broadTrialCountInput = autocomplete(new String[]{"100", "500", "1000", "2000", "3000", "5000"}, "100");
-        backtestCard.addView(labeled("1차 전체 탐색 조합 수 (1~5000)", broadTrialCountInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "1차 빠른 선택", broadTrialCountInput,
-                new String[]{"100회", "500회", "1000회", "3000회", "5000회"},
-                new String[]{"100", "500", "1000", "3000", "5000"}
-        ), marginTop(8));
-
-        refineTrialCountInput = autocomplete(new String[]{"100", "300", "500", "1000", "2000", "3000", "5000"}, "100");
-        backtestCard.addView(labeled("2차 정밀 탐색 · TOP10 후보당 조합 수 (1~5000)", refineTrialCountInput), marginTop(12));
-        backtestCard.addView(quickChoiceRow(
-                "정밀 빠른 선택", refineTrialCountInput,
-                new String[]{"100회", "500회", "1000회", "3000회", "5000회"},
-                new String[]{"100", "500", "1000", "3000", "5000"}
-        ), marginTop(8));
-        backtestCard.addView(text(
-                "예: 후보당 5,000회 선택 시 1차 TOP10 각각을 정밀 탐색하여 최대 50,000개 조합을 검사합니다.",
-                11, MUTED, false
-        ), marginTop(7));
 
         threeTickModeInput = autocomplete(new String[]{"첫 진입만 3틱룰", "모든 진입 3틱룰"}, "첫 진입만 3틱룰");
         backtestCard.addView(binaryChoiceRow(
@@ -458,9 +372,9 @@ public class MainActivity extends android.app.Activity {
         TextView storageInfo = text("저장 위치: 앱 내부 저장소 / UniversalTradingBotCache", 12, MUTED, false);
         backtestCard.addView(storageInfo, marginTop(10));
 
-        runButton = actionButton("▶ 백그라운드 캐시 생성 + 백테스트", PRIMARY);
-        runButton.setOnClickListener(v -> runBacktest());
-        backtestCard.addView(runButton, marginTop(12));
+        runButton = actionButton("선택한 전략으로 백테스트", PRIMARY);
+        runButton.setOnClickListener(v -> runSelectedStrategyBacktest());
+
         Button downloadDbButton = actionButton("⬇ 코인·기간·주기 DB만 다운로드", SUCCESS);
         downloadDbButton.setOnClickListener(v -> downloadDatabaseOnly());
         backtestCard.addView(downloadDbButton, marginTop(8));
@@ -472,30 +386,28 @@ public class MainActivity extends android.app.Activity {
                 11, MUTED, false
         ), marginTop(5));
 
-        Button topStrategiesButton = actionButton("🏆 수익률 TOP10 전략 선택", Color.rgb(30, 41, 59));
+        Button topStrategiesButton = actionButton("🏆 저장된 전략 선택", Color.rgb(30, 41, 59));
         topStrategiesButton.setOnClickListener(v -> showTopStrategies(false));
-        backtestCard.addView(topStrategiesButton, marginTop(8));
+
         Button pasteJsonButton = actionButton("📋 JSON 붙여넣기 / 파일 불러오기", PRIMARY);
         pasteJsonButton.setOnClickListener(v -> showJsonPasteDialog());
-        backtestCard.addView(pasteJsonButton, marginTop(8));
+        backtestCard.addView(pasteJsonButton, 1, marginTop(8));
         backtestCard.addView(text(
                 "클립보드에 붙여넣거나 휴대폰의 JSON 파일을 선택하면 전략 수치와 JSON 기간을 자동 입력합니다.",
                 11, MUTED, false
         ), marginTop(5));
         selectedStrategyText = text(
-                "선택된 전략 없음 · 최적화 완료 후 TOP10에서 선택하면 모든 전략 수치가 자동 입력됩니다.",
+                "선택된 전략 없음 · JSON을 불러오거나 결과 탭에서 저장된 전략을 선택하세요.",
                 11, MUTED, false
         );
-        backtestCard.addView(selectedStrategyText, marginTop(6));
+        backtestCard.addView(selectedStrategyText, 2, marginTop(6));
         Button selectedDetailsButton = actionButton("📋 선택된 전략 전체 수치 보기", Color.rgb(30, 41, 59));
         selectedDetailsButton.setOnClickListener(v -> showSelectedStrategyDetails());
         backtestCard.addView(selectedDetailsButton, marginTop(8));
         Button editSelectedButton = actionButton("✏ 불러온/선택한 전략 수치 직접 수정", PRIMARY);
         editSelectedButton.setOnClickListener(v -> showStrategyParameterEditor());
         backtestCard.addView(editSelectedButton, marginTop(8));
-        Button selectedBacktestButton = actionButton("▶ 선택/수정한 수치로 기간 재백테스트", SUCCESS);
-        selectedBacktestButton.setOnClickListener(v -> runSelectedStrategyBacktest());
-        backtestCard.addView(selectedBacktestButton, marginTop(8));
+        backtestCard.addView(runButton, marginTop(12));
 
         LinearLayout controlRow = new LinearLayout(this);
         controlRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -506,16 +418,6 @@ public class MainActivity extends android.app.Activity {
         controlRow.addView(resumeBacktestButton, smallButtonParams());
         controlRow.addView(stopBacktestButton, smallButtonParams());
         backtestCard.addView(controlRow, marginTop(8));
-        Button fullExportButton = actionButton(
-                "📤 전체 자동 결과 파일 보내기 (MDD 70% 초과 포함)",
-                Color.rgb(30, 41, 59)
-        );
-        fullExportButton.setOnClickListener(v -> exportAndShareOptimizationResults());
-        backtestCard.addView(fullExportButton, marginTop(8));
-        backtestCard.addView(text(
-                "완료 후 1차·정밀·3개월 롤링·최종 선정과 MDD 제한 초과 후보까지 한 JSON으로 공유합니다.",
-                11, MUTED, false
-        ), marginTop(5));
         setBacktestControlState("IDLE");
         Button strategyLabButton = actionButton("⚙ 서버와 동일한 전략 수치 조정 / 백테스트", Color.rgb(30, 41, 59));
         strategyLabButton.setOnClickListener(v -> {
@@ -527,10 +429,10 @@ public class MainActivity extends android.app.Activity {
         TextView rangeHint = text("모든 USDT 무기한 선물 심볼 직접 입력 가능 · 최대 10년 · 실제 시작일은 4개 거래소 공통 상장 이력에 따라 달라집니다.", 11, MUTED, false);
         backtestCard.addView(rangeHint, marginTop(8));
 
-        root.addView(buildMetrics(), 2, marginTop(14));
+        resultsPage.addView(buildMetrics(), marginTop(8));
 
 LinearLayout resultActions = panel();
-root.addView(resultActions, 3, marginTop(12));
+resultsPage.addView(resultActions, marginTop(12));
 resultActions.addView(sectionTitle("성과 분석 대시보드"));
 
 resultActions.addView(resultGroupTitle("① 핵심 분석", "요약 · 차트 · 모든 거래를 한곳에서 확인"));
@@ -540,18 +442,32 @@ tradeHistoryButton = actionButton("📋 전체 거래내역 보기", Color.rgb(3
 tradeHistoryButton.setOnClickListener(v -> showTradeHistory());
 chartButton = actionButton("📈 순자산·낙폭 차트 + 거래 표시", Color.rgb(30, 41, 59));
 chartButton.setOnClickListener(v -> showBacktestChart());
+resultActions.addView(resultSummaryButton, marginTop(6));
+resultActions.addView(tradeHistoryButton, marginTop(6));
+resultActions.addView(chartButton, marginTop(6));
+resultActions.addView(topStrategiesButton, marginTop(6));
 Button localChartButton = actionButton("🕯 코인 DB 차트 · DB 선택 / 캔들 / TP·SL", PRIMARY);
 localChartButton.setOnClickListener(v -> showDatabaseChartPicker());
 resultActions.addView(localChartButton, marginTop(6));
 deepBacktestButton = actionButton("📊 딥백테스트 리포트", PRIMARY);
 deepBacktestButton.setOnClickListener(v -> showDeepBacktestReport());
-resultActions.addView(deepBacktestButton, marginTop(6));
+LinearLayout advancedResults = panel();
+advancedResults.setVisibility(View.GONE);
+Button advancedToggle = actionButton("상세 분석 펼치기", Color.rgb(30, 41, 59));
+advancedToggle.setOnClickListener(v -> {
+    boolean open = advancedResults.getVisibility() != View.VISIBLE;
+    advancedResults.setVisibility(open ? View.VISIBLE : View.GONE);
+    advancedToggle.setText(open ? "상세 분석 접기" : "상세 분석 펼치기");
+});
+resultActions.addView(advancedToggle, marginTop(8));
+resultActions.addView(advancedResults, marginTop(8));
+advancedResults.addView(deepBacktestButton, marginTop(6));
 Button regimeButton = actionButton("🌦 시장 국면별 성과·자동전환 확인", PRIMARY);
 regimeButton.setOnClickListener(v -> showMarketRegimePerformance());
-resultActions.addView(regimeButton, marginTop(6));
+advancedResults.addView(regimeButton, marginTop(6));
 Button validationButton = actionButton("🛡 다중 검증·실전 안전게이트", SUCCESS);
 validationButton.setOnClickListener(v -> showValidationSuite());
-resultActions.addView(validationButton, marginTop(6));
+advancedResults.addView(validationButton, marginTop(6));
 Button comparisonButton = actionButton("🔎 저장 결과 찾기·비교·재검증", Color.rgb(30, 41, 59));
 comparisonButton.setOnClickListener(v -> showRecentResultComparison());
 resultActions.addView(comparisonButton, marginTop(6));
@@ -562,37 +478,25 @@ reopenPinnedButton.setOnClickListener(v -> reopenPinnedResult());
 resultActions.addView(reopenPinnedButton, marginTop(6));
 Button monthlyButton = actionButton("🗓 월별 성과·손실 구간 보기", Color.rgb(30, 41, 59));
 monthlyButton.setOnClickListener(v -> showMonthlyPerformance());
-resultActions.addView(monthlyButton, marginTop(6));
+advancedResults.addView(monthlyButton, marginTop(6));
 Button reproducibilityButton = actionButton("🔒 결과 재현 정보·실행 지문", Color.rgb(30, 41, 59));
 reproducibilityButton.setOnClickListener(v -> showReproducibility());
-resultActions.addView(reproducibilityButton, marginTop(6));
+advancedResults.addView(reproducibilityButton, marginTop(6));
 
-resultActions.addView(resultGroupTitle("② 단계별 결과 파일", "각 단계 결과를 따로 JSON으로 저장·공유"), marginTop(14));
-resultActions.addView(stageExportButton("1차 전체 탐색 결과", "broad"), marginTop(6));
-resultActions.addView(stageExportButton("2차 정밀 탐색 결과", "refined"), marginTop(6));
-resultActions.addView(stageExportButton("3차 6개월 롤링 결과", "rolling6"), marginTop(6));
-resultActions.addView(stageExportButton("4차 3개월 롤링 결과", "rolling3"), marginTop(6));
-resultActions.addView(stageExportButton("5차 최종 선정 결과", "final"), marginTop(6));
-
-resultActions.addView(resultGroupTitle("③ 전체 묶음", "모든 단계 + MDD 초과 후보 포함"), marginTop(14));
 Button shareResultButton = actionButton("최종 백테스트 원본 JSON 공유", Color.rgb(30, 41, 59));
 shareResultButton.setOnClickListener(v -> shareBacktestFile(lastResultPath, "application/json", "최종 백테스트 원본 JSON 공유"));
 resultActions.addView(shareResultButton, marginTop(6));
 Button bundleButton = actionButton("📦 요약·거래·월별 성과 전체 ZIP 공유", SUCCESS);
 bundleButton.setOnClickListener(v -> exportAndShareAnalysisBundle());
 resultActions.addView(bundleButton, marginTop(6));
-Button shareOptimizationButton = actionButton("전체 최적화 통합 JSON 공유", Color.rgb(30, 41, 59));
-shareOptimizationButton.setOnClickListener(v -> exportAndShareOptimizationResults());
-resultActions.addView(shareOptimizationButton, marginTop(6));
-
-resultActions.addView(resultGroupTitle("④ 원본 데이터 / 캐시", "재백테스트용 SQLite 데이터"), marginTop(14));
+resultActions.addView(resultGroupTitle("데이터 공유", "재백테스트용 SQLite 데이터"), marginTop(14));
 Button shareCacheButton = actionButton("현재 캐시 DB 공유", Color.rgb(30, 41, 59));
 shareCacheButton.setOnClickListener(v -> shareBacktestFile(lastDbPath, "application/vnd.sqlite3", "백테스트 캐시 DB 공유"));
 resultActions.addView(shareCacheButton, marginTop(6));
 enableResultActions(false);
 
         LinearLayout serverCard = panel();
-        root.addView(serverCard, marginTop(14));
+        connectionPage.addView(serverCard, marginTop(8));
         serverCard.addView(sectionTitle("서버 업로드"));
         hostInput = edit("34.132.172.40");
         userInput = edit("kpj3669");
@@ -632,7 +536,7 @@ enableResultActions(false);
         serverCard.addView(protection, marginTop(8));
 
         LinearLayout logCard = panel();
-        root.addView(logCard, marginTop(14));
+        content.addView(logCard, marginTop(14));
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -655,7 +559,7 @@ enableResultActions(false);
         TextView logHint = text("최근 10줄만 표시 · 누르면 최신 로그부터 전체 내용이 열립니다.", 11, ACCENT, false);
         logCard.addView(logHint, marginTop(7));
 
-        return scroll;
+        return root;
     }
 
     private View buildMetrics() {
@@ -749,7 +653,7 @@ enableResultActions(false);
 
     private void runSelectedStrategyBacktest() {
         if (selectedStrategyParameters == null) {
-            toast("먼저 수익률 TOP10에서 전략을 선택하세요.");
+            toast("먼저 JSON을 불러오거나 저장된 전략을 선택하세요.");
             return;
         }
         startBacktest(selectedStrategyParameters);
@@ -1046,7 +950,7 @@ enableResultActions(false);
 
     private void showStrategyParameterEditor() {
         if (selectedStrategyParameters == null || selectedStrategyRow == null) {
-            toast("먼저 JSON을 불러오거나 TOP10 전략을 선택하세요.");
+            toast("먼저 JSON을 불러오거나 저장된 전략을 선택하세요.");
             return;
         }
 
@@ -2549,7 +2453,7 @@ private void exportAndShareOptimizationStage(String stage, String label) {
 
     private void showSelectedStrategyDetails() {
         if (selectedStrategyParameters == null) {
-            toast("먼저 수익률 TOP10에서 전략을 선택하세요.");
+            toast("먼저 JSON을 불러오거나 저장된 전략을 선택하세요.");
             return;
         }
         JSONObject p = selectedStrategyParameters;

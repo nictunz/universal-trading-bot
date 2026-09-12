@@ -110,6 +110,29 @@ public class LauncherActivity extends android.app.Activity {
         root.addView(text("Universal Trading Bot", 25, TEXT, true));
         root.addView(text("실행 상태 확인 · 전략 검증 · 거래 관리", 13, MUTED, false), mt(5));
 
+        LinearLayout dashboard = panel();
+        root.addView(dashboard, mt(14));
+        dashboard.addView(section("🖥 서버 관리 대시보드"));
+        dashboard.addView(text(
+                "SSH 암호화 터널로 서버의 실제 전략 설정·거래 기록·차트·캐시·LIVE 설정을 앱 안에서 직접 관리합니다.",
+                12,
+                MUTED,
+                false
+        ), mt(5));
+        Button openDashboard = actionButton("서버 대시보드 열기", SUCCESS);
+        openDashboard.setOnClickListener(v ->
+                startActivity(new Intent(this, ServerDashboardActivity.class))
+        );
+        dashboard.addView(openDashboard, mt(10));
+
+        LinearLayout backtest = panel();
+        root.addView(backtest, mt(14));
+        backtest.addView(section("전략 검증 · DB 차트"));
+        backtest.addView(text("저장된 DB와 선택한 전략으로 검증하고, 거래내역·차트·결과를 확인하세요.", 12, MUTED, false), mt(5));
+        Button openBacktester = actionButton("JSON 전략 · DB 차트 열기", Color.rgb(30, 41, 59));
+        openBacktester.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
+        backtest.addView(openBacktester, mt(10));
+
         LinearLayout relay = panel();
         root.addView(relay, mt(16));
         relay.addView(section("📡 LIVE 시장데이터 중계"));
@@ -121,27 +144,37 @@ public class LauncherActivity extends android.app.Activity {
         hostInput = edit(p.getString("relay_host", "34.132.172.40"));
         userInput = edit(p.getString("relay_user", "kpj3669"));
         remoteInput = edit(p.getString("relay_remote_dir", "/home/kpj3669/.cache/universal-trading-bot"));
-        relay.addView(labeled("서버", hostInput), mt(12));
-        relay.addView(labeled("사용자", userInput), mt(8));
-        relay.addView(labeled("서버 캐시 폴더", remoteInput), mt(8));
+        LinearLayout settings = panel();
+        settings.setVisibility(View.GONE);
+        Button settingsToggle = actionButton("연결 설정 펼치기", Color.rgb(30, 41, 59));
+        settingsToggle.setOnClickListener(v -> {
+            boolean open = settings.getVisibility() != View.VISIBLE;
+            settings.setVisibility(open ? View.VISIBLE : View.GONE);
+            settingsToggle.setText(open ? "연결 설정 접기" : "연결 설정 펼치기");
+        });
+        relay.addView(settingsToggle, mt(10));
+        relay.addView(settings, mt(8));
+        settings.addView(labeled("서버", hostInput), mt(12));
+        settings.addView(labeled("사용자", userInput), mt(8));
+        settings.addView(labeled("서버 캐시 폴더", remoteInput), mt(8));
 
         Button keyButton = actionButton("🔑 휴대폰 SSH 키 준비 / 확인", Color.rgb(30, 41, 59));
         keyButton.setOnClickListener(v -> ensureKeyOnly());
-        relay.addView(keyButton, mt(10));
+        settings.addView(keyButton, mt(10));
 
         keyStatus = text("SSH 키 상태 확인 중...", 11, MUTED, false);
-        relay.addView(keyStatus, mt(6));
+        settings.addView(keyStatus, mt(6));
 
         Button copyKeyButton = actionButton("📋 SSH 공개키 보기 / 복사", Color.rgb(30, 41, 59));
         copyKeyButton.setOnClickListener(v -> showAndCopyPublicKey());
-        relay.addView(copyKeyButton, mt(8));
+        settings.addView(copyKeyButton, mt(8));
 
         publicKeyText = text("", 10, MUTED, false);
         publicKeyText.setTextIsSelectable(true);
         publicKeyText.setPadding(dp(10), dp(10), dp(10), dp(10));
         publicKeyText.setBackground(rounded(Color.rgb(7, 16, 29), 10, BORDER));
         publicKeyText.setVisibility(View.GONE);
-        relay.addView(publicKeyText, mt(8));
+        settings.addView(publicKeyText, mt(8));
 
         oneShotButton = actionButton("연결 테스트 · 1회 전송", WARNING);
         oneShotButton.setOnClickListener(v -> prepareRelay(MobileMarketRelayService.ACTION_ONCE));
@@ -181,35 +214,12 @@ public class LauncherActivity extends android.app.Activity {
         updateStatus = text("현재 버전: " + (current.isEmpty() ? "확인 불가" : current), 12, MUTED, false);
         update.addView(updateStatus, mt(5));
         update.addView(text(
-                "GitHub 테스트와 Android 빌드가 모두 성공한 안정 서명 APK만 서버 업데이트 채널에 게시됩니다. 휴대폰에는 GitHub 토큰을 저장하지 않고 기존 SSH 키로 APK를 받아 SHA-256과 Android 서명을 확인합니다.",
+                "새 버전을 확인하고 설치할 수 있습니다. 연결 설정과 저장된 데이터는 유지됩니다.",
                 11, MUTED, false
         ), mt(7));
         updateButton = actionButton("업데이트 확인", PRIMARY);
         updateButton.setOnClickListener(v -> checkUpdate());
         update.addView(updateButton, mt(10));
-
-        LinearLayout dashboard = panel();
-        root.addView(dashboard, mt(14));
-        dashboard.addView(section("🖥 서버 관리 대시보드"));
-        dashboard.addView(text(
-                "SSH 암호화 터널로 서버의 실제 전략 설정·거래 기록·차트·캐시·LIVE 설정을 앱 안에서 직접 관리합니다.",
-                12,
-                MUTED,
-                false
-        ), mt(5));
-        Button openDashboard = actionButton("서버 대시보드 열기", SUCCESS);
-        openDashboard.setOnClickListener(v ->
-                startActivity(new Intent(this, ServerDashboardActivity.class))
-        );
-        dashboard.addView(openDashboard, mt(10));
-
-        LinearLayout backtest = panel();
-        root.addView(backtest, mt(14));
-        backtest.addView(section("🧪 로컬 백테스터"));
-        backtest.addView(text("저장된 DB와 선택한 전략으로 검증하고, 거래내역·차트·결과를 확인하세요.", 12, MUTED, false), mt(5));
-        Button openBacktester = actionButton("Universal Backtester 열기", Color.rgb(30, 41, 59));
-        openBacktester.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
-        backtest.addView(openBacktester, mt(10));
 
         return scroll;
     }

@@ -18,6 +18,7 @@ from universal_bot.trade_history import TradeHistoryStore
 
 PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 SOURCE_FILES = (
+    "universal_bot/preflight.py",
     "universal_bot/config.py",
     "universal_bot/engine.py",
     "universal_bot/main.py",

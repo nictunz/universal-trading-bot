@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # Include fail-closed preflight in the reviewed runtime and boot fingerprint.
       - name: Verify reviewed snapshot before deployment
         env:
           BOT_MODE: PAPER
