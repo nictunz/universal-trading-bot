@@ -1,109 +1,84 @@
 name: check-live-health-once
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - '.github/workflows/check-live-health-once.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-live-health-once
+  cancel-in-progress: false
 
 jobs:
   check:
     runs-on: [self-hosted, trading-bot]
     timeout-minutes: 5
     steps:
-      - name: Verify active LIVE runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
-          test -s "$RELAY"
-          AGE=$(( $(date +%s) - $(stat -c %Y "$RELAY") ))
-          echo "mobile_relay_age_seconds=$AGE"
-          test "$AGE" -le 90
-          for attempt in $(seq 1 60); do
-            if curl -fsS -m 5 http://127.0.0.1:8000/health > /tmp/live-health-final.json \
-              && curl -fsS -m 10 http://127.0.0.1:8000/api/live-readiness > /tmp/live-ready-final.json; then
-              if python3 - <<'PY'
-          import json
-          with open('/tmp/live-health-final.json',encoding='utf-8') as f: h=json.load(f)
-          with open('/tmp/live-ready-final.json',encoding='utf-8') as f: r=json.load(f)
-          assert h.get('status') == 'ok', h
-          assert int(h.get('symbols') or 0) >= 1, h
-          assert not h.get('errors'), h
-          assert not h.get('live_halted'), h
-          assert r.get('ready') is True, r
-          assert r.get('api_family') == 'classic-v2', r
-          print({'health':h.get('status'),'symbols':h.get('symbols'),'live_halted':h.get('live_halted'),'ready':r.get('ready'),'api_family':r.get('api_family')})
-          PY
-              then
-                exit 0
-              fi
-            fi
-            sleep 2
-          done
-          cat /tmp/live-health-final.json 2>/dev/null || true
-          cat /tmp/live-ready-final.json 2>/dev/null || true
-          sudo journalctl -u universal-trading-bot-dashboard.service -n 120 --no-pager || true
-          exit 1
-
-      - name: Print sanitized active settings
+      - name: Authenticate and verify active LIVE runtime
         shell: bash
         run: |
           set -euo pipefail
           cd /home/kpj3669/universal-trading-bot
-          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
-          curl -fsS -m 10 http://127.0.0.1:8000/api/state > /tmp/active-state.json
-          curl -fsS -m 10 http://127.0.0.1:8000/api/strategy-settings > /tmp/active-strategy-settings.json
-          "$PY" - <<'PY'
+          /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python - <<'PY'
           import json
+          import time
+          from pathlib import Path
+          import requests
           from universal_bot.config import Settings
-          s=Settings()
-          names=[
-              'bot_mode','exchange','symbol','symbols','timeframe','poll_seconds',
-              'volume_lookback','volume_break_multiplier','use_four_crypto_exchanges',
-              'min_one_bar_vol','max_one_bar_vol','volatility_bars',
-              'tp_vol_multiplier','sl_vol_multiplier','min_tp_percent','max_tp_percent',
-              'min_sl_percent','max_sl_percent','use_nbar_volatility_block',
-              'nbar_volatility_bars','max_nbar_volatility','use_adx_filter','adx_length',
-              'adx_min','adx_max','use_rsi_filter','rsi_length','rsi_oversold_min',
-              'rsi_oversold_max','rsi_overbought_min','rsi_overbought_max','allow_long',
-              'allow_short','adaptive_regime_enabled','first_entry_consecutive_candles',
-              'apply_consecutive_candles_to_all_entries','max_pyramiding','cooldown_bars',
-              'reentry_bars','excluded_hours','leverage','margin_mode',
-              'live_entry_multiplier','live_entry_execution_mode',
-              'live_entry_max_adverse_slippage_percent','live_entry_max_child_orders',
-              'live_entry_execution_window_seconds','live_entry_depth_participation',
-              'live_entry_child_pause_seconds','live_max_entries_per_position',
-              'live_max_total_multiplier','require_exchange_protection',
-              'live_require_one_way_mode','backtest_fee_percent',
-              'backtest_slippage_percent'
-          ]
-          settings={name:getattr(s,name) for name in names}
-          with open('/tmp/active-state.json',encoding='utf-8') as f: state=json.load(f)
-          with open('/tmp/active-strategy-settings.json',encoding='utf-8') as f: strategy_api=json.load(f)
-          with open('data/dashboard-strategy-settings.json',encoding='utf-8') as f: strategy_file=json.load(f)
-          active=strategy_api.get('values') or {}
-          expected={
-              'volume_lookback':41,'volume_break_multiplier':6.4,
-              'min_one_bar_vol':0.1,'max_one_bar_vol':3.6,'volatility_bars':36,
-              'tp_vol_multiplier':3.8,'sl_vol_multiplier':1.0,
-              'min_tp_percent':0.3,'max_tp_percent':2.1,
-              'min_sl_percent':0.3,'max_sl_percent':1.9,
-              'use_nbar_volatility_block':True,'nbar_volatility_bars':200,
-              'max_nbar_volatility':6.1,'use_adx_filter':False,'adx_length':7,
-              'adx_min':11.6,'adx_max':80.5,'use_rsi_filter':True,'rsi_length':10,
-              'rsi_oversold_min':20.0,'rsi_oversold_max':41.5,
-              'rsi_overbought_min':65.6,'rsi_overbought_max':74.7,
-              'allow_long':True,'allow_short':True,'max_pyramiding':1,
-              'cooldown_bars':3,'reentry_bars':7,'block_weekend':False,
-              'excluded_hours':'','order_percent_of_equity':890.0,
-              'initial_capital':1000.0,'backtest_fee_percent':0.02,
-              'backtest_slippage_percent':0.01,
-          }
-          assert strategy_file == active, {'file_vs_api': [strategy_file,active]}
-          mismatch={k:{'expected':v,'active':active.get(k)} for k,v in expected.items() if active.get(k)!=v}
-          assert not mismatch, mismatch
-          symbols=state.get('symbols') or []
-          runtime=symbols[0] if symbols else {}
-          print(json.dumps({'settings':settings,'persisted_strategy':strategy_file,'strategy_api':active,'expected_match':True,'runtime':runtime},ensure_ascii=False,default=str))
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          s = Settings()
+          require(s.bot_mode.upper() == 'LIVE', 'Configured mode is not LIVE')
+          relay = Path('/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json')
+          require(relay.is_file(), 'Mobile relay snapshot is missing')
+          age = time.time() - relay.stat().st_mtime
+          require(0 <= age <= 90, 'Mobile relay snapshot is stale or future-dated')
+          base = 'http://127.0.0.1:8000'
+          with requests.Session() as session:
+              response = session.post(
+                  base + '/login',
+                  data={'username': s.dashboard_username, 'password': s.dashboard_password, 'next': '/'},
+                  allow_redirects=False, timeout=10,
+              )
+              require(response.status_code == 303, 'Dashboard login failed')
+              def get(path):
+                  response = session.get(base + path, allow_redirects=False, timeout=30)
+                  require(response.status_code == 200, 'Dashboard check failed: ' + path + ' HTTP ' + str(response.status_code))
+                  return response.json()
+              health = get('/health')
+              ready = get('/api/live-readiness')
+              state = get('/api/state')
+              runtime = get('/api/runtime-info')
+              strategy = get('/api/strategy-settings').get('values')
+          require(health.get('status') == 'ok' and not health.get('errors') and not health.get('live_halted'), 'Runtime health is not OK')
+          require(ready.get('ready') is True, 'LIVE readiness failed')
+          require(any(c.get('name') == 'mode' and c.get('value') == 'LIVE' for c in ready.get('checks', [])), 'Readiness mode is not LIVE')
+          require(ready.get('api_family') == 'classic-v2', 'Unexpected API family')
+          require(runtime.get('source_matches_disk') is True, 'Running source differs from disk')
+          saved = json.loads(Path('data/dashboard-strategy-settings.json').read_text(encoding='utf-8'))
+          require(isinstance(strategy, dict) and bool(strategy) and saved == strategy, 'Saved strategy differs from active API settings')
+          symbols = state.get('symbols') or []
+          require(bool(symbols), 'Runtime has no symbols')
+          summary = []
+          for row in symbols:
+              safety = row.get('live_safety') or {}
+              require(not row.get('error'), 'Symbol runtime error')
+              require(safety.get('enabled') is True and safety.get('halted') is False, 'LIVE safety is disabled or halted')
+              require(safety.get('protection_ok') is True, 'Position protection check failed')
+              flat = (safety.get('exchange_position') or {}).get('side') == 'FLAT'
+              summary.append({'symbol': row.get('symbol'), 'timeframe': row.get('timeframe'),
+                              'signal_reason': row.get('signal_reason'),
+                              'protection': 'NOT_APPLICABLE_FLAT' if flat else 'PASS'})
+          print(json.dumps({'health': 'ok', 'ready': True, 'mode': 'LIVE',
+                            'relay_age_seconds': round(age, 1), 'settings_match': True,
+                            'deployment_commit': runtime.get('deployment_commit'),
+                            'symbols': summary}, ensure_ascii=False))
           PY

@@ -157,11 +157,16 @@ def check_live_readiness(settings: Settings | None = None) -> dict:
     required = {"market", "fetch_positions", "set_leverage", "set_margin_mode"}
     if settings.live_require_one_way_mode:
         required.add("set_position_mode")
-    ready = all(c.get("ok") for c in checks if c.get("name") in required) and all(
-        c.get("ok") for c in checks if c.get("name") in {"balance", "position_query", "existing_protection"}
+    if live:
+        required.update({"balance", "position_query"})
+    # Exceptions can leave only a prefix of the checks populated. Never let
+    # all([]) or successful earlier checks turn an incomplete run into READY.
+    completed = {c.get("name") for c in checks}
+    ready = (
+        live
+        and required.issubset(completed)
+        and all(c.get("ok") is True for c in checks)
     )
-    if not live:
-        ready = False
     return {"ready": ready, "profile": profile, "checks": checks, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
