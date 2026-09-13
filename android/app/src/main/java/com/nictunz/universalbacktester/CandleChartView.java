@@ -49,25 +49,29 @@ public class CandleChartView extends View {
     private double min, max;
     private float left, right, top, bottom, step;
     private float drag;
+    private boolean inspecting;
+    private final Set<Long> qualityTimes=new HashSet<>();
+    public void setQuality(JSONArray rows){qualityTimes.clear();if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null)qualityTimes.add(row.optLong("timestamp"));}invalidate();}
+    private boolean validBar(double[] b){return b.length>=6&&Double.isFinite(b[1])&&Double.isFinite(b[2])&&Double.isFinite(b[3])&&Double.isFinite(b[4])&&b[3]>0&&b[3]<=Math.min(b[1],b[4])&&b[2]>=Math.max(b[1],b[4]);}
     private static final int UP = Color.rgb(38,166,154), DOWN = Color.rgb(239,83,80);
     public CandleChartView(Context c, Navigator n) {
         super(c); nav=n; setBackgroundColor(Color.rgb(16,19,24));
         scale=new ScaleGestureDetector(c,new ScaleGestureDetector.SimpleOnScaleGestureListener(){
-            public boolean onScale(ScaleGestureDetector d){ nav.zoom(d.getScaleFactor()); return true; }
+            public boolean onScale(ScaleGestureDetector d){ inspecting=false;nav.zoom(d.getScaleFactor()); return true; }
         });
         gestures=new GestureDetector(c,new GestureDetector.SimpleOnGestureListener(){
-            public boolean onDown(MotionEvent e){drag=0; return true;}
+            public boolean onDown(MotionEvent e){drag=0;inspecting=false; return true;}
             public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy){
-                if(scale.isInProgress()) return true;
+                if(scale.isInProgress()||inspecting) return true;
                 selected=-1; drag+=dx/Math.max(1,step);
                 if(Math.abs(drag)>=2){int count=(int)drag; drag-=count; nav.move(count);} return true;
             }
             public boolean onSingleTapUp(MotionEvent e){ select(e.getX()); drawTap(e.getX(),e.getY()); performClick(); return true; }
-            public void onLongPress(MotionEvent e){select(e.getX());}
+            public void onLongPress(MotionEvent e){inspecting=true;select(e.getX());}
         });
     }
     public void setData(List<double[]> data,JSONArray log){
-        candles=data;trades=new JSONArray();tradeTimes.clear();entryTimes.clear();selected=-1;
+        candles=data;trades=new JSONArray();tradeTimes.clear();entryTimes.clear();qualityTimes.clear();selected=-1;
         if(!data.isEmpty()&&log!=null){
             long first=(long)data.get(0)[0],last=(long)data.get(data.size()-1)[0];
             for(int i=0;i<log.length();i++){JSONObject t=log.optJSONObject(i);if(t==null)continue;
@@ -81,8 +85,12 @@ public class CandleChartView extends View {
     private void select(float x){if(candles.isEmpty())return;selected=Math.max(0,Math.min(candles.size()-1,(int)((x-left)/Math.max(1,step))));nav.inspect((long)candles.get(selected)[0]);invalidate();}
     @Override public boolean performClick(){super.performClick();return true;}
     @Override public boolean onTouchEvent(MotionEvent e){
-        getParent().requestDisallowInterceptTouchEvent(true);
-        scale.onTouchEvent(e); gestures.onTouchEvent(e); return true;
+        if(getParent()!=null)getParent().requestDisallowInterceptTouchEvent(e.getActionMasked()!=MotionEvent.ACTION_UP&&e.getActionMasked()!=MotionEvent.ACTION_CANCEL);
+        scale.onTouchEvent(e);
+        if(inspecting&&e.getActionMasked()==MotionEvent.ACTION_MOVE&&e.getPointerCount()==1)select(e.getX());
+        gestures.onTouchEvent(e);
+        if(e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_CANCEL)inspecting=false;
+        return true;
     }
     private float d(float x){return x*getResources().getDisplayMetrics().density;}
     private float y(double price){return bottom-(float)((price-min)/(max-min))*(bottom-top);}
@@ -106,16 +114,19 @@ public class CandleChartView extends View {
         super.onDraw(c);left=d(8);right=getWidth()-d(82);top=d(50);bottom=Math.max(top+d(40),getHeight()-d(pane>0&&getHeight()>d(320)?180:78));
         if(candles.isEmpty()){text(c,"DB를 선택하세요",d(16),d(40),Color.LTGRAY,14);return;}
         step=(right-left)/candles.size();min=Double.POSITIVE_INFINITY;max=Double.NEGATIVE_INFINITY;double vmax=1;
-        for(double[] b:candles){min=Math.min(min,b[3]);max=Math.max(max,b[2]);vmax=Math.max(vmax,b[5]);}
+        for(double[] b:candles){if(!validBar(b))continue;min=Math.min(min,b[3]);max=Math.max(max,b[2]);if(Double.isFinite(b[5])&&b[5]>=0)vmax=Math.max(vmax,b[5]);}
+        if(!Double.isFinite(min)||!Double.isFinite(max)){text(c,"유효한 가격 데이터가 없습니다 · 데이터 검사 확인",d(8),d(40),Color.YELLOW,12);return;}
         double pad=Math.max((max-min)*.08,Math.abs(max)*.0001);min-=pad;max+=pad;
         p.setStrokeWidth(d(1));
         for(int i=0;i<=5;i++){float yy=top+(bottom-top)*i/5;p.setColor(Color.rgb(40,44,52));c.drawLine(left,yy,right,yy,p);text(c,number(max-(max-min)*i/5),right+d(4),yy,Color.LTGRAY,10);}
         for(int i=0;i<=6;i++){float xx=left+(right-left)*i/6;p.setColor(Color.rgb(32,36,42));c.drawLine(xx,top,xx,bottom+d(48),p);}
         for(int i=0;i<candles.size();i++){
             double[] b=candles.get(i);float x=left+step*(i+.5f);int col=b[4]>=b[1]?UP:DOWN;
+            if(qualityTimes.contains((long)b[0])||!validBar(b)){p.setColor(Color.argb(45,255,180,50));c.drawRect(x-step*.5f,top,x+step*.5f,bottom,p);}
+            if(!validBar(b))continue;
             p.setColor(col);p.setStrokeWidth(Math.max(1,d(.8f)));c.drawLine(x,y(b[2]),x,y(b[3]),p);
             c.drawRect(x-Math.max(.6f,step*.32f),Math.min(y(b[1]),y(b[4])),x+Math.max(.6f,step*.32f),Math.max(y(b[1]),y(b[4]))+1,p);
-            p.setAlpha(90);c.drawRect(x-step*.32f,bottom+d(48)-(float)(b[5]/vmax)*d(40),x+step*.32f,bottom+d(48),p);p.setAlpha(255);
+            if(Double.isFinite(b[5])&&b[5]>=0){p.setAlpha(90);c.drawRect(x-step*.32f,bottom+d(48)-(float)(b[5]/vmax)*d(40),x+step*.32f,bottom+d(48),p);p.setAlpha(255);}
         }
         c.save();c.clipRect(left,top,right,bottom);
         if(showBands){overlay(c,"bb_upper",Color.rgb(96,125,139));overlay(c,"bb_mid",Color.rgb(96,125,139));overlay(c,"bb_lower",Color.rgb(96,125,139));}

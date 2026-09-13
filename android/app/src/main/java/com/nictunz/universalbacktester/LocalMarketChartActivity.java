@@ -44,6 +44,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private JSONObject loadedResult = new JSONObject();
     private float zoomWidth=160;
     private TextView diagnostic, warning;
+    private JSONObject dataQuality=new JSONObject();
     private JSONObject auditPage = new JSONObject();
     private String strategyParameters = "";
     private volatile boolean busy;
@@ -109,6 +110,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         HorizontalScrollView toolScroll=new HorizontalScrollView(this);toolScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tools=new LinearLayout(this);
         toolButton(tools,"차트 설정",this::chartSettings);
+        toolButton(tools,"데이터 검사",this::showDataQuality);
         toolButton(tools,"전략",this::strategyDialog);
         toolButton(tools,"성과",this::showPerformance);
         toolButton(tools,"거래",this::showTrades);
@@ -118,6 +120,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         toolScroll.addView(tools);root.addView(toolScroll);
         status=new TextView(this);status.setTextColor(Color.LTGRAY);status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(10),0,dp(10),0);status.setText("저장된 코인 DB 검색 중…");root.addView(status);
         warning=new TextView(this);warning.setTextColor(Color.rgb(255,190,75));warning.setTextSize(12);warning.setMaxLines(2);warning.setPadding(dp(10),dp(4),dp(10),dp(4));root.addView(warning);
+        warning.setOnClickListener(v->showDataQuality());
         diagnostic=new TextView(this);diagnostic.setTextColor(Color.LTGRAY);diagnostic.setTextSize(12);diagnostic.setMaxLines(2);diagnostic.setPadding(dp(10),dp(4),dp(10),dp(4));diagnostic.setText("전략 적용 후 봉을 터치하면 실제 엔진 진단이 표시됩니다.");diagnostic.setOnClickListener(v->showDiagnostic());root.addView(diagnostic);
         chart=new CandleChartView(this,this);root.addView(chart,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout actions=new LinearLayout(this);
@@ -203,6 +206,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private void load(){
         if(market==null||disposed||busy)return;
         loading=true;
+        dataQuality=new JSONObject();
         int request=generation.incrementAndGet();String[] m=market.clone();
         int start=offset,count=Math.min(width,Math.max(0,availableBars()-offset));String file=resultPath;boolean replay=replayLimit>0;
         worker.execute(()->{
@@ -228,12 +232,13 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                     try{page=new JSONObject(python().getModule("universal_bot.chart_workspace").callAttr("audit_page",file,(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0]).toString());}
                     catch(Exception e){match=false;alert="⚠ "+e.getMessage();}
                 }else alert=match?"⚠ 이전 결과는 봉별 진단이 없습니다. 전략을 다시 적용하세요.":"⚠ 전략 미적용 · 캔들 데이터만 표시합니다.";
-                long interval=intervalMillis(m[3]);
-                for(int k=0;k<rows.size();k++){
-                    double[] bar=rows.get(k);
-                    if(bar[1]<=0||bar[2]<bar[3]||bar[2]<Math.max(bar[1],bar[4])||bar[3]>Math.min(bar[1],bar[4]))alert+="\n⚠ 잘못된 OHLC 데이터";
-                    if(k>0&&interval>0&&(long)(bar[0]-rows.get(k-1)[0])!=interval){alert+="\n⚠ 표시 구간에 캔들 누락/중복";break;}
-                }
+                JSONObject quality=new JSONObject();
+                if(!rows.isEmpty())try{
+                    quality=new JSONObject(python().getModule("universal_bot.chart_quality").callAttr("quality_page",m[0],m[1],m[2],m[3],(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0],intervalMillis(m[3])).toString());
+                    int affected=quality.optJSONArray("rows").length();
+                    alert="데이터 검사 · "+quality.optInt("bars")+"봉 · 주의 "+affected+"봉 · 눌러 상세 보기\n"+alert;
+                }catch(Exception e){alert="⚠ 데이터 검사 실패: "+e.getMessage()+"\n"+alert;}
+                final JSONObject shownQuality=quality;
                 final JSONObject shownPage=page;final String shownAlert=alert+indicatorWarning;
                 final JSONObject shownSummary=match&&!replay?s:new JSONObject();
                 JSONArray log=match?s.optJSONArray("trades_log"):null;
@@ -245,7 +250,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 if(replay)msg="리플레이 · "+data.length()+"건 청산 확인 · 전체 성과 숨김";
                 if(data.length()>0&&!data.optJSONObject(0).has("tp_price"))msg+=" · TP/SL 선은 재실행 후 표시";
                 final String message=msg;
-                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;trades=data;activeSummary=shownSummary;auditPage=shownPage;warning.setText(shownAlert);chart.setData(rows,data);chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);saveWorkspace();});
+                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;trades=data;activeSummary=shownSummary;auditPage=shownPage;dataQuality=shownQuality;warning.setText(shownAlert);chart.setData(rows,data);chart.setQuality(shownQuality.optJSONArray("rows"));chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);saveWorkspace();});
             }catch(Exception e){runOnUiThread(()->{if(!disposed&&request==generation.get()){loading=false;trades=new JSONArray();activeSummary=new JSONObject();auditPage=new JSONObject();chart.setData(Collections.emptyList(),trades);chart.setAudit(null);chart.setOverlays(null);status.setText("차트 읽기 실패: "+e.getMessage());}});}
         });
     }
@@ -545,6 +550,23 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 if(i==5)showDiagnostic();
                 chart.options(ema,bands,indicatorPane);saveWorkspace();
             }).setNegativeButton("닫기",null).show();
+    }
+    private void showDataQuality(){
+        if(loading||busy){status.setText("데이터를 불러오는 중입니다.");return;}
+        StringBuilder message=new StringBuilder(warning.getText()).append("\n\n표시 구간만 검사 · 전략 신호 준비 판정과 다릅니다.\n");
+        message.append("4거래소 동일봉 유효 거래량: ").append(dataQuality.optInt("four_exchange_complete")).append(" / ").append(dataQuality.optInt("bars"));
+        message.append("\n누락 봉: ").append(dataQuality.optInt("missing_bars")).append(" · 불규칙 간격: ").append(dataQuality.optInt("irregular_intervals"));
+        message.append("\nOHLC 오류: ").append(dataQuality.optInt("invalid_ohlc")).append(" · 거래량 오류: ").append(dataQuality.optInt("invalid_volume"));
+        JSONObject exchanges=dataQuality.optJSONObject("exchanges");
+        if(exchanges!=null)for(String ex:new String[]{"binance","bitget","okx","bybit"}){
+            JSONObject row=exchanges.optJSONObject(ex);if(row==null)continue;
+            message.append("\n\n").append(ex).append(" · 누락 ").append(row.optInt("missing")).append(" · 중복 ").append(row.optInt("duplicate")).append(" · 거래량 오류 ").append(row.optInt("invalid_volume")).append(" · 0 거래량 ").append(row.optInt("zero_volume"));
+        }
+        message.append("\n\n주황색 띠 = 주의 봉. 길게 누르고 이동하면 봉을 살펴봅니다.\n거래량 0은 관측값이며 데이터 누락과 구분합니다. SMA 워밍업 충족 여부는 전략 진단에서 확인하세요.");
+        JSONArray rows=dataQuality.optJSONArray("rows");
+        if(rows!=null&&rows.length()>0){message.append("\n\n주의 봉 예시 (최대 20개, UTC)");java.text.SimpleDateFormat fmt=new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.US);fmt.setTimeZone(TimeZone.getTimeZone("UTC"));for(int i=0;i<Math.min(20,rows.length());i++){JSONObject row=rows.optJSONObject(i);message.append("\n").append(fmt.format(new Date(row.optLong("timestamp")))).append(" · ").append(row.optJSONArray("reasons"));}}
+        ScrollView scroll=new ScrollView(this);TextView text=new TextView(this);text.setText(message.toString());text.setTextIsSelectable(true);text.setPadding(dp(16),dp(12),dp(16),dp(12));scroll.addView(text);
+        new AlertDialog.Builder(this).setTitle("차트 데이터 검사").setView(scroll).setPositiveButton("닫기",null).show();
     }
     private void pauseReplay(){playing=false;playback.removeCallbacks(playbackTick);}
     private void setReplay(int limit){
