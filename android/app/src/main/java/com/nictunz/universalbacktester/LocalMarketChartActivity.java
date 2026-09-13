@@ -365,7 +365,10 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         final File source=new File(selectedDatabasePath);
         new AlertDialog.Builder(this).setTitle("DB 삭제").setMessage(source.getName()+"\n앱 DB 목록에서 제거합니다. 마지막 삭제는 복구할 수 있습니다.").setNegativeButton("취소",null).setPositiveButton("삭제",(d,i)->{
             if(blocked())return;
+            busy=true;generation.incrementAndGet();
+            worker.execute(()->{
             try{
+                if(BacktestForegroundService.isWorkerRunning())throw new IOException("백테스트가 실행 중입니다. 삭제를 취소했습니다.");
                 if(!source.getCanonicalPath().startsWith(new File(getFilesDir(),"UniversalTradingBotCache").getCanonicalPath()+File.separator))throw new IOException("앱에서 저장한 DB만 삭제할 수 있습니다.");
                 File trash=new File(source.getAbsolutePath()+"."+System.currentTimeMillis()+".deleted");
                 if(!source.renameTo(trash))throw new IOException("DB 삭제에 실패했습니다.");
@@ -378,8 +381,9 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                     }
                 }
                 getSharedPreferences("universal_bot",MODE_PRIVATE).edit().putString("deleted_db",trash.getAbsolutePath()).putString("deleted_db_original",source.getAbsolutePath()).remove("chart_db_path").apply();
-                resultPath="";loadedResultPath=null;selectedDatabasePath="";auditPage=new JSONObject();trades=new JSONArray();scanDatabases();
-            }catch(Exception e){error(e);}
+                runOnUiThread(()->{busy=false;if(disposed)return;resultPath="";loadedResultPath=null;selectedDatabasePath="";auditPage=new JSONObject();trades=new JSONArray();scanDatabases();});
+            }catch(Exception e){busy=false;error(e);}
+            });
         }).show();
     }
     private void emptyTrash(){
