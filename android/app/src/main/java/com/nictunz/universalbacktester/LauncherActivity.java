@@ -108,7 +108,10 @@ public class LauncherActivity extends android.app.Activity {
         scroll.addView(root);
 
         root.addView(text("Universal Trading Bot", 25, TEXT, true));
-        root.addView(text("실행 상태 확인 · 전략 검증 · 거래 관리", 13, MUTED, false), mt(5));
+        root.addView(text("차트 분석 · 전략 검증 · 서버 거래 관리", 13, MUTED, false), mt(5));
+        Button chartWorkspace = actionButton("차트 작업 화면 · DB / 지표 / 전략", PRIMARY);
+        chartWorkspace.setOnClickListener(v -> startActivity(new Intent(this, LocalMarketChartActivity.class)));
+        root.addView(chartWorkspace, mt(14));
 
         LinearLayout dashboard = panel();
         root.addView(dashboard, mt(14));

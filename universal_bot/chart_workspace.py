@@ -90,6 +90,32 @@ def apply_strategy(database: str, symbol: str, timeframe: str, parameters: str,
         **Settings(_env_file=None).model_dump(), **supplied,
         "symbol": symbol, "timeframe": timeframe, "bot_mode": "PAPER",
     })
+    for key in AUDIT_PARAMETERS:
+        value = getattr(settings, key)
+        if isinstance(value, (int, float)) and not math.isfinite(value):
+            raise ValueError(f"유효한 숫자가 필요합니다: {key}")
+    for key in ("volume_lookback", "volatility_bars", "nbar_volatility_bars", "adx_length",
+                "rsi_length", "first_entry_consecutive_candles", "max_pyramiding"):
+        if not 1 <= getattr(settings, key) <= 10000:
+            raise ValueError(f"기간/횟수는 1~10000 범위여야 합니다: {key}")
+    for key in ("initial_capital", "order_percent_of_equity", "backtest_max_total_multiplier",
+                "volume_break_multiplier", "tp_vol_multiplier", "sl_vol_multiplier",
+                "min_tp_percent", "max_tp_percent", "min_sl_percent", "max_sl_percent"):
+        if getattr(settings, key) <= 0:
+            raise ValueError(f"0보다 큰 값이 필요합니다: {key}")
+    for key in ("cooldown_bars", "reentry_bars", "min_one_bar_vol", "max_one_bar_vol",
+                "backtest_fee_percent", "backtest_slippage_percent"):
+        if getattr(settings, key) < 0:
+            raise ValueError(f"음수는 허용되지 않습니다: {key}")
+    for key in ("rsi_oversold_min", "rsi_oversold_max", "rsi_overbought_min",
+                "rsi_overbought_max", "adx_min", "adx_max"):
+        if not 0 <= getattr(settings, key) <= 100:
+            raise ValueError(f"0~100 범위여야 합니다: {key}")
+    if settings.order_percent_of_equity > settings.backtest_max_total_multiplier * 100:
+        raise ValueError("1회 진입 규모가 총 노출 한도를 초과합니다.")
+    for hour in settings.excluded_hours.split(","):
+        if hour.strip() and (not hour.strip().isdigit() or not 0 <= int(hour) <= 23):
+            raise ValueError("제외 시간은 00~23을 쉼표로 구분하세요.")
     for lo, hi in [("min_one_bar_vol", "max_one_bar_vol"), ("min_tp_percent", "max_tp_percent"),
                    ("min_sl_percent", "max_sl_percent"), ("rsi_oversold_min", "rsi_oversold_max"),
                    ("rsi_overbought_min", "rsi_overbought_max"), ("adx_min", "adx_max")]:

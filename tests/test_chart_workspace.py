@@ -95,3 +95,17 @@ def test_export_includes_committed_wal_pages(database, tmp_path):
             assert exported.execute("SELECT min(volume) FROM ohlcv WHERE exchange='bitget'").fetchone()[0] == 999
     finally:
         source.close()
+
+
+@pytest.mark.parametrize("update", [
+    {"volume_lookback": 0}, {"initial_capital": -1},
+    {"backtest_fee_percent": -0.1}, {"order_percent_of_equity": 2000},
+    {"rsi_oversold_min": -1}, {"max_tp_percent": float("inf")},
+    {"excluded_hours": "24"}, {"min_sl_percent": 10, "max_sl_percent": 1},
+])
+def test_invalid_editor_values_are_rejected_without_writing_results(database, update):
+    before = database.read_bytes()
+    with pytest.raises(ValueError):
+        apply_strategy(str(database), "BTC/USDT:USDT", "15m", json.dumps({**V19, **update}))
+    assert database.read_bytes() == before
+    assert not list(database.parent.glob("chart-backtest-*"))

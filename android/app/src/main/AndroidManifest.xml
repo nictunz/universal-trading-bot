@@ -37,6 +37,7 @@
             android:screenOrientation="unspecified" />
 
         <activity android:name=".LocalMarketChartActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false" android:screenOrientation="unspecified" />
 
         <activity
