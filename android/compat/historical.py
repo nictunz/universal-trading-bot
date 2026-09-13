@@ -39,10 +39,12 @@ class HistoricalDataManager:
     exchange-owned archives if Binance or Bybit direct access fails.
     """
 
-    def __init__(self, database_url: str = "sqlite:///data/universal_bot.db", *, coinapi_api_key: str = "", fallback_exchanges: list[str] | None = None) -> None:
+    def __init__(self, database_url: str = "sqlite:///data/universal_bot.db", *, coinapi_api_key: str = "", fallback_exchanges: list[str] | None = None, read_only: bool = False) -> None:
         path = database_url.removeprefix("sqlite:///")
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._coinapi = _DisabledCoinApi()
         self._bitget_history = BitgetHistoricalMarketData()
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
@@ -52,9 +54,12 @@ class HistoricalDataManager:
             "User-Agent": "UniversalTradingBacktester-Android/1.0",
             "Accept": "application/json,text/plain,*/*",
         })
-        self._init_db()
+        if not read_only:
+            self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            return sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
         con = sqlite3.connect(self.path)
         con.execute("PRAGMA journal_mode=WAL")
         return con
@@ -94,6 +99,8 @@ class HistoricalDataManager:
         return row[0], row[1]
 
     def _save(self, request: DataRequest, df: pd.DataFrame) -> int:
+        if self.read_only:
+            raise ValueError("읽기 전용 DB에는 저장할 수 없습니다.")
         if df.empty:
             return 0
         rows = []
@@ -308,6 +315,8 @@ class HistoricalDataManager:
         return df
 
     def fetch_and_store(self, request: DataRequest) -> int:
+        if self.read_only:
+            raise ValueError("읽기 전용 DB는 다운로드/저장을 지원하지 않습니다.")
         if request.asset_class != "crypto":
             raise ValueError("Android local backtester currently supports crypto only")
         return self._save(request, self._fetch_crypto(request))
@@ -352,6 +361,8 @@ class HistoricalDataManager:
         return inserted
 
     def sync(self, request: DataRequest) -> tuple[int, pd.DataFrame]:
+        if self.read_only:
+            return 0, self.read(request)
         requested_start = self._ms(request.start)
         requested_end = self._ms(request.end) or int(datetime.now(timezone.utc).timestamp() * 1000)
         min_ts, max_ts = self._bounds(request)

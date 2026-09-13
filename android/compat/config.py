@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from datetime import datetime, timezone
 
 
@@ -135,6 +136,57 @@ class Settings:
         values = {key: getattr(self, key) for key in _DEFAULTS}
         values.update(dict(update or {}))
         return Settings(**values)
+
+    @classmethod
+    def model_validate(cls, values):
+        """Validate known scalar settings without shipping pydantic on Android.
+
+        Strategy-specific ranges are checked by chart_workspace afterwards.
+        Keep model_copy's existing non-validating behavior for engine callers.
+        """
+        if not isinstance(values, dict):
+            raise ValueError("설정은 JSON 객체여야 합니다.")
+        parsed = {}
+        for key, value in values.items():
+            if key not in _DEFAULTS:
+                continue
+            default = _DEFAULTS[key]
+            try:
+                if isinstance(default, bool):
+                    if isinstance(value, bool):
+                        pass
+                    elif isinstance(value, (str, int)) and str(value).lower() in ("true", "1", "yes", "on", "false", "0", "no", "off"):
+                        value = str(value).lower() in ("true", "1", "yes", "on")
+                    else:
+                        raise ValueError("boolean required")
+                elif isinstance(default, (int, float)):
+                    if isinstance(value, bool):
+                        raise ValueError("number required")
+                    number = float(value)
+                    if not math.isfinite(number):
+                        raise ValueError("finite number required")
+                    if isinstance(default, int):
+                        if not number.is_integer():
+                            raise ValueError("integer required")
+                        value = int(number)
+                    else:
+                        value = number
+                elif isinstance(default, datetime):
+                    if not isinstance(value, datetime):
+                        value = _parse_env(value, default)
+                elif isinstance(default, str) and not isinstance(value, str):
+                    raise ValueError("string required")
+            except (ValueError, TypeError, AttributeError, OverflowError) as exc:
+                raise ValueError(f"설정값 형식 오류: {key}") from exc
+            parsed[key] = value
+        return cls(**parsed)
+
+    def model_dump(self, *, mode="python"):
+        values = {key: getattr(self, key) for key in _DEFAULTS}
+        if mode == "json":
+            return {key: value.isoformat() if isinstance(value, datetime) else value
+                    for key, value in values.items()}
+        return values
 
     @property
     def symbol_list(self):
