@@ -1727,7 +1727,7 @@ enableResultActions(false);
         java.util.ArrayList<File> files = new java.util.ArrayList<>();
         collectDatabaseFiles(root, files);
         if (files.isEmpty()) {
-            toast("차트에 표시할 DB가 없습니다. 먼저 DB만 다운로드를 실행하세요.");
+            startActivity(new Intent(this, LocalMarketChartActivity.class));
             return;
         }
         files.sort((a, b) -> Long.compare(b.lastModified(), a.lastModified()));
@@ -1755,6 +1755,8 @@ enableResultActions(false);
                 .apply();
         Intent chartIntent = new Intent(this, LocalMarketChartActivity.class);
         chartIntent.putExtra("db_path", databasePath);
+        if (selectedStrategyParameters != null)
+            chartIntent.putExtra("strategy_parameters", selectedStrategyParameters.toString());
         chartIntent.putExtra(
                 "result_path",
                 databasePath.equals(lastDbPath) ? lastResultPath : ""

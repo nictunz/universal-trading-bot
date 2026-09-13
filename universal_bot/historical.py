@@ -27,17 +27,23 @@ class HistoricalDataManager:
         *,
         coinapi_api_key: str = "",
         fallback_exchanges: list[str] | None = None,
+        read_only: bool = False,
     ) -> None:
         path = database_url.removeprefix("sqlite:///")
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._coinapi = CoinAPIMarketData(coinapi_api_key)
         self._bitget_history = BitgetHistoricalMarketData()
         self._fallback_exchanges = {x.lower() for x in (fallback_exchanges or [])}
         self.last_fetch_status: dict[str, dict[str, str]] = {}
-        self._init_db()
+        if not read_only:
+            self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            return sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
         con = sqlite3.connect(self.path)
         con.execute("PRAGMA journal_mode=WAL")
         return con

@@ -121,6 +121,7 @@ def run_backtest(
     control_check: Callable[[], None] | None = None,
     include_details: bool = True,
     feature_cache_key: object | None = None,
+    trace_callback: Callable[[dict], None] | None = None,
 ) -> BacktestResult:
     """Fast deterministic v15 simulation on the native Android-safe engine."""
     if len(df) == 0:
@@ -277,6 +278,22 @@ def run_backtest(
         elif base_entry and settings.allow_short and regime_allow_short and short_candle_ok and short_ok:
             signal = "SHORT"
 
+        trace = None
+        if trace_callback is not None:
+            trace = {
+                "timestamp": int(market.timestamp_ns[i] // 1_000_000),
+                "volume_ratio": float(vr), "volume_ready": bool(np.isfinite(vr)),
+                "volume_ok": bool(np.isfinite(vr) and vr >= settings.volume_break_multiplier),
+                "one_bar": float(one_bar_vol),
+                "one_bar_ok": bool(settings.min_one_bar_vol <= one_bar_vol <= settings.max_one_bar_vol),
+                "range": float(nr), "block_range": float(br), "nbar_ok": bool(nbar_ok),
+                "adx": float(av), "adx_ok": bool(adx_ok), "rsi": float(rv),
+                "rsi_long_ok": bool(long_ok), "rsi_short_ok": bool(short_ok),
+                "time_ok": bool(time_ok), "cooldown_ok": bool(cooldown_ok),
+                "long_candle_ok": bool(long_candle_ok), "short_candle_ok": bool(short_candle_ok),
+                "signal": signal, "tp_percent": float(final_tp), "sl_percent": float(final_sl),
+                "position_before": position_side or "FLAT", "dual_touch": False,
+            }
         # Realistic event-driven execution inspired by Zipline/Freqtrade:
         # a signal confirmed on the previous candle is filled at this candle's
         # open. The current high/low is then allowed to trigger liquidation,
@@ -350,6 +367,9 @@ def run_backtest(
                 or (position_side == "SHORT" and h >= position_sl)
             )
             if hit_liquidation or hit_tp or hit_sl:
+                if trace is not None:
+                    trace["dual_touch"] = bool(hit_tp and hit_sl)
+                    trace["exit"] = "LIQUIDATION" if hit_liquidation else "SL" if hit_sl else "TP"
                 # Intrabar order is deliberately conservative: liquidation first,
                 # then SL, then TP when more than one level is touched in one candle.
                 if hit_liquidation:
@@ -414,6 +434,9 @@ def run_backtest(
                 last_exit_bar = bar_number
 
         if account_liquidated:
+            if trace is not None:
+                trace.update(position="FLAT", liquidated=True, entry=last_entry_bar == bar_number, can_enter=False)
+                trace_callback(trace)
             net_equity = -realized_costs
             if streaming_peak:
                 streaming_max_dd = max(
@@ -473,6 +496,13 @@ def run_backtest(
                 last_entry_bar = bar_number
 
         open_pnl = 0.0
+        if trace is not None:
+            trace.update(
+                position=position_side or "FLAT", tp=float(position_tp), sl=float(position_sl),
+                entry=last_entry_bar == bar_number, pending=pending_signal,
+                can_enter=bool(can_pyramid and same_direction),
+            )
+            trace_callback(trace)
         if position_side is not None:
             qty = abs(position_size)
             avg_entry = entry_notional / qty if qty and entry_notional else initial_entry

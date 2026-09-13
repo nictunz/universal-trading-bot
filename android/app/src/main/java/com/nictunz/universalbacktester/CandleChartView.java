@@ -8,13 +8,15 @@ import java.util.*;
 
 /** Offline OHLC chart. Only the visible window is kept in memory. */
 public class CandleChartView extends View {
-    public interface Navigator { void move(int bars); void zoom(float factor); }
+    public interface Navigator { void move(int bars); void zoom(float factor); void inspect(long timestamp); }
     private final Paint p = new Paint(3);
     private final Navigator nav;
     private final ScaleGestureDetector scale;
     private final GestureDetector gestures;
     private List<double[]> candles = Collections.emptyList();
     private JSONArray trades = new JSONArray();
+    private JSONArray audit = new JSONArray();
+    public void setAudit(JSONArray rows){audit=rows==null?new JSONArray():rows;invalidate();}
     private int selected = -1;
     private double min, max;
     private float left, right, top, bottom, step;
@@ -37,7 +39,7 @@ public class CandleChartView extends View {
         });
     }
     public void setData(List<double[]> data,JSONArray log){candles=data; trades=log; selected=-1; invalidate();}
-    private void select(float x){selected=Math.max(0,Math.min(candles.size()-1,(int)((x-left)/Math.max(1,step)))); invalidate();}
+    private void select(float x){if(candles.isEmpty())return;selected=Math.max(0,Math.min(candles.size()-1,(int)((x-left)/Math.max(1,step))));nav.inspect((long)candles.get(selected)[0]);invalidate();}
     @Override public boolean performClick(){super.performClick();return true;}
     @Override public boolean onTouchEvent(MotionEvent e){
         getParent().requestDisallowInterceptTouchEvent(true);
@@ -87,6 +89,21 @@ public class CandleChartView extends View {
             level(c,t.optDouble("sl_price",Double.NaN),aa,bb,DOWN,"SL");
             if(a>=0){boolean isLong=t.optString("side").equals("LONG");float x=left+step*(a+.5f),yy=y(t.optDouble("avg_entry_price",t.optDouble("entry_price")));p.setColor(isLong?UP:DOWN);c.drawCircle(x,yy,d(4),p);text(c,isLong?"▲ LONG":"▼ SHORT",x,yy+(isLong?d(18):-d(10)),isLong?UP:DOWN,10);}
             if(b>=0){float x=left+step*(b+.5f),yy=y(t.optDouble("exit_price"));text(c,"◆ "+t.optString("reason")+" "+String.format(Locale.US,"%+.2f",t.optDouble("pnl")),x,yy-d(8),Color.rgb(191,110,255),10);}
+        }
+        for(int j=0;j<audit.length();j++){
+            JSONObject r=audit.optJSONObject(j);if(r==null)continue;
+            int at=index(r.optLong("timestamp"));if(at<0)continue;
+            if(r.optBoolean("dual_touch"))text(c,"⚠ DUAL · SL 우선",left+step*(at+.5f),top+d(12),Color.rgb(255,183,77),10);
+            boolean recorded=false;
+            for(int k=0;k<trades.length();k++){JSONObject t=trades.optJSONObject(k);if(t!=null&&millis(t.optString("entry_time"))==r.optLong("timestamp")){recorded=true;break;}}
+            if(r.optBoolean("entry")&&!recorded)text(c,"◆ "+r.optString("position")+" 진입",left+step*(at+.5f),y(candles.get(at)[4])-d(10),Color.CYAN,10);
+            // The trace also contains still-open positions absent from closed trades.
+            double tp=r.optDouble("tp",Double.NaN),sl=r.optDouble("sl",Double.NaN);
+            for(double price:new double[]{tp,sl}){
+                if(!Double.isFinite(price)||price<min||price>max)continue;
+                p.setColor(price==tp?UP:DOWN);p.setStrokeWidth(d(1));
+                c.drawLine(left+step*at,y(price),left+step*(at+1),y(price),p);
+            }
         }
         c.restore();
         int k=selected>=0?selected:candles.size()-1;double[] b=candles.get(k);

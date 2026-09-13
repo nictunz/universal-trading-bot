@@ -87,6 +87,7 @@ def run_cached_symbol_backtest(
     database_path: str | Path | None = None,
     include_details: bool = True,
     control_check: Callable[[], None] | None = None,
+    trace_callback: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     """Run a backtest without any network calls.
 
@@ -123,17 +124,20 @@ def run_cached_symbol_backtest(
 
     req_start = start_dt or settings.start_date
     stat = path.stat()
+    wal = Path(str(path) + "-wal")
+    wal_stat = wal.stat() if wal.exists() else None
     prepared_key = (
         str(path.resolve()), stat.st_size, stat.st_mtime_ns, symbol, timeframe,
         req_start.isoformat() if req_start else None,
         end_dt.isoformat() if end_dt else None,
         exchange.lower(),
+        (wal_stat.st_size, wal_stat.st_mtime_ns) if wal_stat else None,
     )
     global _PREPARED_CACHE_KEY, _PREPARED_CACHE_VALUE
     if _PREPARED_CACHE_KEY == prepared_key and _PREPARED_CACHE_VALUE is not None:
         df, volume_cache, source_bars, source_status = _PREPARED_CACHE_VALUE
     else:
-        manager = HistoricalDataManager(f"sqlite:///{path}", fallback_exchanges=[])
+        manager = HistoricalDataManager(f"sqlite:///{path}", fallback_exchanges=[], read_only=True)
         base_request = DataRequest(symbol, timeframe, req_start, end_dt, "crypto", exchange.lower())
         df = manager.read(base_request)
         if df.empty:
@@ -170,6 +174,7 @@ def run_cached_symbol_backtest(
         control_check=control_check,
         include_details=include_details,
         feature_cache_key=prepared_key,
+        trace_callback=trace_callback,
     )
     payload = {
         "strategy": "Volume Strategy FINAL Universal v15",
