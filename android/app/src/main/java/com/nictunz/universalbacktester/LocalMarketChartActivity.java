@@ -32,6 +32,9 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private CandleChartView chart;
     private FrameLayout chartFrame;
     private StrategyDiagnosticPanel strategyPanel;
+    private TextView downloadStatus;
+    private final Handler downloadHandler=new Handler(Looper.getMainLooper());
+    private final Runnable downloadTick=new Runnable(){public void run(){checkChartDownload();if(!disposed)downloadHandler.postDelayed(this,2000);}};
     private TextView status;
     private Spinner selector;
     private Button databaseSelector;
@@ -113,6 +116,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         HorizontalScrollView toolScroll=new HorizontalScrollView(this);toolScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tools=new LinearLayout(this);
         toolButton(tools,"차트 설정",this::chartSettings);
+        toolButton(tools,"＋ 시장",()->{if(!blocked())ChartMarketPicker.show(this,market==null?null:market[2],market==null?null:market[3],this::openChartMarket);});
+        toolButton(tools,"다운로드",this::downloadControls);
         toolButton(tools,"진단표",()->{strategyPanel.setVisibility(strategyPanel.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE);strategyPanel.resize();});
         toolButton(tools,"데이터 검사",this::showDataQuality);
         toolButton(tools,"전략",this::strategyDialog);
@@ -122,6 +127,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         toolButton(tools,"그리기·저장",this::chartTools);
         toolButton(tools,"LIVE 서버",()->{pauseReplay();startActivity(new Intent(this,ServerDashboardActivity.class));});
         toolScroll.addView(tools);root.addView(toolScroll);
+        downloadStatus=new TextView(this);downloadStatus.setTextColor(Color.CYAN);downloadStatus.setTextSize(12);downloadStatus.setMaxLines(3);downloadStatus.setPadding(dp(10),dp(4),dp(10),dp(4));downloadStatus.setVisibility(View.GONE);downloadStatus.setOnClickListener(v->downloadControls());root.addView(downloadStatus);
         status=new TextView(this);status.setTextColor(Color.LTGRAY);status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(10),0,dp(10),0);status.setText("저장된 코인 DB 검색 중…");root.addView(status);
         warning=new TextView(this);warning.setTextColor(Color.rgb(255,190,75));warning.setTextSize(12);warning.setMaxLines(2);warning.setPadding(dp(10),dp(4),dp(10),dp(4));root.addView(warning);
         warning.setOnClickListener(v->showDataQuality());
@@ -194,7 +200,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         ArrayList<String> labels=new ArrayList<>();for(String[] row:markets)labels.add(row[2]+" · "+row[1]+" · "+row[3]);
         selector.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels));
         if(markets.isEmpty()){status.setText("선택한 DB에 암호화폐 캔들 데이터가 없습니다.");return;}
-        status.setText("DB: "+database.getName()+" · 차트 시장을 선택하세요.");selector.setSelection(0);
+        int preferred=0;for(int i=0;i<markets.size();i++)if(markets.get(i)[1].equals("bitget")){preferred=i;break;}
+        status.setText("DB: "+database.getName()+" · 차트 시장을 선택하세요.");selector.setSelection(preferred);
     }
     private void showDatabasePicker(){
         if(blocked())return;
@@ -817,7 +824,44 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         for(String[] item:names)if(item[0].equals(key))return item[1];return key;
     }
 
-    @Override protected void onPause(){saveWorkspace();pauseReplay();super.onPause();}
+    private void openChartMarket(String symbol,String timeframe,String start,String end){
+        android.content.SharedPreferences prefs=getSharedPreferences("universal_bot",MODE_PRIVATE);
+        if(busy||prefs.getBoolean("backtest_requested",false)||"STOPPING".equals(prefs.getString("backtest_status",""))){new AlertDialog.Builder(this).setMessage("진행 중인 작업을 완료하거나 중지한 뒤 시장을 선택하세요.").setPositiveButton("확인",null).show();return;}
+        String id=UUID.randomUUID().toString();prefs.edit().putString("chart_download_wait",id).apply();
+        Intent intent=new Intent(this,BacktestForegroundService.class);intent.setAction(BacktestForegroundService.ACTION_DOWNLOAD_DB);intent.putExtra("symbol",symbol);intent.putExtra("timeframe",timeframe);intent.putExtra("start",start);intent.putExtra("end",end);intent.putExtra("chart_request_id",id);
+        startService(intent);downloadStatus.setVisibility(View.VISIBLE);downloadStatus.setText(symbol+" · "+timeframe+" · "+start+" ~ "+end+"\n캐시 확인 / 자동 다운로드 시작 · 눌러 제어");
+    }
+    private void checkChartDownload(){
+        if(downloadStatus==null||disposed)return;android.content.SharedPreferences prefs=getSharedPreferences("universal_bot",MODE_PRIVATE);String id=prefs.getString("chart_download_wait","");if(id.isEmpty())return;
+        try{JSONObject request=new JSONObject(prefs.getString("backtest_request","{}"));if(!id.equals(request.optString("chart_request_id")))return;
+            String state=prefs.getString("backtest_status","");downloadStatus.setVisibility(View.VISIBLE);
+            String label=request.optString("symbol")+" · "+request.optString("timeframe")+" · "+state;
+            if(state.equals("COMPLETE")){
+                if(BacktestForegroundService.isWorkerRunning())return;
+                String path=prefs.getString("backtest_db","");if(!new File(path).isFile()){downloadStatus.setText("다운로드 결과 DB를 찾을 수 없습니다.");return;}
+                prefs.edit().remove("chart_download_wait").apply();selectedDatabasePath=path;downloadStatus.setText("DB 준비 완료 · 차트 자동 열기");scanDatabases();return;
+            }
+            if(state.equals("ERROR"))label+="\n"+prefs.getString("backtest_error","")+" · 눌러 재시도";
+            else if(state.equals("STOPPED"))label+="\n저장된 구간 유지 · 눌러 이어받기";
+            else{label+="\nWi-Fi / 모바일 허용 · 눌러 일시중지·재개·중지";
+                File progress=new File(getFilesDir(),"UniversalTradingBotCache/backtest-progress.log");
+                if(progress.isFile())try(RandomAccessFile log=new RandomAccessFile(progress,"r")){int size=(int)Math.min(2048,log.length());byte[] bytes=new byte[size];log.seek(log.length()-size);log.readFully(bytes);String[] lines=new String(bytes,java.nio.charset.StandardCharsets.UTF_8).trim().split("\n");if(lines.length>0)label+="\n"+lines[lines.length-1];}catch(IOException ignored){}
+            }
+            downloadStatus.setText(label);
+        }catch(Exception e){downloadStatus.setText("다운로드 상태 확인 실패: "+e.getMessage());}
+    }
+    private void downloadControls(){
+        android.content.SharedPreferences prefs=getSharedPreferences("universal_bot",MODE_PRIVATE);
+        try{JSONObject request=new JSONObject(prefs.getString("backtest_request","{}"));String id=prefs.getString("chart_download_wait","");if(id.isEmpty()||!id.equals(request.optString("chart_request_id"))){ChartMarketPicker.show(this,market==null?null:market[2],market==null?null:market[3],this::openChartMarket);return;}
+            String state=prefs.getString("backtest_status","");boolean retry=state.equals("ERROR")||state.equals("STOPPED");
+            new AlertDialog.Builder(this).setTitle("차트 DB 다운로드").setMessage(downloadStatus.getText()).setPositiveButton(retry?"부족 구간 재시도":state.equals("PAUSED")?"재개":"일시중지",(d,i)->{
+                if(retry)openChartMarket(request.optString("symbol"),request.optString("timeframe"),request.optString("start"),request.optString("end"));
+                else{Intent intent=new Intent(this,BacktestForegroundService.class);intent.setAction(state.equals("PAUSED")?BacktestForegroundService.ACTION_RESUME:BacktestForegroundService.ACTION_PAUSE);startService(intent);}
+            }).setNeutralButton("중지",(d,i)->{if(!retry){Intent intent=new Intent(this,BacktestForegroundService.class);intent.setAction(BacktestForegroundService.ACTION_STOP);startService(intent);}}).setNegativeButton("닫기",null).show();
+        }catch(Exception e){error(e);}
+    }
+    @Override protected void onResume(){super.onResume();downloadHandler.removeCallbacks(downloadTick);downloadHandler.post(downloadTick);}
+    @Override protected void onPause(){downloadHandler.removeCallbacks(downloadTick);saveWorkspace();pauseReplay();super.onPause();}
     @Override public void onBackPressed(){if(fullscreen){setFullscreen(false);return;}super.onBackPressed();}
     @Override protected void onDestroy(){disposed=true;pauseReplay();if(cancelFile!=null)try{cancelFile.createNewFile();}catch(IOException ignored){}generation.incrementAndGet();worker.shutdownNow();super.onDestroy();}
 }

@@ -78,6 +78,7 @@ public class BacktestForegroundService extends Service {
             return START_NOT_STICKY;
         }
 
+        if(working && (ACTION_START.equals(action)||ACTION_DOWNLOAD_DB.equals(action))) return START_STICKY;
         JSONObject request;
         try {
             if ((ACTION_START.equals(action) || ACTION_DOWNLOAD_DB.equals(action)) && intent != null) {
@@ -203,6 +204,7 @@ public class BacktestForegroundService extends Service {
     private JSONObject requestFromIntent(Intent intent) throws Exception {
         JSONObject request = new JSONObject();
         request.put("symbol", intent.getStringExtra("symbol"));
+        request.put("chart_request_id", intent.getStringExtra("chart_request_id"));
         request.put("timeframe", intent.getStringExtra("timeframe"));
         request.put("start", intent.getStringExtra("start"));
         request.put("end", intent.getStringExtra("end"));

@@ -2171,6 +2171,7 @@ def download_cache_only(
         strategy_overrides={},
         control_check=_wait_for_optimization_control,
         run_backtest=False,
+        reuse_existing=True,
     )
     return json.dumps(
         {"db": str(db), "result": str(result), "summary": summary, "logs": logs},

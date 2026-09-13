@@ -245,6 +245,7 @@ def build_cache_and_backtest(
     strategy_overrides: dict | None = None,
     control_check: Callable[[], None] | None = None,
     run_backtest: bool = True,
+    reuse_existing: bool = False,
 ) -> tuple[Path, Path, dict]:
     os.environ["CRYPTO_VOLUME_PROVIDER"] = "none"
     os.environ["COINAPI_API_KEY"] = ""
@@ -262,6 +263,9 @@ def build_cache_and_backtest(
 
     settings = Settings().model_copy(update=dict(strategy_overrides or {}))
     manager = OfficialArchiveHistoricalDataManager(settings.database_url, coinapi_api_key="", fallback_exchanges=[])
+    if reuse_existing:
+        from universal_bot.chart_cache_reuse import seed_cache
+        seed_cache(output_dir, db, symbol, timeframe, int(start.timestamp()*1000), int(end.timestamp()*1000), log, control_check)
     if strategy_overrides:
         log(f"서버 전략 설정 동기화 완료: {len(strategy_overrides)}개 조정값")
 
@@ -309,13 +313,23 @@ def build_cache_and_backtest(
             key = _chunk_key(exchange, chunk_start, chunk_end)
             log(f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} 확인/다운로드")
             try:
-                if key in completed_chunks:
+                cached = manager.read(req)
+                interval_ms = manager._timeframe_ms(timeframe)
+                expected = int((chunk_end.timestamp()*1000 - chunk_start.timestamp()*1000)//interval_ms)+1 if interval_ms else 0
+                def covers(frame):
+                    return (expected > 0 and len(frame) == expected and not frame.index.has_duplicates
+                           and int(frame.index[0].timestamp()*1000) == int(chunk_start.timestamp()*1000)
+                           and int(frame.index[-1].timestamp()*1000) == int(chunk_start.timestamp()*1000)+(expected-1)*interval_ms
+                           and ((frame.index[1:]-frame.index[:-1]).total_seconds() == interval_ms/1000).all())
+                covered = covers(cached)
+                if covered:
                     df = manager.read(req)
                     if df.empty:
                         raise ValueError("체크포인트 구간의 캐시가 비어 있음")
                     _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
                     inserted = 0
                     mode = "CHECKPOINT"
+                    completed_chunks.add(key)
                     log(
                         f"{exchange:7s} {chunk_start:%Y-%m-%d}..{chunk_end:%Y-%m-%d} "
                         f"체크포인트 확인 완료 - 다운로드 건너뜀"
@@ -326,6 +340,8 @@ def build_cache_and_backtest(
                         raise RuntimeError(f"{exchange} 데이터 없음: {chunk_start.date()}..{chunk_end.date()}")
                     _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
                     mode = manager.last_fetch_status.get(exchange, {}).get("mode", "CACHE")
+                    if not covers(df):
+                        raise RuntimeError(f"{exchange} 요청 기간 데이터 부족: {len(df)}/{expected}봉 · 상장일/지원 주기/누락 구간을 확인하세요.")
                     completed_chunks.add(key)
                     checkpoint["completed_chunks"] = sorted(completed_chunks)
                     checkpoint["last_completed_chunk"] = key
