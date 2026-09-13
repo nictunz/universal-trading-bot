@@ -1,0 +1,77 @@
+name: Recover Android 1.1.290 release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-android-100290.yml'
+permissions:
+  contents: write
+concurrency:
+  group: recover-android-100290
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download verified existing APK
+        shell: bash
+        env:
+          UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          KEYFILE="$RUNNER_TEMP/android-recovery-ssh"
+          trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s\n' "$UPDATE_SSH_PRIVATE_KEY" > "$KEYFILE"
+          chmod 600 "$KEYFILE"
+          mkdir -p "$HOME/.ssh"
+          timeout 15 ssh-keyscan -T 10 -H 34.132.172.40 >> "$HOME/.ssh/known_hosts"
+          REMOTE=kpj3669@34.132.172.40:/home/kpj3669/.cache/universal-trading-bot/android-updates
+          scp -o ConnectTimeout=15 -i "$KEYFILE" "$REMOTE/android-update.json" android-update.json
+          scp -o ConnectTimeout=15 -i "$KEYFILE" "$REMOTE/UniversalTradingBacktester-Android-100290.apk" UniversalTradingBacktester-Android.apk
+      - name: Verify and publish release through list API
+        uses: actions/github-script@v7
+        with:
+          retries: 3
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const manifest = JSON.parse(fs.readFileSync('android-update.json','utf8'));
+            const apk = fs.readFileSync('UniversalTradingBacktester-Android.apk');
+            const sha = crypto.createHash('sha256').update(apk).digest('hex');
+            const source = '635713600fce65429a7a57ba5b53902e896fbb36';
+            if (manifest.version_code !== 100290 || manifest.version_name !== '1.1.290' ||
+                manifest.commit !== source || manifest.verified !== true || manifest.sha256 !== sha ||
+                sha !== '23179e0ec9fc32e7d96643dbcd80cac0259afb20525ab18e355e2cc64990ee2b')
+              throw new Error('APK/manifest does not match the verified 1.1.290 build');
+            const repo = context.repo;
+            const tag = 'android-v100290';
+            // Avoid the release-by-tag request that repeatedly returned HTTP 500.
+            const releases = await github.paginate(github.rest.repos.listReleases, {...repo, per_page:100});
+            let release = releases.find(r => r.tag_name === tag);
+            if (!release) {
+              release = (await github.rest.repos.createRelease({
+                ...repo, tag_name:tag, target_commitish:source, name:'Android 1.1.290',
+                body:'Verified Android 1.1.290. 191 Python tests passed; APK build and signing passed. Recovered from the verified private update channel without rebuilding. SHA-256: '+sha,
+                draft:true, prerelease:false
+              })).data;
+            }
+            for (const name of ['UniversalTradingBacktester-Android.apk','android-update.json']) {
+              const data = fs.readFileSync(name);
+              const assets = (await github.rest.repos.listReleaseAssets({...repo,release_id:release.id})).data;
+              const old = assets.find(a=>a.name===name);
+              if (old) await github.rest.repos.deleteReleaseAsset({...repo,asset_id:old.id});
+              const asset = (await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id:release.id, name, data,
+                headers:{'content-type':name.endsWith('.apk')?'application/vnd.android.package-archive':'application/json','content-length':data.length}
+              })).data;
+              if (asset.size !== data.length) throw new Error('Asset size mismatch: '+name);
+              const digest='sha256:'+crypto.createHash('sha256').update(data).digest('hex');
+              if (asset.digest && asset.digest !== digest) throw new Error('Asset digest mismatch: '+name);
+            }
+            await github.rest.repos.updateRelease({...repo,release_id:release.id,draft:false,make_latest:'true'});
+            const assets=(await github.rest.repos.listReleaseAssets({...repo,release_id:release.id})).data;
+            if (!assets.some(a=>a.name==='UniversalTradingBacktester-Android.apk' && a.size===apk.length))
+              throw new Error('Published APK missing');
+            core.info('VERIFIED_RELEASE '+release.html_url+' SHA256 '+sha);
