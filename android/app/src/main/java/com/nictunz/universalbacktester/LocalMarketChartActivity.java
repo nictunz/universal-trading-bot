@@ -30,6 +30,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private final ArrayList<String[]> allMarkets=new ArrayList<>();
     private final ArrayList<File> databaseFiles=new ArrayList<>();
     private CandleChartView chart;
+    private FrameLayout chartFrame;
+    private StrategyDiagnosticPanel strategyPanel;
     private TextView status;
     private Spinner selector;
     private Button databaseSelector;
@@ -110,6 +112,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         HorizontalScrollView toolScroll=new HorizontalScrollView(this);toolScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tools=new LinearLayout(this);
         toolButton(tools,"차트 설정",this::chartSettings);
+        toolButton(tools,"진단표",()->{strategyPanel.setVisibility(strategyPanel.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE);strategyPanel.resize();});
         toolButton(tools,"데이터 검사",this::showDataQuality);
         toolButton(tools,"전략",this::strategyDialog);
         toolButton(tools,"성과",this::showPerformance);
@@ -122,7 +125,9 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         warning=new TextView(this);warning.setTextColor(Color.rgb(255,190,75));warning.setTextSize(12);warning.setMaxLines(2);warning.setPadding(dp(10),dp(4),dp(10),dp(4));root.addView(warning);
         warning.setOnClickListener(v->showDataQuality());
         diagnostic=new TextView(this);diagnostic.setTextColor(Color.LTGRAY);diagnostic.setTextSize(12);diagnostic.setMaxLines(2);diagnostic.setPadding(dp(10),dp(4),dp(10),dp(4));diagnostic.setText("전략 적용 후 봉을 터치하면 실제 엔진 진단이 표시됩니다.");diagnostic.setOnClickListener(v->showDiagnostic());root.addView(diagnostic);
-        chart=new CandleChartView(this,this);root.addView(chart,new LinearLayout.LayoutParams(-1,0,1));
+        chartFrame=new FrameLayout(this);chart=new CandleChartView(this,this);chartFrame.addView(chart,new FrameLayout.LayoutParams(-1,-1));
+        strategyPanel=new StrategyDiagnosticPanel(this);chartFrame.addView(strategyPanel);chartFrame.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{if(r-l!=or-ol||b-t!=ob-ot)strategyPanel.resize();});
+        root.addView(chartFrame,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout actions=new LinearLayout(this);
         addButton(actions,"날짜",()->{Calendar now=Calendar.getInstance();new DatePickerDialog(this,(v,y,m,d)->jumpDate(y,m,d),now.get(Calendar.YEAR),now.get(Calendar.MONTH),now.get(Calendar.DAY_OF_MONTH)).show();});
         addButton(actions,"‹ 거래",()->navigateTrade(-1));
@@ -207,6 +212,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(market==null||disposed||busy)return;
         loading=true;
         dataQuality=new JSONObject();
+        strategyPanel.setRows(Collections.singletonList(new String[]{"상태","차트 불러오는 중…",String.valueOf(StrategyDiagnosticPanel.NEUTRAL)}));
         int request=generation.incrementAndGet();String[] m=market.clone();
         int start=offset,count=Math.min(width,Math.max(0,availableBars()-offset));String file=resultPath;boolean replay=replayLimit>0;
         worker.execute(()->{
@@ -311,6 +317,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     }
     @Override public void inspect(long timestamp){
         inspectedTime=timestamp;JSONObject r=selectedAudit();
+        updateStrategyPanel(r);
         if(r.length()==0){diagnostic.setText(auditPage.has("warmup")?"워밍업 / 계산 범위 밖 · "+auditPage.optInt("warmup")+"봉 준비 필요\n청산으로 계산이 종료된 이후에는 진단이 없습니다.":"전략 적용 후 봉을 터치하세요. 진단 패널을 눌러 상세 보기");return;}
         diagnostic.setText("거래량 "+num(r,"volume_ratio")+"× · RSI "+num(r,"rsi")+" · ADX "+num(r,"adx")
             +"\n거래량 "+pass(r,"volume_ok")+" / 1봉 "+pass(r,"one_bar_ok")+" / N봉 "+pass(r,"nbar_ok")+" / 쿨다운 "+pass(r,"cooldown_ok")
@@ -318,6 +325,38 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(!r.optBoolean("volume_ready"))diagnostic.append("\n⚠ 4거래소 동일봉 거래량 부족");
         if(r.optBoolean("dual_touch"))diagnostic.append("\n⚠ TP/SL 동시 터치 · 청산 우선, 다음 SL");
     }
+    private void updateStrategyPanel(JSONObject r){
+        int good=StrategyDiagnosticPanel.PASS,bad=StrategyDiagnosticPanel.FAIL,plain=StrategyDiagnosticPanel.NEUTRAL,info=StrategyDiagnosticPanel.INFO,yellow=StrategyDiagnosticPanel.FIXED;
+        ArrayList<String[]> rows=new ArrayList<>();
+        java.text.SimpleDateFormat fmt=new java.text.SimpleDateFormat("MM-dd HH:mm",Locale.US);fmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+        panelRow(rows,"선택 봉 UTC",fmt.format(new Date(inspectedTime)),info);
+        boolean parity=market!=null&&market[1].equals("bitget")&&market[2].equals("BTC/USDT:USDT")&&market[3].equals("15m");
+        panelRow(rows,"v19 기준 차트",parity?"BITGET BTC · 15분":"다른 시장/주기",parity?good:yellow);
+        if(r.length()==0){panelRow(rows,"진단",auditPage.has("warmup")?"워밍업 / 계산 범위 밖":"전략 적용 필요",yellow);panelRow(rows,"조작","제목 터치: 접기\n길게 누르기: 위치",plain);strategyPanel.setRows(rows);return;}
+        JSONObject p=auditPage.optJSONObject("parameters");if(p==null)p=new JSONObject();JSONObject ex=r.optJSONObject("exchanges");if(ex==null)ex=new JSONObject();
+        panelRow(rows,"4거래소 완전성",pass(r,"volume_ready"),r.optBoolean("volume_ready")?good:bad);
+        panelRow(rows,"거래량","×"+panelNumber(r,"volume_ratio")+" / ×"+panelNumber(p,"volume_break_multiplier"),r.optBoolean("volume_ok")?good:bad);
+        panelRow(rows,"Bin / Bitget",panelNumber(ex,"binance")+" / "+panelNumber(ex,"bitget"),plain);
+        panelRow(rows,"OKX / Bybit",panelNumber(ex,"okx")+" / "+panelNumber(ex,"bybit"),plain);
+        panelRow(rows,"1봉 변동",panelNumber(r,"one_bar")+"%",r.optBoolean("one_bar_ok")?good:bad);
+        panelRow(rows,"N봉 차단",p.optBoolean("use_nbar_volatility_block")?panelNumber(r,"block_range")+"% / "+panelNumber(p,"max_nbar_volatility")+"%":"OFF",r.optBoolean("nbar_ok")?good:bad);
+        panelRow(rows,"RSI",p.optBoolean("use_rsi_filter")?panelNumber(r,"rsi"):"OFF",!p.optBoolean("use_rsi_filter")?plain:r.optBoolean("rsi_long_ok")||r.optBoolean("rsi_short_ok")?good:bad);
+        panelRow(rows,"ADX",p.optBoolean("use_adx_filter")?panelNumber(r,"adx"):"OFF",!p.optBoolean("use_adx_filter")?plain:r.optBoolean("adx_ok")?good:bad);
+        panelRow(rows,"봉 TP / SL",panelNumber(r,"tp_percent")+"% / "+panelNumber(r,"sl_percent")+"%",yellow);
+        panelRow(rows,"고정 TP / SL",panelNumber(r,"tp")+" / "+panelNumber(r,"sl"),yellow);
+        panelRow(rows,"쿨다운",pass(r,"cooldown_ok"),r.optBoolean("cooldown_ok")?good:bad);
+        panelRow(rows,"포지션",r.optString("position","—"),plain);
+        panelRow(rows,"진입 판정",decision(r),r.optBoolean("entry")?good:bad);
+        int closed=0,wins=0;double pnl=0;
+        for(int i=0;i<trades.length();i++){JSONObject trade=trades.optJSONObject(i);if(trade==null)continue;long exit=CandleChartView.millis(trade.optString("exit_time"));if(exit<0||exit>inspectedTime)continue;closed++;double profit=trade.optDouble("pnl",0);pnl+=profit;if(profit>0)wins++;}
+        panelRow(rows,"봉까지 거래/승률",closed+" / "+String.format(Locale.US,"%.1f%%",closed==0?0:100.0*wins/closed),plain);
+        panelRow(rows,"봉까지 실현손익",String.format(Locale.US,"%+.2f",pnl),pnl>=0?good:bad);
+        panelRow(rows,"편도 비용",panelNumber(p,"backtest_fee_percent")+"% fee + "+panelNumber(p,"backtest_slippage_percent")+"% slip",yellow);
+        if(r.optBoolean("dual_touch"))panelRow(rows,"동시 터치","청산 우선 · 이후 SL",bad);
+        strategyPanel.setRows(rows);
+    }
+    private void panelRow(List<String[]> rows,String key,String value,int color){rows.add(new String[]{key,value,String.valueOf(color)});}
+    private String panelNumber(JSONObject row,String key){double n=row.optDouble(key,Double.NaN);return Double.isFinite(n)?String.format(Locale.US,"%.4f",n).replaceAll("0+$", "").replaceAll("\\.$", ""):"—";}
     private String decision(JSONObject r){
         if(r.optBoolean("liquidated"))return "계좌 청산 · 계산 종료";
         if(r.optBoolean("entry"))return "실제 진입 체결";
@@ -720,7 +759,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         exportBitmap=Bitmap.createBitmap(chart.getWidth(),chart.getHeight()+dp(32),Bitmap.Config.ARGB_8888);
         Canvas canvas=new Canvas(exportBitmap);canvas.drawColor(Color.rgb(16,19,24));
         android.graphics.Paint caption=new android.graphics.Paint(3);caption.setColor(Color.CYAN);caption.setTextSize(dp(12));
-        canvas.drawText(modeText.getText().toString(),dp(8),dp(20),caption);canvas.translate(0,dp(32));chart.draw(canvas);
+        canvas.drawText(modeText.getText().toString(),dp(8),dp(20),caption);canvas.translate(0,dp(32));chartFrame.draw(canvas);
         startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("image/png").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE,"db-chart.png"),EXPORT_IMAGE);
     }
     private void editStrategy(){

@@ -291,15 +291,36 @@ jobs:
 
       - name: Publish GitHub Android update release
         if: env.UPDATE_RELEASE_READY == 'true'
-        continue-on-error: true
-        uses: softprops/action-gh-release@v2
+        uses: actions/github-script@v7
         with:
-          tag_name: android-v${{ env.ANDROID_VERSION_CODE }}
-          name: Android ${{ env.ANDROID_VERSION_NAME }}
-          body: Verified Android build for commit ${{ github.sha }}. Python tests, single-pass Android build, and signing passed. Private update-server publication is attempted independently.
-          target_commitish: ${{ github.sha }}
-          make_latest: true
-          overwrite_files: true
-          files: |
-            UniversalTradingBacktester-Android.apk
-            android-update.json
+          retries: 3
+          script: |
+            const fs=require('fs'), crypto=require('crypto');
+            const manifest=JSON.parse(fs.readFileSync('android-update.json','utf8'));
+            const repo=context.repo, tag='android-v'+manifest.version_code;
+            const apk=fs.readFileSync('UniversalTradingBacktester-Android.apk');
+            if(!manifest.verified || manifest.commit!==context.sha ||
+               crypto.createHash('sha256').update(apk).digest('hex')!==manifest.sha256)
+              throw new Error('Verified APK manifest mismatch');
+            const releases=await github.paginate(github.rest.repos.listReleases,{...repo,per_page:100});
+            let release=releases.find(r=>r.tag_name===tag);
+            if(!release) release=(await github.rest.repos.createRelease({
+              ...repo,tag_name:tag,target_commitish:context.sha,name:'Android '+manifest.version_name,
+              body:'Verified Android build and signing for '+context.sha+'. SHA-256: '+manifest.sha256,
+              draft:true,prerelease:false
+            })).data;
+            for(const name of ['UniversalTradingBacktester-Android.apk','android-update.json']){
+              const data=fs.readFileSync(name);
+              const assets=(await github.rest.repos.listReleaseAssets({...repo,release_id:release.id})).data;
+              const old=assets.find(a=>a.name===name);
+              if(old) await github.rest.repos.deleteReleaseAsset({...repo,asset_id:old.id});
+              const asset=(await github.rest.repos.uploadReleaseAsset({
+                ...repo,release_id:release.id,name,data,
+                headers:{'content-type':'application/octet-stream','content-length':data.length}
+              })).data;
+              if(asset.size!==data.length) throw new Error('Asset size mismatch');
+              if(asset.digest && asset.digest!=='sha256:'+crypto.createHash('sha256').update(data).digest('hex'))
+                throw new Error('Asset digest mismatch');
+            }
+            await github.rest.repos.updateRelease({...repo,release_id:release.id,draft:false,make_latest:'true'});
+            core.info('VERIFIED_RELEASE '+release.html_url);
