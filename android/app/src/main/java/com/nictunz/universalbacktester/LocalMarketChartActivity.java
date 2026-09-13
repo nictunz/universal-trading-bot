@@ -97,6 +97,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         LinearLayout bar=new LinearLayout(this);
         Button back=new Button(this);back.setText("‹");back.setOnClickListener(v->finish());bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(48)));
         databaseSelector=new Button(this);databaseSelector.setAllCaps(false);databaseSelector.setText("DB 선택");databaseSelector.setOnClickListener(v->manageDatabase());bar.addView(databaseSelector,new LinearLayout.LayoutParams(dp(132),dp(48)));
+        styleChartButton(back);styleChartButton(databaseSelector);
         selector=new Spinner(this);bar.addView(selector,new LinearLayout.LayoutParams(0,dp(48),1));
         selector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
             public void onNothingSelected(AdapterView<?> p){}
@@ -165,7 +166,12 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             });
         });
     }
-    private void addButton(LinearLayout row,String label,Runnable action){Button b=new Button(this);b.setText(label);b.setOnClickListener(v->action.run());row.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));}
+    private void addButton(LinearLayout row,String label,Runnable action){Button b=new Button(this);b.setText(label);styleChartButton(b);b.setOnClickListener(v->action.run());row.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));}
+    private void styleChartButton(Button b){
+        b.setAllCaps(false);b.setTextSize(12);b.setTextColor(Color.rgb(200,211,226));b.setMinWidth(0);b.setMinimumWidth(0);b.setPadding(dp(8),0,dp(8),0);
+        android.graphics.drawable.GradientDrawable background=new android.graphics.drawable.GradientDrawable();background.setColor(Color.rgb(22,29,40));background.setCornerRadius(dp(6));background.setStroke(dp(1),Color.rgb(39,49,64));
+        b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(Color.rgb(55,76,105)),background,null));
+    }
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density);}
     private static void collect(File dir,String suffix,List<File> out,int depth){if(depth<0)return;File[] fs=dir.listFiles();if(fs==null)return;for(File f:fs){if(f.isDirectory())collect(f,suffix,out,depth-1);else if(f.getName().toLowerCase(Locale.US).endsWith(suffix))out.add(f);}}
     private static boolean samePath(String left,String right){return left!=null&&!left.isEmpty()&&right!=null&&!right.isEmpty()&&new File(left).getAbsolutePath().equals(new File(right).getAbsolutePath());}
@@ -547,8 +553,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
 
 
     private void toolButton(LinearLayout row,String title,Runnable action){
-        Button b=new Button(this);b.setText(title);b.setAllCaps(false);b.setTextSize(12);b.setOnClickListener(v->action.run());
-        row.addView(b,new LinearLayout.LayoutParams(dp(100),dp(46)));
+        Button b=new Button(this);b.setText(title);styleChartButton(b);b.setOnClickListener(v->action.run());
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(48));lp.setMargins(dp(2),dp(2),dp(2),dp(2));row.addView(b,lp);
     }
     private void saveWorkspace(){
         if(market==null)return;

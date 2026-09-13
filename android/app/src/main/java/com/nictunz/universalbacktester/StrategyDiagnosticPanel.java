@@ -34,9 +34,14 @@ public class StrategyDiagnosticPanel extends LinearLayout {
     public void resize(){
         if(!(getParent() instanceof FrameLayout))return;
         FrameLayout parent=(FrameLayout)getParent();int w=parent.getWidth(),h=parent.getHeight();if(w<=0||h<=0)return;
-        FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(Math.min(dp(340),Math.max(dp(140),(int)(w*.72f))),collapsed?dp(38):Math.max(dp(38),Math.min(dp(555),h-dp(70))));
+        int panelWidth=Math.min(dp(300),Math.max(dp(170),(int)(w*.62f)));
+        body.measure(MeasureSpec.makeMeasureSpec(panelWidth,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(0,MeasureSpec.UNSPECIFIED));
+        int naturalHeight=body.getMeasuredHeight()+dp(40);
+        FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(panelWidth,collapsed?dp(38):Math.max(dp(38),Math.min(naturalHeight,h-dp(70))));
         lp.gravity=(corner%2==0?Gravity.RIGHT:Gravity.LEFT)|(corner<2?Gravity.TOP:Gravity.BOTTOM);lp.setMargins(dp(6),dp(44),dp(6),dp(22));
-        setLayoutParams(lp);scroll.setVisibility(collapsed?GONE:VISIBLE);header.setText(collapsed?"전략 진단 ▾":"전략 진단 · DB  ▴");
+        FrameLayout.LayoutParams old=(FrameLayout.LayoutParams)getLayoutParams();
+        if(old.width!=lp.width||old.height!=lp.height||old.gravity!=lp.gravity||old.topMargin!=lp.topMargin)setLayoutParams(lp);
+        scroll.setVisibility(collapsed?GONE:VISIBLE);header.setText(collapsed?"전략 진단 ▾":"전략 진단 · DB  ▴");
     }
     public void setRows(List<String[]> rows){
         while(cells.size()<rows.size()){
@@ -45,5 +50,6 @@ public class StrategyDiagnosticPanel extends LinearLayout {
             row.addView(label,new LinearLayout.LayoutParams(0,-2,.38f));row.addView(value,new LinearLayout.LayoutParams(0,-2,.62f));body.addView(row);cells.add(new TextView[]{label,value});
         }
         for(int i=0;i<cells.size();i++){TextView[] pair=cells.get(i);((LinearLayout)pair[0].getParent()).setVisibility(i<rows.size()?VISIBLE:GONE);if(i>=rows.size())continue;String[] r=rows.get(i);pair[0].setText(r[0]);pair[1].setText(r[1]);pair[1].setTextColor(Integer.parseInt(r[2]));}
+        resize();
     }
 }

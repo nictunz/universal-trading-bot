@@ -95,6 +95,13 @@ public class CandleChartView extends View {
     private float d(float x){return x*getResources().getDisplayMetrics().density;}
     private float y(double price){return bottom-(float)((price-min)/(max-min))*(bottom-top);}
     private String number(double v){return String.format(Locale.US,"%.6f",v).replaceAll("0+$", "").replaceAll("\\.$", "");}
+    private String priceLabel(double v){return String.format(Locale.US,Math.abs(v)>=100?"%,.2f":Math.abs(v)>=1?"%.4f":"%.6f",v);}
+    private String volumeLabel(double v){return Math.abs(v)>=1000000?String.format(Locale.US,"%.2fM",v/1000000):Math.abs(v)>=1000?String.format(Locale.US,"%.2fK",v/1000):String.format(Locale.US,"%.2f",v);}
+    private void priceBadge(Canvas c,double value,int color){
+        if(!Double.isFinite(value)||value<min||value>max)return;
+        float yy=y(value);p.setColor(color);p.setStyle(Paint.Style.FILL);c.drawRoundRect(right,yy-d(9),getWidth()-d(1),yy+d(9),d(2),d(2),p);
+        text(c,priceLabel(value),right+d(3),yy+d(4),Color.WHITE,10);
+    }
     private void text(Canvas c,String s,float x,float y,int color,float size){p.setColor(color);p.setTextSize(d(size));p.setStyle(Paint.Style.FILL);c.drawText(s,x,y,p);}
     private String time(long ms){java.text.SimpleDateFormat f=new java.text.SimpleDateFormat("MM-dd HH:mm",Locale.US);f.setTimeZone(TimeZone.getTimeZone("UTC"));return f.format(new Date(ms));}
     static long millis(String s){
@@ -118,7 +125,7 @@ public class CandleChartView extends View {
         if(!Double.isFinite(min)||!Double.isFinite(max)){text(c,"유효한 가격 데이터가 없습니다 · 데이터 검사 확인",d(8),d(40),Color.YELLOW,12);return;}
         double pad=Math.max((max-min)*.08,Math.abs(max)*.0001);min-=pad;max+=pad;
         p.setStrokeWidth(d(1));
-        for(int i=0;i<=5;i++){float yy=top+(bottom-top)*i/5;p.setColor(Color.rgb(40,44,52));c.drawLine(left,yy,right,yy,p);text(c,number(max-(max-min)*i/5),right+d(4),yy,Color.LTGRAY,10);}
+        for(int i=0;i<=5;i++){float yy=top+(bottom-top)*i/5;p.setColor(Color.rgb(40,44,52));c.drawLine(left,yy,right,yy,p);text(c,priceLabel(max-(max-min)*i/5),right+d(4),yy,Color.LTGRAY,10);}
         for(int i=0;i<=6;i++){float xx=left+(right-left)*i/6;p.setColor(Color.rgb(32,36,42));c.drawLine(xx,top,xx,bottom+d(48),p);}
         for(int i=0;i<candles.size();i++){
             double[] b=candles.get(i);float x=left+step*(i+.5f);int col=b[4]>=b[1]?UP:DOWN;
@@ -163,10 +170,15 @@ public class CandleChartView extends View {
         text(c,legend,d(8),top+d(11),Color.LTGRAY,10);
         int k=selected>=0?selected:candles.size()-1;double[] b=candles.get(k);
         text(c,"O "+number(b[1])+"  H "+number(b[2])+"  L "+number(b[3]),d(8),d(18),Color.LTGRAY,11);
-        text(c,"C "+number(b[4])+"  V "+number(b[5])+"  "+time((long)b[0])+" UTC",d(8),d(35),b[4]>=b[1]?UP:DOWN,11);
+        text(c,"C "+priceLabel(b[4])+"  V "+volumeLabel(b[5])+"  "+time((long)b[0])+" UTC",d(8),d(35),b[4]>=b[1]?UP:DOWN,11);
         if(selected>=0){float x=left+step*(selected+.5f);p.setColor(Color.GRAY);p.setPathEffect(new DashPathEffect(new float[]{d(4),d(4)},0));c.drawLine(x,top,x,bottom,p);c.drawLine(left,y(b[4]),right,y(b[4]),p);p.setPathEffect(null);}
+        double[] last=candles.get(candles.size()-1);int lastColor=last[4]>=last[1]?UP:DOWN;
+        if(validBar(last)){p.setColor(lastColor);p.setStrokeWidth(d(.7f));p.setPathEffect(new DashPathEffect(new float[]{d(2),d(4)},0));c.drawLine(left,y(last[4]),right,y(last[4]),p);p.setPathEffect(null);priceBadge(c,last[4],lastColor);}
+        if(selected>=0&&selected!=candles.size()-1&&validBar(b))priceBadge(c,b[4],Color.rgb(73,87,111));
+        text(c,"VOL "+volumeLabel(b[5]),left,bottom+d(12),Color.GRAY,9);
         text(c,time((long)candles.get(0)[0]),left,getHeight()-d(12),Color.GRAY,10);
         text(c,time((long)candles.get(candles.size()-1)[0]),Math.max(left,right-d(96)),getHeight()-d(12),Color.GRAY,10);
+        if(right-left>d(450))text(c,time((long)candles.get(candles.size()/2)[0]),left+(right-left)/2-d(40),getHeight()-d(12),Color.GRAY,10);
     }
 
     private void overlay(Canvas c,String key,int color){
