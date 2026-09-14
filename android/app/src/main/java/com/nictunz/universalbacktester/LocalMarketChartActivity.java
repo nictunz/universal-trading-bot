@@ -34,7 +34,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private StrategyDiagnosticPanel strategyPanel;
     private TextView downloadStatus;
     private final Handler downloadHandler=new Handler(Looper.getMainLooper());
-    private final Runnable downloadTick=new Runnable(){public void run(){checkChartDownload();if(!disposed)downloadHandler.postDelayed(this,2000);}};
+    private final Runnable downloadTick=new Runnable(){public void run(){checkChartDownload();checkStrategyApplyStatus();if(!disposed)downloadHandler.postDelayed(this,2000);}};
     private TextView status;
     private Spinner selector;
     private Button databaseSelector;
@@ -983,6 +983,48 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             }
             downloadStatus.setText(label);
         }catch(Exception e){downloadStatus.setText("다운로드 상태 확인 실패: "+e.getMessage());}
+    }
+    /**
+     * Re-attach a result if the Activity was recreated while the long Python
+     * calculation was running. The calculation writes its state before the UI
+     * callback, so a resumed screen must observe that persisted state rather
+     * than falling back to a stale candle-only view.
+     */
+    private void checkStrategyApplyStatus(){
+        if(disposed||selectedDatabasePath.isEmpty())return;
+        String state=prefs().getString("chart_apply_status:"+selectedDatabasePath,"");
+        String failure=prefs().getString("chart_apply_error:"+selectedDatabasePath,"");
+        if("RUNNING".equals(state)){
+            if(!busy){
+                status.setText("⏳ 전략 적용 중… 전체 DB 진단을 계산하고 있습니다.");
+                warning.setText("⏳ 전략 적용 중… 완료되면 결과가 자동 연결됩니다.");
+                diagnostic.setText("전략 적용 중 · 계산이 끝날 때까지 잠시 기다려 주세요.");
+                modeText.setText("DB 분석 · 전략 적용 중");
+            }
+            return;
+        }
+        if("ERROR".equals(state)&&!failure.isEmpty()){
+            if(!busy){
+                status.setText("전략 적용 실패 · '전략 적용'에서 다시 시도하세요.");
+                warning.setText("⚠ 마지막 전략 적용 오류: "+failure);
+                diagnostic.setText("전략 적용 실패 원인을 확인한 뒤 다시 계산하세요.");
+                modeText.setText("DB 분석 · 전략 적용 실패");
+            }
+            return;
+        }
+        if(!"COMPLETE".equals(state)||busy||loading||market==null||!"bitget".equals(market[1]))return;
+        String saved=prefs().getString("chart_result:"+selectedDatabasePath,"");
+        if(saved.isEmpty()||!new File(saved).isFile())return;
+        boolean needsAttach=!samePath(saved,resultPath);
+        if(!needsAttach)return;
+        resultPath=saved;
+        strategyParameters=prefs().getString("chart_parameters:"+selectedDatabasePath,strategyParameters);
+        loadedResultPath=null;loadedResult=new JSONObject();resultReadError="";
+        status.setText("전략 적용 완료 · 차트 진단을 불러오는 중…");
+        warning.setText("✅ 전략 적용 완료 · 봉별 진단을 표시합니다.");
+        diagnostic.setText("전략 적용 완료 · 봉을 터치하면 실제 엔진 진단이 표시됩니다.");
+        modeText.setText("DB 분석 · 전략 적용 완료");
+        load();
     }
     private void downloadControls(){
         android.content.SharedPreferences prefs=getSharedPreferences("universal_bot",MODE_PRIVATE);
