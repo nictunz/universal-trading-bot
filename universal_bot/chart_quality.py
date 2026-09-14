@@ -1,6 +1,7 @@
 """Read-only, visible-window data checks. These are not signal readiness checks."""
 import json
 import math
+from functools import lru_cache
 from collections import Counter, defaultdict
 from contextlib import closing
 
@@ -16,7 +17,15 @@ def positive(value):
 def quality_page(database, exchange, symbol, timeframe, first, last, interval):
     if last < first or interval <= 0 or last - first > interval * 10000:
         raise ValueError("데이터 검사 범위가 잘못됐거나 너무 큽니다.")
-    identity = stamp(database)
+    identity = json.dumps(stamp(database), sort_keys=True)
+    result = _quality_cached(database, exchange, symbol, timeframe, first, last, interval, identity)
+    if json.dumps(stamp(database), sort_keys=True) != identity:
+        raise ValueError("검사 중 DB가 변경됐습니다. 다시 불러오세요.")
+    return result
+
+
+@lru_cache(maxsize=16)
+def _quality_cached(database, exchange, symbol, timeframe, first, last, interval, identity):
     sources = defaultdict(dict)
     counts = defaultdict(Counter)
     with closing(readonly(database)) as db:
@@ -70,7 +79,7 @@ def quality_page(database, exchange, symbol, timeframe, first, last, interval):
         exchange_report[ex] = dict(missing=missing, invalid_volume=bad_volume, duplicate=duplicate, zero_volume=zero)
     for ts in times:
         complete += int(all(ts in sources[ex] and sources[ex][ts][1] and counts[ex][ts] == 1 for ex in EXCHANGES))
-    if stamp(database) != identity:
+    if json.dumps(stamp(database), sort_keys=True) != identity:
         raise ValueError("검사 중 DB가 변경됐습니다. 다시 불러오세요.")
     return json.dumps(dict(bars=len(times), missing_bars=missing_bars, irregular_intervals=irregular,
         invalid_ohlc=invalid_price, invalid_volume=invalid_volume, four_exchange_complete=complete,

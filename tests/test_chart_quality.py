@@ -55,3 +55,21 @@ def test_quality_detects_gap_without_inspecting_replay_future(database):
 def test_quality_bounds_expensive_queries(database):
     with pytest.raises(ValueError):
         quality_page(str(database), "bitget", "BTC", "15m", 0, 10**15, 900000)
+
+
+def test_quality_cache_reuses_reads_and_invalidates(database, monkeypatch):
+    from universal_bot import chart_quality as module
+    module._quality_cached.cache_clear()
+    original = module.readonly
+    calls = []
+    def counted(path):
+        calls.append(path)
+        return original(path)
+    monkeypatch.setattr(module, "readonly", counted)
+    first = report(database)
+    assert report(database) == first
+    assert len(calls) == 1
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM ohlcv WHERE exchange='okx'")
+    assert report(database)["four_exchange_complete"] == 0
+    assert len(calls) == 2

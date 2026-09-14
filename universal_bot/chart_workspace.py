@@ -174,6 +174,21 @@ def _summary(result_path: str, modified: int):
 
 
 def audit_page(result_path: str, first: int, last: int) -> str:
+    result_path = str(Path(result_path).resolve())
+    summary = _summary(result_path, Path(result_path).stat().st_mtime_ns)
+    source = stamp(summary["cache_database"])
+    if source != summary.get("chart_source"):
+        raise ValueError("DB가 결과 계산 후 변경됐습니다. 전략을 다시 적용하세요.")
+    identity = json.dumps([stamp(result_path), source, stamp(summary["chart_audit_database"])], sort_keys=True)
+    payload = _audit_page_cached(result_path, first, last, identity)
+    current = json.dumps([stamp(result_path), stamp(summary["cache_database"]), stamp(summary["chart_audit_database"])], sort_keys=True)
+    if current != identity:
+        raise ValueError("진단 로딩 중 DB 또는 결과가 변경됐습니다. 다시 불러오세요.")
+    return payload
+
+
+@lru_cache(maxsize=16)
+def _audit_page_cached(result_path: str, first: int, last: int, identity: str) -> str:
     s = _summary(result_path, Path(result_path).stat().st_mtime_ns)
     path = Path(s["cache_database"])
     if stamp(path) != s.get("chart_source"):
@@ -190,9 +205,13 @@ def audit_page(result_path: str, first: int, last: int) -> str:
                           "AND symbol=? AND timeframe=? AND timestamp<=? ORDER BY timestamp DESC LIMIT ?",
                           (s["symbol"], s["timeframe"], first, lookback)).fetchall()
         lower = min(x[0] for x in base) if base else first
-        frame = pd.read_sql_query("SELECT timestamp,exchange,volume FROM ohlcv WHERE asset_class='crypto' "
-                                  "AND symbol=? AND timeframe=? AND timestamp BETWEEN ? AND ?",
-                                  db, params=(s["symbol"], s["timeframe"], lower, last))
+        # Match the composite index prefix; omitting exchange scans unrelated history.
+        frame = pd.concat([
+            pd.read_sql_query("SELECT timestamp,exchange,volume FROM ohlcv WHERE asset_class='crypto' "
+                              "AND exchange=? AND symbol=? AND timeframe=? AND timestamp BETWEEN ? AND ?",
+                              db, params=(exchange, s["symbol"], s["timeframe"], lower, last))
+            for exchange in ("binance", "bitget", "okx", "bybit")
+        ], ignore_index=True)
     ratios = {}
     if not frame.empty:
         wide = frame.pivot(index="timestamp", columns="exchange", values="volume")
