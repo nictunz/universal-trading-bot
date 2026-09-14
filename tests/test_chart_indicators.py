@@ -71,3 +71,16 @@ def test_page_cache_survives_memory_reset_and_invalidates(tmp_path, monkeypatch)
         item.write_text("broken")
     assert module.indicator_page(*args, 10) == first
     assert len(calls) == 4
+
+
+def test_custom_ema_and_volume_lines_are_causal():
+    import json
+    rng = np.random.default_rng(14)
+    close = 100 + np.cumsum(rng.normal(size=300))
+    frame = pd.DataFrame({"close": close, "high": close+1, "low": close-1, "volume": np.arange(300)+10.})
+    options = json.dumps({"ema1": 7, "ema2": 12, "ema3": 55, "volume_length": 20, "volume_multiplier": 3.2})
+    result = calculate(frame, 10, options)
+    assert_frame_equal(calculate(frame.iloc[:200], 10, options), result.iloc[:200])
+    assert np.allclose(result.ema_custom1.iloc[6:], frame.close.ewm(span=7, adjust=False, min_periods=7).mean().iloc[6:])
+    assert result.volume_sma.iloc[:19].isna().all()
+    assert np.allclose(result.volume_break.iloc[19:], frame.volume.rolling(20).mean().iloc[19:]*3.2)

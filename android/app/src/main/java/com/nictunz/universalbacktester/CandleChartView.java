@@ -20,6 +20,14 @@ public class CandleChartView extends View {
     private final Map<Long,JSONObject> overlays = new HashMap<>();
     private JSONArray drawings = new JSONArray();
     private boolean showEma=true, showBands=false;
+    private int[] emaPeriods={20,60,200},emaColors={Color.rgb(255,193,7),Color.rgb(66,165,245),Color.rgb(171,71,188)};
+    private float emaWidth=1.5f;
+    private boolean volumeLines=true;
+    private int volumeLength=41;private double volumeMultiplier=6.4;
+    public void indicatorOptions(JSONObject o){
+        for(int i=0;i<3;i++){emaPeriods[i]=o.optInt("ema"+(i+1),new int[]{20,60,200}[i]);try{emaColors[i]=Color.parseColor(o.optString("color"+(i+1),new String[]{"#FFC107","#42A5F5","#AB47BC"}[i]));}catch(IllegalArgumentException ignored){}}
+        emaWidth=(float)o.optDouble("line_width",1.5);volumeLines=o.optBoolean("volume_lines",true);volumeLength=o.optInt("volume_length",41);volumeMultiplier=o.optDouble("volume_multiplier",6.4);invalidate();
+    }
     private int rsiLength=10;
     private double longMin=20,longMax=41.5,shortMin=65.6,shortMax=74.7;
     public void rsiOptions(int length,double lo,double hi,double slo,double shi){rsiLength=length;longMin=lo;longMax=hi;shortMin=slo;shortMax=shi;invalidate();}
@@ -126,6 +134,7 @@ public class CandleChartView extends View {
         step=(right-left)/candles.size();min=Double.POSITIVE_INFINITY;max=Double.NEGATIVE_INFINITY;double vmax=1;
         for(double[] b:candles){if(!validBar(b))continue;min=Math.min(min,b[3]);max=Math.max(max,b[2]);if(Double.isFinite(b[5])&&b[5]>=0)vmax=Math.max(vmax,b[5]);}
         if(!Double.isFinite(min)||!Double.isFinite(max)){text(c,"유효한 가격 데이터가 없습니다 · 데이터 검사 확인",d(8),d(40),Color.YELLOW,12);return;}
+        if(volumeLines)for(double[] b:candles){JSONObject row=overlays.get((long)b[0]);if(row!=null){double v=row.optDouble("volume_break",Double.NaN);if(Double.isFinite(v))vmax=Math.max(vmax,v);}}
         double pad=Math.max((max-min)*.08,Math.abs(max)*.0001);min-=pad;max+=pad;
         p.setStrokeWidth(d(1));
         for(int i=0;i<=5;i++){float yy=top+(bottom-top)*i/5;p.setColor(Color.rgb(40,44,52));c.drawLine(left,yy,right,yy,p);text(c,priceLabel(max-(max-min)*i/5),right+d(4),yy,Color.LTGRAY,10);}
@@ -138,9 +147,13 @@ public class CandleChartView extends View {
             c.drawRect(x-Math.max(.6f,step*.32f),Math.min(y(b[1]),y(b[4])),x+Math.max(.6f,step*.32f),Math.max(y(b[1]),y(b[4]))+1,p);
             if(Double.isFinite(b[5])&&b[5]>=0){p.setAlpha(90);c.drawRect(x-step*.32f,bottom+d(48)-(float)(b[5]/vmax)*d(40),x+step*.32f,bottom+d(48),p);p.setAlpha(255);}
         }
+        if(volumeLines){
+            drawVolumeLine(c,"volume_sma",Color.rgb(255,193,7),vmax);
+            drawVolumeLine(c,"volume_break",Color.rgb(255,112,67),vmax);
+        }
         c.save();c.clipRect(left,top,right,bottom);
         if(showBands){overlay(c,"bb_upper",Color.rgb(96,125,139));overlay(c,"bb_mid",Color.rgb(96,125,139));overlay(c,"bb_lower",Color.rgb(96,125,139));}
-        if(showEma){overlay(c,"ema20",Color.rgb(255,193,7));overlay(c,"ema60",Color.rgb(66,165,245));overlay(c,"ema200",Color.rgb(171,71,188));}
+        if(showEma)for(int i=0;i<3;i++)overlay(c,"ema_custom"+(i+1),emaColors[i]);
         for(int j=0;j<trades.length();j++){
             JSONObject t=trades.optJSONObject(j);if(t==null)continue;
             long[] times=tradeTimes.get(t);if(times==null)continue;long en=times[0],ex=times[1];
@@ -169,7 +182,7 @@ public class CandleChartView extends View {
         drawAnnotations(c);
         c.restore();
         if(pane>0&&getHeight()>d(320))drawPane(c,bottom+d(58),getHeight()-d(24));
-        String legend=(showEma?"EMA 20/60/200  ":"")+(showBands?"BB 20·2σ  ":"")+(drawingMode==0?"":drawingMode==1?"수평선: 가격 터치":anchorSet?"추세선: 두 번째 점 터치":"추세선: 첫 번째 점 터치");
+        String legend=(showEma?"EMA "+emaPeriods[0]+"/"+emaPeriods[1]+"/"+emaPeriods[2]+"  ":"")+(showBands?"BB 20·2σ  ":"")+(drawingMode==0?"":drawingMode==1?"수평선: 가격 터치":anchorSet?"추세선: 두 번째 점 터치":"추세선: 첫 번째 점 터치");
         text(c,legend,d(8),top+d(11),Color.LTGRAY,10);
         int k=selected>=0?selected:candles.size()-1;double[] b=candles.get(k);
         text(c,"O "+number(b[1])+"  H "+number(b[2])+"  L "+number(b[3]),d(8),d(18),Color.LTGRAY,11);
@@ -178,14 +191,18 @@ public class CandleChartView extends View {
         double[] last=candles.get(candles.size()-1);int lastColor=last[4]>=last[1]?UP:DOWN;
         if(validBar(last)){p.setColor(lastColor);p.setStrokeWidth(d(.7f));p.setPathEffect(new DashPathEffect(new float[]{d(2),d(4)},0));c.drawLine(left,y(last[4]),right,y(last[4]),p);p.setPathEffect(null);priceBadge(c,last[4],lastColor);}
         if(selected>=0&&selected!=candles.size()-1&&validBar(b))priceBadge(c,b[4],Color.rgb(73,87,111));
-        text(c,"VOL "+volumeLabel(b[5]),left,bottom+d(12),Color.GRAY,9);
+        text(c,"VOL "+volumeLabel(b[5])+(volumeLines?" · SMA("+volumeLength+") ×"+volumeMultiplier+" · 현재 거래소":""),left,bottom+d(12),Color.GRAY,9);
         text(c,time((long)candles.get(0)[0]),left,getHeight()-d(12),Color.GRAY,10);
         text(c,time((long)candles.get(candles.size()-1)[0]),Math.max(left,right-d(96)),getHeight()-d(12),Color.GRAY,10);
         if(right-left>d(450))text(c,time((long)candles.get(candles.size()/2)[0]),left+(right-left)/2-d(40),getHeight()-d(12),Color.GRAY,10);
     }
 
+    private void drawVolumeLine(Canvas c,String key,int color,double ceiling){
+        p.setColor(color);p.setStrokeWidth(d(1.5f));boolean have=false;float px=0,py=0;
+        for(int i=0;i<candles.size();i++){JSONObject row=overlays.get((long)candles.get(i)[0]);double v=row==null?Double.NaN:row.optDouble(key,Double.NaN);if(!Double.isFinite(v)){have=false;continue;}float x=left+step*(i+.5f),yy=bottom+d(48)-(float)(v/ceiling)*d(40);if(have)c.drawLine(px,py,x,yy,p);px=x;py=yy;have=true;}
+    }
     private void overlay(Canvas c,String key,int color){
-        p.setColor(color);p.setStrokeWidth(d(1));boolean have=false;float px=0,py=0;
+        p.setColor(color);p.setStrokeWidth(d(key.startsWith("ema_custom")?emaWidth:1));boolean have=false;float px=0,py=0;
         for(int i=0;i<candles.size();i++){
             JSONObject row=overlays.get((long)candles.get(i)[0]);double v=row==null?Double.NaN:row.optDouble(key,Double.NaN);
             if(!Double.isFinite(v)){have=false;continue;}float xx=left+step*(i+.5f),yy=y(v);
