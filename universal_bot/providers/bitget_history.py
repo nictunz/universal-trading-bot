@@ -57,7 +57,10 @@ class BitgetHistoricalMarketData:
         step = self.timeframe_ms(timeframe)
         start_ms = self._ms(start)
         end_ms = self._ms(end)
-        cursor = (end_ms // step) * step
+        # Ask past the last requested candle: history endTime may be exclusive.
+        # Filter the response back to [start_ms, end_ms] below, so inclusive
+        # responses cannot add a candle outside the requested range.
+        cursor = (end_ms // step + 1) * step
         rows: dict[int, list[str]] = {}
         calls = 0
 

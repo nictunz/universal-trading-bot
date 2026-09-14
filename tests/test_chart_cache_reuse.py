@@ -29,6 +29,7 @@ def test_reuse_complete_db_without_network_or_source_changes(tmp_path,monkeypatc
 
 
 def test_incomplete_cached_edges_are_not_marked_complete(tmp_path,monkeypatch):
+    monkeypatch.setattr(core.OfficialArchiveHistoricalDataManager,'fetch_and_store',lambda *args:0)
     original=source(tmp_path)
     with sqlite3.connect(original) as db:
         db.execute("DELETE FROM ohlcv WHERE exchange='okx' AND timestamp=(SELECT max(timestamp) FROM ohlcv)")
@@ -40,3 +41,21 @@ def test_incomplete_cached_edges_are_not_marked_complete(tmp_path,monkeypatch):
     with pytest.raises(RuntimeError,match='요청 기간 데이터 부족'):
         core.build_cache_and_backtest('BTC/USDT:USDT','1h','2025-01-01','2025-01-01',tmp_path,lambda _:None,run_backtest=False,reuse_existing=True)
     assert calls==['okx']
+
+
+def test_missing_terminal_candle_is_repaired_without_full_download(tmp_path,monkeypatch):
+    original=source(tmp_path)
+    with sqlite3.connect(original) as db:
+        ts=db.execute('SELECT max(timestamp) FROM ohlcv').fetchone()[0]
+        db.execute("DELETE FROM ohlcv WHERE exchange='bitget' AND timestamp=?",(ts,))
+    monkeypatch.setattr(core,'_sync_with_retry',lambda manager,req,log:(0,manager.read(req)))
+    repairs=[]
+    def repair(manager,req):
+        repairs.append(req)
+        with sqlite3.connect(manager.path) as db:
+            db.execute('INSERT INTO ohlcv VALUES(?,?,?,?,?,?,?,?,?,?)',('crypto',req.exchange,req.symbol,req.timeframe,ts,100,101,99,100,10))
+        return 1
+    monkeypatch.setattr(core.OfficialArchiveHistoricalDataManager,'fetch_and_store',repair)
+    _,_,summary=core.build_cache_and_backtest('BTC/USDT:USDT','1h','2025-01-01','2025-01-01',tmp_path,lambda _:None,run_backtest=False,reuse_existing=True)
+    assert summary['bars']==96 and len(repairs)==1
+    assert repairs[0].exchange=='bitget' and int(repairs[0].start.timestamp()*1000)==ts

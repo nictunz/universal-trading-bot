@@ -341,7 +341,26 @@ def build_cache_and_backtest(
                     _validate_crypto_data(df, timeframe, label=f"{exchange}:{chunk_start:%Y-%m}")
                     mode = manager.last_fetch_status.get(exchange, {}).get("mode", "CACHE")
                     if not covers(df):
-                        raise RuntimeError(f"{exchange} 요청 기간 데이터 부족: {len(df)}/{expected}봉 · 상장일/지원 주기/누락 구간을 확인하세요.")
+                        present = {int(t.timestamp()*1000) for t in df.index}
+                        missing = [int(chunk_start.timestamp()*1000)+i*interval_ms for i in range(expected)
+                                   if int(chunk_start.timestamp()*1000)+i*interval_ms not in present]
+                        if 0 < len(missing) <= 16:
+                            log(f"{exchange} 누락 {len(missing)}봉만 다시 요청합니다.")
+                            for timestamp in missing:
+                                if control_check is not None:
+                                    control_check()
+                                repair = DataRequest(symbol=symbol,timeframe=timeframe,
+                                    start=datetime.fromtimestamp(timestamp/1000,timezone.utc),
+                                    end=datetime.fromtimestamp((timestamp+interval_ms-1)/1000,timezone.utc),
+                                    asset_class="crypto",exchange=exchange)
+                                manager.fetch_and_store(repair)
+                            df = manager.read(req)
+                        if not covers(df):
+                            present = {int(t.timestamp()*1000) for t in df.index}
+                            first_missing = next((int(chunk_start.timestamp()*1000)+i*interval_ms for i in range(expected)
+                                                  if int(chunk_start.timestamp()*1000)+i*interval_ms not in present),None)
+                            detail = datetime.fromtimestamp(first_missing/1000,timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if first_missing is not None else '중복/시간 간격 오류'
+                            raise RuntimeError(f"{exchange} 요청 기간 데이터 부족: {len(df)}/{expected}봉 · {detail} · 재요청 후에도 부족합니다.")
                     completed_chunks.add(key)
                     checkpoint["completed_chunks"] = sorted(completed_chunks)
                     checkpoint["last_completed_chunk"] = key
