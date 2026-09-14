@@ -57,6 +57,12 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private File cancelFile;
     private long inspectedTime;
     private static final int IMPORT_DB=8201, EXPORT_DB=8202, IMPORT_JSON=8203, EXPORT_TEXT=8204, EXPORT_IMAGE=8205;
+    /**
+     * The supplied Pine v19 configuration uses a 200-candle N-bar filter.
+     * The chart backtest deliberately keeps those candles as warmup, so one
+     * additional candle is required before a result can be produced.
+     */
+    private static final int DEFAULT_STRATEGY_MIN_BARS=201;
     private String exportText="";
     private Bitmap exportBitmap;
     private JSONObject activeSummary=new JSONObject();
@@ -120,8 +126,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         toolButton(tools,"다운로드",this::downloadControls);
         toolButton(tools,"진단표",()->{strategyPanel.setVisibility(strategyPanel.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE);strategyPanel.resize();});
         toolButton(tools,"데이터 검사",this::showDataQuality);
-        toolButton(tools,"전략",this::strategyDialog);
-        toolButton(tools,"성과",this::showPerformance);
+        toolButton(tools,"전략 적용",this::strategyDialog);
+        toolButton(tools,"결과",this::showPerformance);
         toolButton(tools,"거래",this::showTrades);
         toolButton(tools,"리플레이",this::replayMenu);
         toolButton(tools,"그리기·저장",this::chartTools);
@@ -228,6 +234,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         strategyPanel.setRows(Collections.singletonList(new String[]{"상태","차트 불러오는 중…",String.valueOf(StrategyDiagnosticPanel.NEUTRAL)}));
         int request=generation.incrementAndGet();String[] m=market.clone();
         int start=offset,count=Math.min(width,Math.max(0,availableBars()-offset));String file=resultPath;boolean replay=replayLimit>0;
+        final int databaseBars=total;
         worker.execute(()->{
             if(request!=generation.get())return;
             try(SQLiteDatabase db=SQLiteDatabase.openDatabase(m[0],null,SQLiteDatabase.OPEN_READONLY)){
@@ -255,7 +262,10 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 if(!rows.isEmpty())try{
                     quality=new JSONObject(python().getModule("universal_bot.chart_quality").callAttr("quality_page",m[0],m[1],m[2],m[3],(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0],intervalMillis(m[3])).toString());
                     int affected=quality.optJSONArray("rows").length();
-                    alert="데이터 검사 · "+quality.optInt("bars")+"봉 · 주의 "+affected+"봉 · 눌러 상세 보기\n"+alert;
+                    String readiness=databaseBars>=DEFAULT_STRATEGY_MIN_BARS
+                        ?"전략 DB PASS"
+                        :"전략 DB 부족 "+databaseBars+"/"+DEFAULT_STRATEGY_MIN_BARS+"봉";
+                    alert="데이터 검사 · 표시 "+quality.optInt("bars")+"봉 / 전체 "+databaseBars+"봉 · "+readiness+" · 주의 "+affected+"봉 · 눌러 상세 보기\n"+alert;
                 }catch(Exception e){alert="⚠ 데이터 검사 실패: "+e.getMessage()+"\n"+alert;}
                 final JSONObject shownQuality=quality;
                 final JSONObject shownPage=page;final String shownAlert=alert+indicatorWarning;
@@ -411,33 +421,82 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(!market[1].equals("bitget")){status.setText("전략 적용은 BITGET 시장을 선택하세요.");return;}
         new AlertDialog.Builder(this).setTitle("선택 DB에 적용할 전략")
             .setItems(new String[]{"현재 선택한 전략 적용","JSON 붙여넣기","JSON 파일 불러오기","제공한 Pine v19 수치","수치 직접 편집"},(d,i)->{
-                if(i==0){if(strategyParameters.isEmpty())status.setText("먼저 JSON 전략을 불러오세요.");else confirmStrategy(strategyParameters);}
+                if(i==0){if(strategyParameters.isEmpty())loadDefaultStrategyAndConfirm();else confirmStrategy(strategyParameters);}
                 else if(i==1){EditText input=new EditText(this);input.setMinLines(5);input.setHint("전략 JSON");new AlertDialog.Builder(this).setTitle("JSON 붙여넣기").setView(input).setPositiveButton("읽기",(a,b)->parseStrategy(input.getText().toString())).setNegativeButton("취소",null).show();}
                 else if(i==2)startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE),IMPORT_JSON);
                 else if(i==4)editStrategy();
-                else worker.execute(()->{try{String json=python().getModule("universal_bot.chart_workspace").callAttr("preset").toString();runOnUiThread(()->parseStrategy(json));}catch(Exception e){error(e);}});
+                else loadDefaultStrategyAndConfirm();
             }).setNegativeButton("닫기",null).show();
     }
+    private void loadDefaultStrategyAndConfirm(){
+        if(blocked()||market==null)return;
+        busy=true;status.setText("전략 준비 중… Pine v19 기본 수치를 불러옵니다.");warning.setText("⏳ 전략 준비 중…");
+        final String[] selected=market.clone();
+        worker.execute(()->{try{
+            JSONObject root=new JSONObject(python().getModule("universal_bot.chart_workspace").callAttr("preset").toString());
+            JSONObject parameters=root.optJSONObject("parameters");if(parameters==null)throw new IOException("Pine v19 수치를 읽을 수 없습니다.");
+            final String values=parameters.toString();
+            runOnUiThread(()->{busy=false;if(disposed||market==null||!Arrays.equals(selected,market))return;strategyParameters=values;status.setText("전략 준비 완료 · DB 봉 수를 확인합니다.");confirmStrategy(values);});
+        }catch(Exception e){busy=false;runOnUiThread(()->{if(disposed)return;status.setText("전략 준비 실패 · 다시 시도하세요.");warning.setText("⚠ Pine v19 수치 준비 실패: "+(e.getMessage()==null?e.toString():e.getMessage()));});}});
+    }
     private void parseStrategy(String json){
-        if(blocked())return;busy=true;
+        if(blocked())return;busy=true;status.setText("전략 준비 중… JSON 수치를 검증합니다.");warning.setText("⏳ 전략 준비 중…");
         worker.execute(()->{try{
             JSONObject parsed=new JSONObject(python().getModule("mobile_bridge").callAttr("parse_pasted_backtest_json",json).toString());
             JSONArray items=parsed.getJSONArray("items");String[] names=new String[items.length()];
             for(int i=0;i<names.length;i++)names[i]="전략 "+(i+1)+" · "+items.getJSONObject(i).optString("label","JSON");
             runOnUiThread(()->{busy=false;if(disposed)return;
                 if(market==null)return;
-                if((!parsed.optString("symbol").isEmpty()&&!parsed.optString("symbol").equals(market[2]))||(!parsed.optString("timeframe").isEmpty()&&!parsed.optString("timeframe").equals(market[3]))){status.setText("⚠ JSON 심볼·주기가 선택한 DB 시장과 다릅니다.");return;}
+                if((!parsed.optString("symbol").isEmpty()&&!parsed.optString("symbol").equals(market[2]))||(!parsed.optString("timeframe").isEmpty()&&!parsed.optString("timeframe").equals(market[3]))){status.setText("⚠ JSON 심볼·주기가 선택한 DB 시장과 다릅니다.");warning.setText("전략 준비 중단 · 선택한 DB와 JSON을 맞춰 주세요.");return;}
+                status.setText("전략 준비 완료 · 적용할 수치를 선택하세요.");warning.setText("전략 적용 전 수치와 DB 봉 수를 확인합니다.");
                 new AlertDialog.Builder(this).setTitle("전략 선택").setItems(names,(d,i)->confirmStrategy(items.optJSONObject(i).optJSONObject("effective_parameters").toString())).setNegativeButton("취소",null).show();
             });
-        }catch(Exception e){busy=false;error(e);}});
+        }catch(Exception e){busy=false;runOnUiThread(()->{if(disposed)return;status.setText("전략 준비 실패 · 다시 시도하세요.");warning.setText("⚠ JSON 전략 준비 실패: "+(e.getMessage()==null?e.toString():e.getMessage()));});}});
+    }
+    private int strategyWarmup(JSONObject p){
+        int warmup=DEFAULT_STRATEGY_MIN_BARS-1;
+        for(String key:new String[]{"volume_lookback","volatility_bars","nbar_volatility_bars"})warmup=Math.max(warmup,p.optInt(key,warmup));
+        warmup=Math.max(warmup,p.optInt("adx_length",7)*3);
+        warmup=Math.max(warmup,p.optInt("rsi_length",10)+10);
+        if(p.optBoolean("adaptive_regime_enabled",false))warmup=Math.max(warmup,p.optInt("regime_lookback_bars",288));
+        return warmup;
     }
     private void confirmStrategy(String parameters){
         if(blocked()||market==null)return;
         try{
             JSONObject p=new JSONObject(parameters);
-            new AlertDialog.Builder(this).setTitle("DB 전체 기간에 전략 적용")
-                .setMessage(new File(selectedDatabasePath).getName()+"\n"+market[2]+" · "+market[3]+"\n체결: "+p.optString("backtest_execution_model","signal_close")+"\n기존 DB 전체 기간으로 새 결과를 저장합니다. 워밍업 봉은 진입에서 제외합니다.")
-                .setPositiveButton("적용",(d,i)->applyStrategy(parameters)).setNegativeButton("취소",null).show();
+            final int warmup=strategyWarmup(p), minimum=warmup+1;
+            final String[] selected=market.clone();
+            final String database=selectedDatabasePath;
+            status.setText("전략 적용 준비 중… DB 봉 수와 거래소 데이터를 확인합니다.");
+            warning.setText("⏳ 전략 적용 준비 중…");
+            worker.execute(()->{
+                int bars=-1;String failure="";
+                try(SQLiteDatabase db=SQLiteDatabase.openDatabase(database,null,SQLiteDatabase.OPEN_READONLY);
+                    Cursor c=db.rawQuery("SELECT count(*) FROM ohlcv WHERE asset_class='crypto' AND exchange=? AND symbol=? AND timeframe=?",new String[]{"bitget",selected[2],selected[3]})){
+                    if(c.moveToFirst())bars=c.getInt(0);
+                }catch(Exception e){failure=e.getMessage()==null?e.toString():e.getMessage();}
+                final int checkedBars=bars;final String checkedFailure=failure;
+                runOnUiThread(()->{
+                    if(disposed||market==null||!Arrays.equals(selected,market))return;
+                    if(checkedBars<0){
+                        status.setText("전략 적용 전 DB 검사 실패");
+                        warning.setText("⚠ 전략 적용 전 DB 검사 실패: "+checkedFailure);
+                        diagnostic.setText("DB를 다시 선택한 뒤 전략 적용을 재시도하세요.");
+                        return;
+                    }
+                    if(checkedBars<minimum){
+                        String detail="전략 적용 불가 · BITGET "+checkedBars+"봉 / 최소 "+minimum+"봉 필요";
+                        status.setText(detail);
+                        warning.setText("⚠ "+detail+" · 15분봉은 1주 이상을 선택하세요.");
+                        diagnostic.setText("워밍업 부족 · N봉 "+warmup+"봉을 먼저 준비해야 합니다.");
+                        return;
+                    }
+                    new AlertDialog.Builder(this).setTitle("DB 전체 기간에 전략 적용")
+                        .setMessage(new File(database).getName()+"\n"+selected[2]+" · "+selected[3]+"\nBITGET "+checkedBars+"봉 · 워밍업 "+warmup+"봉\n체결: "+p.optString("backtest_execution_model","signal_close")+"\n기존 DB 전체 기간으로 새 결과를 저장합니다. 계산 중에는 DB를 이동하거나 삭제하지 마세요.")
+                        .setPositiveButton("적용",(d,i)->applyStrategy(parameters)).setNegativeButton("취소",null).show();
+                });
+            });
         }catch(Exception e){error(e);}
     }
     private void applyStrategy(String parameters){
@@ -445,14 +504,18 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         pauseReplay();busy=true;selector.setEnabled(false);databaseSelector.setEnabled(false);generation.incrementAndGet();
         String[] m=market.clone();strategyParameters=parameters;cancelFile=new File(getCacheDir(),"chart-cancel-"+UUID.randomUUID());
         final File cancellation=cancelFile;
+        status.setText("⏳ 전략 적용 중… 전체 DB 검증 및 봉별 진단을 계산합니다.");
+        warning.setText("⏳ 전략 적용 중… 완료될 때까지 잠시 기다려 주세요.");
+        diagnostic.setText("전략 적용 중… 봉별 진단을 저장하고 있습니다.");
+        modeText.setText("DB 분석 · 전략 적용 중");
         ProgressDialog progress=new ProgressDialog(this);progress.setTitle("전략 계산");progress.setMessage("선택 DB 전체 기간을 검증하고 봉별 진단을 저장합니다.");progress.setCancelable(false);
         progress.setButton(DialogInterface.BUTTON_NEGATIVE,"중지",(d,i)->{try{cancellation.createNewFile();}catch(IOException ignored){}});
         progress.show();
         worker.execute(()->{try{
             String result=python().getModule("universal_bot.chart_workspace").callAttr("apply_strategy",m[0],m[2],m[3],parameters,cancellation.getAbsolutePath()).toString();
             String saved=new JSONObject(result).getString("result_path");
-            runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);resultPath=saved;getSharedPreferences("universal_bot",MODE_PRIVATE).edit().putString("chart_result:"+m[0],saved).putString("chart_parameters:"+m[0],parameters).apply();loadedResultPath=null;load();});
-        }catch(Exception e){runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);warning.setText("⚠ 전략 적용 실패: "+e.getMessage());});}
+            runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);resultPath=saved;getSharedPreferences("universal_bot",MODE_PRIVATE).edit().putString("chart_result:"+m[0],saved).putString("chart_parameters:"+m[0],parameters).apply();loadedResultPath=null;status.setText("전략 적용 완료 · 차트 진단을 불러오는 중…");warning.setText("✅ 전략 적용 완료 · 봉별 진단을 표시합니다.");diagnostic.setText("전략 적용 완료 · 봉을 터치하면 실제 엔진 진단이 표시됩니다.");modeText.setText("DB 분석 · 전략 적용 완료");load();});
+        }catch(Exception e){runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);String detail=e.getMessage()==null?e.toString():e.getMessage();status.setText("전략 적용 실패 · 다시 시도하세요.");warning.setText("⚠ 전략 적용 실패: "+detail);diagnostic.setText("전략 적용 실패 · DB 봉 수와 데이터 검사를 확인하세요.");modeText.setText("DB 분석 · 전략 적용 실패");});}
         finally{cancellation.delete();}});
     }
     private void error(Exception e){runOnUiThread(()->{if(!disposed)status.setText("오류: "+e.getMessage());});}
