@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Read-only, paged SQLite candles, available before any backtest is run. */
 public class LocalMarketChartActivity extends Activity implements CandleChartView.Navigator {
+    private static final Set<String> ACTIVE_APPLIES=ConcurrentHashMap.newKeySet();
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final AtomicInteger generation=new AtomicInteger();
     private final ArrayList<String[]> markets=new ArrayList<>();
@@ -91,7 +92,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         return Python.getInstance();
     }
     private boolean blocked() {
-        if(busy || BacktestForegroundService.isWorkerRunning()){
+        if(busy || !ACTIVE_APPLIES.isEmpty() || BacktestForegroundService.isWorkerRunning()){
             status.setText("실행 중인 작업을 마친 뒤 DB 관리·전략 적용을 진행하세요.");return true;
         }
         return false;
@@ -139,7 +140,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         downloadStatus=new TextView(this);downloadStatus.setTextColor(Color.CYAN);downloadStatus.setTextSize(12);downloadStatus.setMaxLines(3);downloadStatus.setPadding(dp(10),dp(4),dp(10),dp(4));downloadStatus.setVisibility(View.GONE);downloadStatus.setOnClickListener(v->downloadControls());root.addView(downloadStatus);
         status=new TextView(this);status.setTextColor(Color.LTGRAY);status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(10),0,dp(10),0);status.setText("저장된 코인 DB 검색 중…");root.addView(status);
         warning=new TextView(this);warning.setTextColor(Color.rgb(255,190,75));warning.setTextSize(12);warning.setMaxLines(2);warning.setPadding(dp(10),dp(4),dp(10),dp(4));root.addView(warning);
-        warning.setOnClickListener(v->showDataQuality());
+        warning.setOnClickListener(v->showStrategyIssueOrQuality());
         diagnostic=new TextView(this);diagnostic.setTextColor(Color.LTGRAY);diagnostic.setTextSize(12);diagnostic.setMaxLines(2);diagnostic.setPadding(dp(10),dp(4),dp(10),dp(4));diagnostic.setText("전략 적용 후 봉을 터치하면 실제 엔진 진단이 표시됩니다.");diagnostic.setOnClickListener(v->showDiagnostic());root.addView(diagnostic);
         chartFrame=new FrameLayout(this);chart=new CandleChartView(this,this);chartFrame.addView(chart,new FrameLayout.LayoutParams(-1,-1));
         strategyPanel=new StrategyDiagnosticPanel(this);chartFrame.addView(strategyPanel);chartFrame.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{if(r-l!=or-ol||b-t!=ob-ot)strategyPanel.resize();});
@@ -306,7 +307,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                     quality=new JSONObject(python().getModule("universal_bot.chart_quality").callAttr("quality_page",m[0],m[1],m[2],m[3],(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0],intervalMillis(m[3])).toString());
                     int affected=quality.optJSONArray("rows").length();
                     String readiness=databaseBars>=DEFAULT_STRATEGY_MIN_BARS
-                        ?"전략 DB PASS"
+                        ?"기본 워밍업 봉 수 충족"
                         :"전략 DB 부족 "+databaseBars+"/"+DEFAULT_STRATEGY_MIN_BARS+"봉";
                     alert="데이터 검사 · 표시 "+quality.optInt("bars")+"봉 / 전체 "+databaseBars+"봉 · "+readiness+" · 주의 "+affected+"봉 · 눌러 상세 보기\n"+alert;
                 }catch(Exception e){alert="⚠ 데이터 검사 실패: "+e.getMessage()+"\n"+alert;}
@@ -547,6 +548,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         pauseReplay();busy=true;selector.setEnabled(false);databaseSelector.setEnabled(false);generation.incrementAndGet();
         String[] m=market.clone();strategyParameters=parameters;cancellationRequested=false;cancelFile=new File(getCacheDir(),"chart-cancel-"+UUID.randomUUID());
         final File cancellation=cancelFile;
+        final String activeKey=normalizedPath(m[0]);
+        ACTIVE_APPLIES.add(activeKey);
         prefs().edit()
             .putString("chart_apply_status:"+m[0],"RUNNING")
             .putString("chart_apply_error:"+m[0],"")
@@ -580,14 +583,14 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 .putString("chart_parameters:"+m[0],parameters)
                 .putString("chart_apply_result:"+m[0],saved)
                 .apply();
-            runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);resultPath=saved;loadedResult=applied;loadedResultPath=saved;loadedResultModified=savedModified;resultReadError="";status.setText("전략 적용 완료 · 차트 진단을 불러오는 중…");warning.setText("✅ 전략 적용 완료 · 봉별 진단을 표시합니다.");diagnostic.setText("전략 적용 완료 · 봉을 터치하면 실제 엔진 진단이 표시됩니다.");modeText.setText("DB 분석 · 전략 적용 완료");load();});
+            runOnUiThread(()->{busy=false;if(disposed)return;progress.dismiss();selector.setEnabled(true);databaseSelector.setEnabled(true);resultPath=saved;loadedResult=applied;loadedResultPath=saved;loadedResultModified=savedModified;resultReadError="";status.setText("전략 적용 완료 · 차트 진단을 불러오는 중…");warning.setText("✅ 전략 적용 완료 · 봉별 진단을 표시합니다.");diagnostic.setText("전략 적용 완료 · 봉을 터치하면 실제 엔진 진단이 표시됩니다.");modeText.setText("DB 분석 · 전략 적용 완료");load();});
         }catch(Exception e){
             String detail=e.getMessage()==null?e.toString():e.getMessage();
             if(detail.length()>2000)detail=detail.substring(0,2000);
             final String failure=detail;
             prefs().edit().putString("chart_apply_status:"+m[0],"ERROR").putString("chart_apply_error:"+m[0],failure).apply();
-            runOnUiThread(()->{busy=false;progress.dismiss();if(disposed)return;selector.setEnabled(true);databaseSelector.setEnabled(true);status.setText("전략 적용 실패 · 다시 시도하세요.");warning.setText("⚠ 전략 적용 실패: "+failure);diagnostic.setText("전략 적용 실패 · DB 봉 수와 데이터 검사를 확인하세요.");modeText.setText("DB 분석 · 전략 적용 실패");});}
-        finally{cancellation.delete();}});
+            runOnUiThread(()->{busy=false;if(disposed)return;progress.dismiss();selector.setEnabled(true);databaseSelector.setEnabled(true);status.setText("전략 적용 실패 · 다시 시도하세요.");warning.setText("⚠ 전략 적용 실패: "+failure);diagnostic.setText("전략 적용 실패 · DB 봉 수와 데이터 검사를 확인하세요.");modeText.setText("DB 분석 · 전략 적용 실패");});}
+        finally{ACTIVE_APPLIES.remove(activeKey);cancellation.delete();}});
     }
     private void error(Exception e){runOnUiThread(()->{if(!disposed)status.setText("오류: "+e.getMessage());});}
     private void manageDatabase(){
@@ -990,10 +993,31 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
      * callback, so a resumed screen must observe that persisted state rather
      * than falling back to a stale candle-only view.
      */
+    private void showStrategyIssueOrQuality(){
+        String failure=prefs().getString("chart_apply_error:"+selectedDatabasePath,"");
+        if(failure.isEmpty())failure=resultReadError;
+        if(failure.isEmpty()){showDataQuality();return;}
+        final String detail=failure;
+        new AlertDialog.Builder(this).setTitle("전략 적용 오류 상세")
+            .setMessage(detail)
+            .setPositiveButton("전략 다시 적용",(d,i)->strategyDialog())
+            .setNeutralButton("오류 복사",(d,i)->{
+                android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("전략 적용 오류",detail));
+                Toast.makeText(this,"오류 내용을 복사했습니다",Toast.LENGTH_SHORT).show();
+            }).setNegativeButton("닫기",null).show();
+    }
     private void checkStrategyApplyStatus(){
         if(disposed||selectedDatabasePath.isEmpty())return;
         String state=prefs().getString("chart_apply_status:"+selectedDatabasePath,"");
         String failure=prefs().getString("chart_apply_error:"+selectedDatabasePath,"");
+        if("RUNNING".equals(state)&&!ACTIVE_APPLIES.contains(normalizedPath(selectedDatabasePath))){
+            // A persisted flag is not proof that a worker survived process death.
+            state="ERROR";
+            failure="계산 작업이 중단되었습니다. 전략 적용을 다시 실행하세요. 기존 DB와 저장된 결과는 유지됩니다.";
+            prefs().edit().putString("chart_apply_status:"+selectedDatabasePath,state)
+                .putString("chart_apply_error:"+selectedDatabasePath,failure).apply();
+        }
         if("RUNNING".equals(state)){
             if(!busy){
                 status.setText("⏳ 전략 적용 중… 전체 DB 진단을 계산하고 있습니다.");
@@ -1014,7 +1038,11 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         }
         if(!"COMPLETE".equals(state)||busy||loading||market==null||!"bitget".equals(market[1]))return;
         String saved=prefs().getString("chart_result:"+selectedDatabasePath,"");
-        if(saved.isEmpty()||!new File(saved).isFile())return;
+        if(saved.isEmpty()||!new File(saved).isFile()){
+            prefs().edit().putString("chart_apply_status:"+selectedDatabasePath,"ERROR")
+                .putString("chart_apply_error:"+selectedDatabasePath,"저장된 결과 파일을 찾을 수 없습니다. 전략을 다시 적용하세요.").apply();
+            return;
+        }
         boolean needsAttach=!samePath(saved,resultPath);
         if(!needsAttach)return;
         resultPath=saved;
@@ -1049,7 +1077,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(cancelFile!=null&&!changing&&!cancellationRequested)
             try{cancellationRequested=true;cancelFile.createNewFile();}catch(IOException ignored){}
         generation.incrementAndGet();
-        if(changing)worker.shutdown();else worker.shutdownNow();
+        // Drain queued tasks so their cancellation cleanup always releases ACTIVE_APPLIES.
+        worker.shutdown();
         super.onDestroy();
     }
 }
