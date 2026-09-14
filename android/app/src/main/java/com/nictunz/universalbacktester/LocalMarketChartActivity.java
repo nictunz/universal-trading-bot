@@ -249,7 +249,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private static boolean matches(JSONObject s,String[] m){
         String db=s.optString("cache_database",s.optString("database",""));
         return s.optString("symbol").equals(m[2])&&s.optString("timeframe").equals(m[3])
-            &&s.optString("exchange","bitget").equals(m[1])&&!db.isEmpty()&&new File(db).equals(new File(m[0]));
+            &&s.optString("exchange","bitget").equals(m[1])&&!db.isEmpty()&&samePath(db,m[0]);
     }
     private void load(){
         if(market==null||disposed||busy)return;
@@ -562,6 +562,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             JSONObject applied=readResult(saved);
             if(!matches(applied,m))throw new IOException("생성된 결과가 선택한 DB·시장과 일치하지 않습니다.");
             if(!applied.has("chart_audit_database"))throw new IOException("봉별 진단 데이터가 결과에 없습니다.");
+            String auditPath=applied.optString("chart_audit_database","");
+            if(!new File(auditPath).isFile())throw new IOException("봉별 진단 파일을 찾을 수 없습니다.");
             long savedModified=new File(saved).lastModified();
             prefs().edit()
                 .putString("chart_apply_status:"+m[0],"COMPLETE")
