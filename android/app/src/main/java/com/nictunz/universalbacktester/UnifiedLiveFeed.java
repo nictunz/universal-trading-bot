@@ -28,9 +28,9 @@ final class UnifiedLiveFeed {
     private final Runnable tick=new Runnable(){public void run(){if(!active||closed)return;prices();server();ui.postDelayed(this,3000);}};
     UnifiedLiveFeed(Activity host,LinearLayout root,Listener listener){
         this.host=host;this.listener=listener;tail=new File(host.getFilesDir(),"live-btc-15m.sqlite").getAbsolutePath();
-        status=new TextView(host);status.setTextColor(Color.CYAN);status.setPadding(12,8,12,8);status.setText("실시간 연결 꺼짐");root.addView(status);
+        status=new TextView(host);status.setTextColor(Color.CYAN);status.setPadding(12,8,12,8);status.setText("실시간 연결 꺼짐");root.addView(status,3);
         login=new WebView(host);login.setVisibility(View.GONE);login.getSettings().setJavaScriptEnabled(true);login.getSettings().setDomStorageEnabled(true);login.getSettings().setAllowFileAccess(false);login.getSettings().setAllowContentAccess(false);login.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);CookieManager.getInstance().setAcceptCookie(true);
-        login.setWebViewClient(new WebViewClient(){public boolean shouldOverrideUrlLoading(WebView w,WebResourceRequest r){return !sameOrigin(r.getUrl());}public void onPageFinished(WebView w,String url){if(sameOrigin(Uri.parse(url))&&"/".equals(Uri.parse(url).getPath())){login.setVisibility(View.GONE);CookieManager.getInstance().flush();server();}}});root.addView(login,new LinearLayout.LayoutParams(-1,300));
+        login.setWebViewClient(new WebViewClient(){public boolean shouldOverrideUrlLoading(WebView w,WebResourceRequest r){return !sameOrigin(r.getUrl());}public void onPageFinished(WebView w,String url){if(sameOrigin(Uri.parse(url))&&"/".equals(Uri.parse(url).getPath())){login.setVisibility(View.GONE);CookieManager.getInstance().flush();server();}}});root.addView(login,4,new LinearLayout.LayoutParams(-1,300));
     }
     private boolean sameOrigin(Uri u){if(origin.isEmpty())return false;Uri b=Uri.parse(origin);return b.getScheme().equals(u.getScheme())&&b.getHost().equals(u.getHost())&&b.getPort()==u.getPort();}
     static Python python(Activity host){synchronized(Python.class){if(!Python.isStarted())Python.start(new AndroidPlatform(host.getApplicationContext()));return Python.getInstance();}}

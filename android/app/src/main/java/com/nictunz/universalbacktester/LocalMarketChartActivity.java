@@ -175,7 +175,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         addButton(replayBar,"−1봉",()->{pauseReplay();stepReplay(-1);});
         addButton(replayBar,"재생/정지",()->{if(playing)pauseReplay();else if(replayLimit>0){playing=true;playback.post(playbackTick);}});
         addButton(replayBar,"+1봉",()->{pauseReplay();stepReplay(1);});
-        addButton(replayBar,"종료",this::exitReplay);
+        addButton(replayBar,"종료 · LIVE 복귀",this::exitReplay);
         replayBar.setVisibility(View.GONE);root.addView(replayBar);
         unifiedFeed=new UnifiedLiveFeed(this,root,new UnifiedLiveFeed.Listener(){
             public void changed(){if(unifiedLive&&liveCompatible()&&replayLimit==0&&followLive&&!loading&&!busy)load();}
@@ -284,7 +284,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(blocked()||market==null)return;
         if(!liveCompatible()){new AlertDialog.Builder(this).setMessage("현재 실시간 통합은 BITGET BTC/USDT 15분 DB에서 지원합니다.").setPositiveButton("확인",null).show();return;}
         new AlertDialog.Builder(this).setTitle("DB + 실시간 차트").setItems(new String[]{"실시간 연결 · 최신 따라가기","리플레이 · 과거 DB 보기","서버 로그인",(showBacktestTrades?"숨기기":"표시")+" · 백테스트 거래",(showLiveTrades?"숨기기":"표시")+" · 서버 실제 거래"},(d,i)->{
-            if(i==0){pauseReplay();replayLimit=0;replayBar.setVisibility(View.GONE);unifiedLive=true;followLive=true;unifiedFeed.start(market[0]);}
+            if(i==0){unifiedLive=true;unifiedFeed.start(market[0]);exitReplay();return;}
             if(i==1){setReplay(Integer.parseInt(market[4]));return;}
             if(i==2){unifiedFeed.login();return;}
             if(i==3)showBacktestTrades=!showBacktestTrades;
@@ -420,12 +420,12 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             }catch(Exception e){runOnUiThread(()->{if(!disposed&&request==generation.get()){loading=false;trades=new JSONArray();activeSummary=new JSONObject();auditPage=new JSONObject();chart.setData(Collections.emptyList(),trades);chart.setAudit(null);chart.setOverlays(null);status.setText("차트 읽기 실패: "+e.getMessage());}});}
         });
     }
-    @Override public void move(int bars){if(unifiedLive&&replayLimit==0){setReplay(Math.max(1,offset+width+bars));return;}offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),offset+bars));scheduleNavigation();}
+    @Override public void move(int bars){offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),offset+bars));scheduleNavigation();}
     @Override public void zoom(float factor){zoomWidth=Math.max(30,Math.min(600,zoomWidth/factor));int next=(int)zoomWidth;if(next==width)return;int center=offset+width/2;width=next;offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),center-width/2));scheduleNavigation();}
     private void jumpDate(int y,int month,int day){Calendar c=Calendar.getInstance(TimeZone.getTimeZone("UTC"));c.clear();c.set(y,month,day);jump(c.getTimeInMillis());}
     private void jump(long ms){
                 if(market==null)return;String[] m=market.clone();int request=generation.incrementAndGet();
-        if(unifiedLive&&replayLimit==0){worker.execute(()->{try{int n=python().getModule("universal_bot.live_timeline").callAttr("offset_for_timestamp",m[0],unifiedFeed.tail,ms).toInt();runOnUiThread(()->{if(disposed||request!=generation.get())return;pendingInspect=ms;setReplay(Math.min(Integer.parseInt(m[4]),n+1));});}catch(Exception e){error(e);}});return;}
+        if(unifiedLive&&replayLimit==0){worker.execute(()->{try{int n=python().getModule("universal_bot.live_timeline").callAttr("offset_for_timestamp",m[0],unifiedFeed.tail,ms).toInt();runOnUiThread(()->{if(disposed||request!=generation.get())return;offset=Math.max(0,n-width/3);pendingInspect=ms;load();});}catch(Exception e){error(e);}});return;}
         worker.execute(()->{try(SQLiteDatabase db=SQLiteDatabase.openDatabase(m[0],null,SQLiteDatabase.OPEN_READONLY);Cursor c=db.rawQuery("SELECT count(*) FROM ohlcv WHERE asset_class='crypto' AND exchange=? AND symbol=? AND timeframe=? AND timestamp<?",new String[]{m[1],m[2],m[3],""+ms})){
             c.moveToFirst();int n=c.getInt(0);runOnUiThread(()->{if(disposed||request!=generation.get())return;offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),n-width/3));pendingInspect=ms;load();});
         }catch(Exception e){runOnUiThread(()->{if(!disposed)status.setText("날짜 이동 실패: "+e.getMessage());});}});
@@ -811,7 +811,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         try{
             JSONObject value=new JSONObject(prefs().getString(workspaceKey(),"{}"));
             width=Math.max(30,Math.min(600,value.optInt("width",160)));zoomWidth=width;
-            replayLimit=Math.max(0,Math.min(total,value.optInt("replay",0)));
+            replayLimit=0; // Reopening a DB always resumes LIVE; replay requires explicit action.
             offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),value.optInt("offset",Math.max(0,total-width))));
             chartRsiLength=value.optInt("rsi_length",10);chartRsiLongMin=value.optDouble("rsi_long_min",20);chartRsiLongMax=value.optDouble("rsi_long_max",41.5);chartRsiShortMin=value.optDouble("rsi_short_min",65.6);chartRsiShortMax=value.optDouble("rsi_short_max",74.7);
             unifiedLive=liveCompatible();followLive=unifiedLive&&replayLimit==0;showLiveTrades=value.optBoolean("show_live",true);showBacktestTrades=value.optBoolean("show_backtest",true);
@@ -943,7 +943,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         new AlertDialog.Builder(this).setTitle("과거 봉 리플레이 · 실거래 아님")
             .setItems(new String[]{"처음 200봉부터 시작","선택한 봉부터 시작","리플레이 종료"},(d,i)->{
                 if(i==0)setReplay(Math.min(total,200));
-                if(i==2){replayLimit=0;replayBar.setVisibility(View.GONE);load();}
+                if(i==2){exitReplay();return;}
                 if(i==1){
                     long timestamp=chart.selectedTime();String[] m=market.clone();int request=generation.incrementAndGet();
                     worker.execute(()->{try(SQLiteDatabase db=SQLiteDatabase.openDatabase(m[0],null,SQLiteDatabase.OPEN_READONLY);
