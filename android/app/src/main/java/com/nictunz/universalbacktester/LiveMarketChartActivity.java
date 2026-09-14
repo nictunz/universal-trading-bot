@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.webkit.*;
+import android.webkit.CookieManager;
 import android.widget.*;
 import org.json.*;
 import java.io.*;
