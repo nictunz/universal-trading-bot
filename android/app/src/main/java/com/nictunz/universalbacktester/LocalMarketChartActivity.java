@@ -78,6 +78,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private long pendingInspect;
     private boolean ema=true, bands;
     private int indicatorPane=1;
+    private int chartRsiLength=10;
+    private double chartRsiLongMin=20,chartRsiLongMax=41.5,chartRsiShortMin=65.6,chartRsiShortMax=74.7;
     private final Handler playback=new Handler(Looper.getMainLooper());
     private final Runnable playbackTick=new Runnable(){public void run(){
         if(disposed||!playing)return;
@@ -277,7 +279,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 resultError=resultReadError;
                 JSONObject s=loadedResult;boolean match=matches(s,m);
                 JSONArray indicators=new JSONArray();String indicatorWarning="";
-                if(!rows.isEmpty())try{indicators=new JSONArray(python().getModule("universal_bot.chart_indicators").callAttr("indicator_page",m[0],m[1],m[2],m[3],(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0]).toString());}
+                if(!rows.isEmpty())try{indicators=new JSONArray(python().getModule("universal_bot.chart_indicators").callAttr("indicator_page",m[0],m[1],m[2],m[3],(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0],chartRsiLength).toString());}
                 catch(Exception e){indicatorWarning=" · 보조지표 오류: "+e.getMessage();}
                 final JSONArray displayedIndicators=indicators;
                 JSONObject page=new JSONObject();String alert="";
@@ -323,7 +325,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 if(replay)msg="리플레이 · "+data.length()+"건 청산 확인 · 전체 성과 숨김";
                 if(data.length()>0&&!data.optJSONObject(0).has("tp_price"))msg+=" · TP/SL 선은 재실행 후 표시";
                 final String message=msg;
-                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;trades=data;activeSummary=shownSummary;auditPage=shownPage;dataQuality=shownQuality;warning.setText(shownAlert);chart.setData(rows,data);chart.setQuality(shownQuality.optJSONArray("rows"));chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);saveWorkspace();});
+                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;trades=data;activeSummary=shownSummary;auditPage=shownPage;dataQuality=shownQuality;warning.setText(shownAlert);chart.setData(rows,data);chart.setQuality(shownQuality.optJSONArray("rows"));chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.rsiOptions(chartRsiLength,chartRsiLongMin,chartRsiLongMax,chartRsiShortMin,chartRsiShortMax);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);saveWorkspace();});
             }catch(Exception e){runOnUiThread(()->{if(!disposed&&request==generation.get()){loading=false;trades=new JSONArray();activeSummary=new JSONObject();auditPage=new JSONObject();chart.setData(Collections.emptyList(),trades);chart.setAudit(null);chart.setOverlays(null);status.setText("차트 읽기 실패: "+e.getMessage());}});}
         });
     }
@@ -704,6 +706,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(market==null)return;
         try{
             JSONObject value=new JSONObject().put("offset",offset).put("width",width).put("replay",replayLimit)
+                .put("rsi_length",chartRsiLength).put("rsi_long_min",chartRsiLongMin).put("rsi_long_max",chartRsiLongMax).put("rsi_short_min",chartRsiShortMin).put("rsi_short_max",chartRsiShortMax)
                 .put("ema",ema).put("bands",bands).put("pane",indicatorPane)
                 .put("drawings",annotations).put("bookmarks",bookmarks);
             prefs().edit().putString(workspaceKey(),value.toString()).apply();
@@ -715,6 +718,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             width=Math.max(30,Math.min(600,value.optInt("width",160)));zoomWidth=width;
             replayLimit=Math.max(0,Math.min(total,value.optInt("replay",0)));
             offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),value.optInt("offset",Math.max(0,total-width))));
+            chartRsiLength=value.optInt("rsi_length",10);chartRsiLongMin=value.optDouble("rsi_long_min",20);chartRsiLongMax=value.optDouble("rsi_long_max",41.5);chartRsiShortMin=value.optDouble("rsi_short_min",65.6);chartRsiShortMax=value.optDouble("rsi_short_max",74.7);
             ema=value.optBoolean("ema",true);bands=value.optBoolean("bands",false);indicatorPane=Math.max(0,Math.min(3,value.optInt("pane",1)));
             annotations=value.optJSONArray("drawings");if(annotations==null)annotations=new JSONArray();
             bookmarks=value.optJSONArray("bookmarks");if(bookmarks==null)bookmarks=new JSONArray();
@@ -727,16 +731,42 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         if(enabled)getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
     }
+    private void rsiSettings(){
+        if(loading||blocked())return;
+        LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);form.setPadding(dp(18),dp(8),dp(18),dp(8));
+        TextView hint=new TextView(this);hint.setText("차트 RSI 표시 설정입니다. 진입 조건 변경은 전략을 수정한 뒤 다시 적용하세요.");form.addView(hint);
+        String[] labels={"RSI 길이 (2~500)","LONG 최소","LONG 최대","SHORT 최소","SHORT 최대"};
+        double[] values={chartRsiLength,chartRsiLongMin,chartRsiLongMax,chartRsiShortMin,chartRsiShortMax};
+        EditText[] fields=new EditText[5];
+        for(int i=0;i<5;i++){TextView label=new TextView(this);label.setText(labels[i]);form.addView(label);fields[i]=new EditText(this);fields[i].setSingleLine(true);fields[i].setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);fields[i].setText(i==0?Integer.toString(chartRsiLength):Double.toString(values[i]));form.addView(fields[i]);}
+        ScrollView scroll=new ScrollView(this);scroll.addView(form);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("RSI · 롱숏 진입 범위").setView(scroll).setPositiveButton("차트에 적용",null).setNeutralButton("적용 전략 값 불러오기",null).setNegativeButton("취소",null).create();
+        dialog.setOnShowListener(v->{
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(w->{
+                JSONObject params=activeSummary.optJSONObject("effective_parameters");
+                if(params==null){Toast.makeText(this,"먼저 전략을 적용해 주세요",Toast.LENGTH_SHORT).show();return;}
+                fields[0].setText(Integer.toString(params.optInt("rsi_length",10)));
+                String[] keys={"rsi_oversold_min","rsi_oversold_max","rsi_overbought_min","rsi_overbought_max"};
+                for(int i=0;i<4;i++)fields[i+1].setText(Double.toString(params.optDouble(keys[i],values[i+1])));
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(w->{try{
+                int length=Integer.parseInt(fields[0].getText().toString());double a=Double.parseDouble(fields[1].getText().toString()),b=Double.parseDouble(fields[2].getText().toString()),c=Double.parseDouble(fields[3].getText().toString()),d=Double.parseDouble(fields[4].getText().toString());
+                if(length<2||length>500||!(0<=a&&a<=b&&b<c&&c<=d&&d<=100))throw new IllegalArgumentException();
+                chartRsiLength=length;chartRsiLongMin=a;chartRsiLongMax=b;chartRsiShortMin=c;chartRsiShortMax=d;indicatorPane=1;saveWorkspace();dialog.dismiss();load();
+            }catch(Exception e){Toast.makeText(this,"길이 2~500, 범위 0~100 · LONG 최소≤최대<SHORT 최소≤최대로 입력하세요",Toast.LENGTH_LONG).show();}});
+        });dialog.show();
+    }
     private void chartSettings(){
         new AlertDialog.Builder(this).setTitle("차트 설정")
-            .setItems(new String[]{fullscreen?"전체화면 해제":"전체화면","EMA 20/60/200 "+(ema?"끄기":"켜기"),"볼린저밴드 20·2σ "+(bands?"끄기":"켜기"),"보조지표 선택","전체 범위 600봉","상세 진단"},(d,i)->{
+            .setItems(new String[]{fullscreen?"전체화면 해제":"전체화면","EMA 20/60/200 "+(ema?"끄기":"켜기"),"볼린저밴드 20·2σ "+(bands?"끄기":"켜기"),"보조지표 선택","전체 범위 600봉","상세 진단","RSI 길이·롱숏 범위 설정"},(d,i)->{
                 if(i==0)setFullscreen(!fullscreen);
                 if(i==1)ema=!ema;
                 if(i==2)bands=!bands;
                 if(i==3)new AlertDialog.Builder(this).setTitle("가격 차트 아래 보조창")
-                    .setSingleChoiceItems(new String[]{"거래량만","RSI(14) 참고지표","ADX(14) 참고지표","전략 정규화 거래량"},indicatorPane,(a,k)->{indicatorPane=k;chart.options(ema,bands,indicatorPane);saveWorkspace();a.dismiss();}).show();
+                    .setSingleChoiceItems(new String[]{"거래량만","RSI("+chartRsiLength+") · 롱숏 범위","ADX(14) 참고지표","전략 정규화 거래량"},indicatorPane,(a,k)->{indicatorPane=k;chart.options(ema,bands,indicatorPane);saveWorkspace();a.dismiss();}).show();
                 if(i==4){width=600;zoomWidth=600;offset=Math.max(0,Math.min(offset,availableBars()-width));load();}
                 if(i==5)showDiagnostic();
+                if(i==6)rsiSettings();
                 chart.options(ema,bands,indicatorPane);saveWorkspace();
             }).setNegativeButton("닫기",null).show();
     }

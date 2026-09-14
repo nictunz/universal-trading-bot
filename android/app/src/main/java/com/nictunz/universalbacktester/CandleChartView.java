@@ -20,6 +20,9 @@ public class CandleChartView extends View {
     private final Map<Long,JSONObject> overlays = new HashMap<>();
     private JSONArray drawings = new JSONArray();
     private boolean showEma=true, showBands=false;
+    private int rsiLength=10;
+    private double longMin=20,longMax=41.5,shortMin=65.6,shortMax=74.7;
+    public void rsiOptions(int length,double lo,double hi,double slo,double shi){rsiLength=length;longMin=lo;longMax=hi;shortMin=slo;shortMax=shi;invalidate();}
     private int pane=1, drawingMode=0;
     private long anchorTime;
     private double anchorPrice;
@@ -211,17 +214,26 @@ public class CandleChartView extends View {
         }
         if(anchorSet){p.setColor(Color.YELLOW);c.drawCircle(timeX(anchorTime),y(anchorPrice),d(4),p);}
     }
+    private void drawRsiZone(Canvas c,float upper,float lower,double low,double high,int color,String label){
+        float yHigh=lower-(float)(high/100)*(lower-upper),yLow=lower-(float)(low/100)*(lower-upper);
+        p.setColor(color);p.setAlpha(35);c.drawRect(left,yHigh,right,yLow,p);p.setAlpha(255);
+        p.setColor(color);p.setStrokeWidth(d(2.5f));c.drawLine(left,yHigh,right,yHigh,p);c.drawLine(left,yLow,right,yLow,p);
+        text(c,label+" "+low+"–"+high,right-d(120),yHigh-d(3),color,10);
+    }
     private void drawPane(Canvas c,float upper,float lower){
         if(lower-upper<d(25))return;
-        String key=pane==1?"rsi14":pane==2?"adx14":"volume_ratio";
-        String label=pane==1?"RSI(14) · 참고지표":pane==2?"ADX(14) · 참고지표":"정규화 거래량 · 전략 진단";
+        String key=pane==1?"rsi":pane==2?"adx14":"volume_ratio";
+        String label=pane==1?"RSI("+rsiLength+") · 차트 설정":pane==2?"ADX(14) · 참고지표":"정규화 거래량 · 전략 진단";
         Map<Long,JSONObject> values=overlays;
         if(pane==3)values=auditValues;
         double ceiling=pane==3?10:100;
         if(pane==3)for(JSONObject row:values.values()){double v=row.optDouble(key,Double.NaN);if(Double.isFinite(v))ceiling=Math.max(ceiling,v);}
         p.setColor(Color.rgb(40,44,52));p.setStrokeWidth(d(1));
         for(int i=0;i<=2;i++){float yy=upper+(lower-upper)*i/2;c.drawLine(left,yy,right,yy,p);}
-        if(pane==1){p.setColor(Color.rgb(85,75,45));for(int level:new int[]{30,70}){float yy=lower-(lower-upper)*level/100;c.drawLine(left,yy,right,yy,p);}}
+        if(pane==1){
+            drawRsiZone(c,upper,lower,longMin,longMax,UP,"LONG");
+            drawRsiZone(c,upper,lower,shortMin,shortMax,DOWN,"SHORT");
+        }
         text(c,label,left,upper+d(10),Color.LTGRAY,10);
         p.setColor(Color.rgb(126,87,194));p.setStrokeWidth(d(1.5f));
         boolean have=false;float px=0,py=0;int valid=0;
