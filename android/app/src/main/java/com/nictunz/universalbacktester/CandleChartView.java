@@ -164,8 +164,8 @@ public class CandleChartView extends View {
             int a=index(en),b=index(ex),aa=a<0?0:a,bb=b<0?candles.size()-1:b;
             level(c,t.optDouble("tp_price",Double.NaN),aa,bb,UP,"TP");
             level(c,t.optDouble("sl_price",Double.NaN),aa,bb,DOWN,"SL");
-            if(a>=0){boolean isLong=t.optString("side").equals("LONG");float x=left+step*(a+.5f),yy=y(t.optDouble("avg_entry_price",t.optDouble("entry_price")));p.setColor(isLong?UP:DOWN);c.drawCircle(x,yy,d(4),p);text(c,isLong?"▲ LONG":"▼ SHORT",x,yy+(isLong?d(18):-d(10)),isLong?UP:DOWN,10);}
-            if(b>=0){float x=left+step*(b+.5f),yy=y(t.optDouble("exit_price"));text(c,"◆ "+t.optString("reason")+" "+String.format(Locale.US,"%+.2f",t.optDouble("pnl")),x,yy-d(8),Color.rgb(191,110,255),10);}
+            if(a>=0){boolean isLong=t.optString("side").equals("LONG");float x=left+step*(a+.5f),yy=y(t.optDouble("avg_entry_price",t.optDouble("entry_price")));p.setColor(isLong?UP:DOWN);c.drawCircle(x,yy,d(4),p);text(c,t.optString("display_source","BT")+" "+(isLong?"▲ LONG":"▼ SHORT"),x,yy+(isLong?d(18):-d(10)),isLong?UP:DOWN,10);}
+            if(b>=0){float x=left+step*(b+.5f),yy=y(t.optDouble("exit_price"));text(c,t.optString("display_source","BT")+" ◆ "+t.optString("reason")+" "+String.format(Locale.US,"%+.2f",t.optDouble("pnl")),x,yy-d(8),Color.rgb(191,110,255),10);}
         }
         for(int j=0;j<audit.length();j++){
             JSONObject r=audit.optJSONObject(j);if(r==null)continue;

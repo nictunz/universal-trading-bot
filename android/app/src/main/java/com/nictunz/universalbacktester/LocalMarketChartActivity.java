@@ -31,6 +31,13 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private final ArrayList<String[]> allMarkets=new ArrayList<>();
     private final ArrayList<File> databaseFiles=new ArrayList<>();
     private CandleChartView chart;
+    private UnifiedLiveFeed unifiedFeed;
+    private boolean unifiedLive=false,followLive=false,showLiveTrades=true,showBacktestTrades=true,screenActive;
+    private long unifiedBaseEnd=Long.MAX_VALUE;
+    private JSONObject serverLiveState=new JSONObject();
+    private JSONArray serverLiveTrades=new JSONArray();
+    private boolean liveCompatible(){return market!=null&&"bitget".equals(market[1])&&"BTC/USDT:USDT".equals(market[2])&&"15m".equals(market[3]);}
+
     private FrameLayout chartFrame;
     private StrategyDiagnosticPanel strategyPanel;
     private TextView downloadStatus;
@@ -147,7 +154,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         toolButton(tools,"거래",this::showTrades);
         toolButton(tools,"리플레이",this::replayMenu);
         toolButton(tools,"그리기·저장",this::chartTools);
-        toolButton(tools,"LIVE 차트",()->{pauseReplay();startActivity(new Intent(this,LiveMarketChartActivity.class));});
+        toolButton(tools,"실시간",this::unifiedMenu);
         toolButton(tools,"LIVE 서버",()->{pauseReplay();startActivity(new Intent(this,ServerDashboardActivity.class));});
         toolScroll.addView(tools);root.addView(toolScroll);
         downloadStatus=new TextView(this);downloadStatus.setTextColor(Color.CYAN);downloadStatus.setTextSize(12);downloadStatus.setMaxLines(3);downloadStatus.setPadding(dp(10),dp(4),dp(10),dp(4));downloadStatus.setVisibility(View.GONE);downloadStatus.setOnClickListener(v->downloadControls());root.addView(downloadStatus);
@@ -162,14 +169,19 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         addButton(actions,"날짜",()->{Calendar now=Calendar.getInstance();new DatePickerDialog(this,(v,y,m,d)->jumpDate(y,m,d),now.get(Calendar.YEAR),now.get(Calendar.MONTH),now.get(Calendar.DAY_OF_MONTH)).show();});
         addButton(actions,"‹ 거래",()->navigateTrade(-1));
         addButton(actions,"거래 ›",()->navigateTrade(1));
-        addButton(actions,"최근",()->{offset=Math.max(0,availableBars()-width);load();});
+        addButton(actions,"최근",()->{if(unifiedLive&&replayLimit>0){exitReplay();return;}if(unifiedLive)followLive=true;offset=Math.max(0,availableBars()-width);load();});
         root.addView(actions);
         replayBar=new LinearLayout(this);
         addButton(replayBar,"−1봉",()->{pauseReplay();stepReplay(-1);});
         addButton(replayBar,"재생/정지",()->{if(playing)pauseReplay();else if(replayLimit>0){playing=true;playback.post(playbackTick);}});
         addButton(replayBar,"+1봉",()->{pauseReplay();stepReplay(1);});
-        addButton(replayBar,"종료",()->{pauseReplay();replayLimit=0;replayBar.setVisibility(View.GONE);load();});
-        replayBar.setVisibility(View.GONE);root.addView(replayBar);setContentView(root);
+        addButton(replayBar,"종료",this::exitReplay);
+        replayBar.setVisibility(View.GONE);root.addView(replayBar);
+        unifiedFeed=new UnifiedLiveFeed(this,root,new UnifiedLiveFeed.Listener(){
+            public void changed(){if(unifiedLive&&liveCompatible()&&replayLimit==0&&followLive&&!loading&&!busy)load();}
+            public void state(JSONObject state,JSONArray log){serverLiveState=state;serverLiveTrades=log;if(unifiedLive&&followLive&&replayLimit==0&&showLiveTrades)renderLiveState();}
+            public void unavailable(){serverLiveState=new JSONObject();chart.setLivePosition(new JSONObject());if(unifiedLive&&followLive)diagnostic.setText("서버 신호·포지션 최신 여부 미확인 · 서버 로그인을 확인하세요.");}
+        });setContentView(root);
         scanDatabases();
     }
     private void scanDatabases(){
@@ -267,19 +279,57 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         return s.optString("symbol").equals(m[2])&&s.optString("timeframe").equals(m[3])
             &&s.optString("exchange","bitget").equals(m[1])&&!db.isEmpty()&&samePath(db,m[0]);
     }
+    private void disableUnified(){unifiedLive=false;followLive=false;if(unifiedFeed!=null)unifiedFeed.pause();chart.setLivePosition(new JSONObject());if(market!=null)total=Integer.parseInt(market[4]);offset=Math.min(offset,Math.max(0,total-width));}
+    private void unifiedMenu(){
+        if(blocked()||market==null)return;
+        if(!liveCompatible()){new AlertDialog.Builder(this).setMessage("현재 실시간 통합은 BITGET BTC/USDT 15분 DB에서 지원합니다.").setPositiveButton("확인",null).show();return;}
+        new AlertDialog.Builder(this).setTitle("DB + 실시간 차트").setItems(new String[]{"실시간 연결 · 최신 따라가기","리플레이 · 과거 DB 보기","서버 로그인",(showBacktestTrades?"숨기기":"표시")+" · 백테스트 거래",(showLiveTrades?"숨기기":"표시")+" · 서버 실제 거래"},(d,i)->{
+            if(i==0){pauseReplay();replayLimit=0;replayBar.setVisibility(View.GONE);unifiedLive=true;followLive=true;unifiedFeed.start(market[0]);}
+            if(i==1){setReplay(Integer.parseInt(market[4]));return;}
+            if(i==2){unifiedFeed.login();return;}
+            if(i==3)showBacktestTrades=!showBacktestTrades;
+            if(i==4){showLiveTrades=!showLiveTrades;if(!showLiveTrades)chart.setLivePosition(new JSONObject());}
+            saveWorkspace();load();
+        }).setNegativeButton("닫기",null).show();
+    }
+    private void renderLiveState(){
+        if(!unifiedLive||!showLiveTrades||replayLimit>0)return;
+        JSONObject state=serverLiveState,v=state.optJSONObject("values"),position=state.optJSONObject("position"),safety=state.optJSONObject("live_safety");
+        long stamp=CandleChartView.millis(state.optString("timestamp",""));boolean stale=stamp<0||System.currentTimeMillis()-stamp>35*60*1000L;
+        chart.setLivePosition(!stale&&followLive&&position!=null?position:new JSONObject());
+        ArrayList<String[]> rows=new ArrayList<>();int cyan=Color.CYAN,plain=Color.LTGRAY,yellow=Color.YELLOW;
+        panelRow(rows,"LIVE 판정봉 UTC",state.optString("timestamp","서버 로그인 필요"),cyan);
+        panelRow(rows,"신호",stale?"최신 여부 미확인":state.isNull("signal")?"없음":state.optString("signal","없음"),stale?yellow:plain);
+        panelRow(rows,"진입 판정",state.optString("signal_reason","대기"),plain);
+        if(v!=null){panelRow(rows,"거래량 / RSI",v.optString("volume_ratio","—")+" / "+v.optString("rsi","—"),plain);}
+        if(safety!=null)panelRow(rows,"거래소 포지션",safety.optString("exchange_position","미확인"),plain);
+        if(position!=null)panelRow(rows,"서버 고정 TP / SL",position.optString("tp","—")+" / "+position.optString("sl","—"),yellow);
+        panelRow(rows,"현재 봉","진행 중 · 확정 신호 아님",yellow);strategyPanel.setRows(rows);
+        diagnostic.setText("LIVE 서버 판정: "+state.optString("signal_reason","로그인 필요")+" · "+(stale?"서버 데이터 미확인":"판정봉 "+state.optString("timestamp")));
+    }
     private void load(){
         if(market==null||disposed||busy)return;
+        if(unifiedLive&&!liveCompatible())disableUnified();
+        if(unifiedLive&&screenActive)unifiedFeed.start(market[0]);
         navigationHandler.removeCallbacks(navigationLoad);
         loading=true;
         dataQuality=new JSONObject();
         strategyPanel.setRows(Collections.singletonList(new String[]{"상태","차트 불러오는 중…",String.valueOf(StrategyDiagnosticPanel.NEUTRAL)}));
         int request=generation.incrementAndGet();String[] m=market.clone();
         int start=offset,count=Math.min(width,Math.max(0,availableBars()-offset));String file=resultPath;boolean replay=replayLimit>0;
-        final int databaseBars=total;
+        final int databaseBars=Integer.parseInt(m[4]);
+        final boolean mergeLive=unifiedLive&&liveCompatible()&&replayLimit==0;
+        final boolean follow=followLive;
         final int rsiPeriod=chartRsiLength;final String indicatorConfig=chartIndicators.toString();
         worker.execute(()->{
             if(request!=generation.get())return;
             try(SQLiteDatabase db=SQLiteDatabase.openDatabase(m[0],null,SQLiteDatabase.OPEN_READONLY)){
+                JSONObject merged=null;
+                ArrayList<double[]> rows;
+                if(mergeLive){
+                    merged=new JSONObject(python().getModule("universal_bot.live_timeline").callAttr("page",m[0],unifiedFeed.tail,start,width,follow).toString());
+                    rows=new ArrayList<>();JSONArray values=merged.getJSONArray("rows");for(int i=0;i<values.length();i++){JSONArray value=values.getJSONArray(i);double[] row=new double[6];for(int k=0;k<6;k++)row[k]=value.getDouble(k);rows.add(row);}
+                }else{
                 String identity=candleIdentity(m);
                 if(!identity.equals(candleBufferKey)||start<candleBufferStart||start+count>candleBufferStart+candleBuffer.size()){
                     int bufferStart=Math.max(0,start-count),bufferCount=Math.min(databaseBars-bufferStart,count*3);
@@ -290,12 +340,15 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                     if(!identity.equals(candleIdentity(m)))throw new IOException("DB가 변경됐습니다. 다시 불러오세요.");
                     candleBuffer=fetched;candleBufferStart=bufferStart;candleBufferKey=identity;
                 }
-                ArrayList<double[]> rows=new ArrayList<>(candleBuffer.subList(start-candleBufferStart,Math.min(candleBuffer.size(),start-candleBufferStart+count)));
+                rows=new ArrayList<>(candleBuffer.subList(start-candleBufferStart,Math.min(candleBuffer.size(),start-candleBufferStart+count)));
+                }
+                final JSONObject timeline=merged;
+                final boolean hasLiveRows=mergeLive&&!rows.isEmpty()&&rows.get(rows.size()-1)[0]>timeline.optLong("base_end");
                 if(request!=generation.get())return;
                 runOnUiThread(()->{
                     if(disposed||request!=generation.get())return;
                     trades=new JSONArray();activeSummary=new JSONObject();auditPage=new JSONObject();
-                    chart.setData(rows,trades);chart.setAudit(null);chart.setOverlays(null);chart.setQuality(null);
+                    chart.setLivePosition(new JSONObject());chart.setData(rows,trades);chart.setAudit(null);chart.setOverlays(null);chart.setQuality(null);
                     chart.indicatorOptions(chartIndicators);chart.options(ema,bands,indicatorPane);
                     status.setText("캔들 표시 완료 · 지표·진단 불러오는 중…");warning.setText("지표·전략 결과를 확인 중입니다.");
                 });
@@ -349,26 +402,30 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                     alert="데이터 검사 · 표시 "+quality.optInt("bars")+"봉 / 전체 "+databaseBars+"봉 · "+readiness+" · 주의 "+affected+"봉 · 눌러 상세 보기\n"+alert;
                 }catch(Exception e){alert="⚠ 데이터 검사 실패: "+e.getMessage()+"\n"+alert;}
                 final JSONObject shownQuality=quality;
+                if(hasLiveRows)alert="DB와 LIVE 통합 · 진행봉은 미확정 · 추가 봉의 전략 진단은 서버 확정값 참조\n"+(timeline.optInt("missing")>0?"⚠ 표시 구간 "+timeline.optInt("missing")+"봉 누락 · 자동 보충 중\n":"")+alert;
                 final JSONObject shownPage=page;final String shownAlert=alert+indicatorWarning;
                 final JSONObject shownSummary=match&&!replay?s:new JSONObject();
                 JSONArray log=match?s.optJSONArray("trades_log"):null;
                 JSONArray visibleTrades=new JSONArray();
                 long cutoff=rows.isEmpty()?0:(long)rows.get(rows.size()-1)[0];
-                if(log!=null)for(int i=0;i<log.length();i++){JSONObject trade=log.optJSONObject(i);if(trade!=null&&(!replay||CandleChartView.millis(trade.optString("exit_time"))<=cutoff))visibleTrades.put(trade);}
+                if(log!=null&&(!mergeLive||showBacktestTrades))for(int i=0;i<log.length();i++){JSONObject trade=log.optJSONObject(i);if(trade!=null&&(!replay||CandleChartView.millis(trade.optString("exit_time"))<=cutoff))visibleTrades.put(trade);}
+                if(mergeLive&&showLiveTrades)for(int i=0;i<serverLiveTrades.length();i++){JSONObject row=serverLiveTrades.optJSONObject(i);if(row!=null){JSONObject tagged=new JSONObject(row.toString());tagged.put("display_source","LIVE");visibleTrades.put(tagged);}}
                 final JSONArray data=visibleTrades;
-                String msg=match?String.format(Locale.US,"수익 %.2f%% · MDD %.2f%% · %d거래",s.optDouble("return_percent"),s.optDouble("max_drawdown_percent"),data.length()):"캔들 보기 · ‘결과’에서 이 DB의 백테스트를 선택하세요";
+                String msg=match?String.format(Locale.US,"수익 %.2f%% · MDD %.2f%% · %d거래",s.optDouble("return_percent"),s.optDouble("max_drawdown_percent"),log==null?0:log.length()):"캔들 보기 · ‘결과’에서 이 DB의 백테스트를 선택하세요";
+                if(mergeLive)msg+=" · LIVE 이력 "+serverLiveTrades.length()+"건";
                 if(replay)msg="리플레이 · "+data.length()+"건 청산 확인 · 전체 성과 숨김";
                 if(data.length()>0&&!data.optJSONObject(0).has("tp_price"))msg+=" · TP/SL 선은 재실행 후 표시";
                 final String message=msg;
-                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;trades=data;activeSummary=shownSummary;auditPage=shownPage;dataQuality=shownQuality;warning.setText(shownAlert);chart.setData(rows,data);chart.setQuality(shownQuality.optJSONArray("rows"));chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.indicatorOptions(chartIndicators);chart.rsiOptions(chartRsiLength,chartRsiLongMin,chartRsiLongMax,chartRsiShortMin,chartRsiShortMax);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);saveWorkspace();});
+                runOnUiThread(()->{if(disposed||request!=generation.get())return;loading=false;if(timeline!=null){total=timeline.optInt("total",total);offset=timeline.optInt("offset",offset);unifiedBaseEnd=timeline.optLong("base_end",Long.MAX_VALUE);}trades=data;activeSummary=shownSummary;auditPage=shownPage;dataQuality=shownQuality;warning.setText(shownAlert);chart.setData(rows,data);chart.setQuality(shownQuality.optJSONArray("rows"));chart.setAudit(shownPage.optJSONArray("rows"));chart.setOverlays(displayedIndicators);chart.indicatorOptions(chartIndicators);chart.rsiOptions(chartRsiLength,chartRsiLongMin,chartRsiLongMax,chartRsiShortMin,chartRsiShortMax);chart.setDrawings(visibleAnnotations(cutoff));chart.options(ema,bands,indicatorPane);if(!rows.isEmpty()){long focus=pendingInspect>0?pendingInspect:(long)rows.get(rows.size()-1)[0];chart.focusTime(focus);pendingInspect=0;}modeText.setText((replay?"REPLAY · 미래 봉/청산 숨김":"DB 분석 · 실시간 시세 아님")+" · "+m[2]+" "+m[3]);status.setText(message);if(mergeLive){modeText.setText(followLive?"DB + LIVE · BITGET BTC 15분 · 최신 따라가기":"DB + LIVE · 과거 조회 중");if(followLive&&showLiveTrades)renderLiveState();}saveWorkspace();});
             }catch(Exception e){runOnUiThread(()->{if(!disposed&&request==generation.get()){loading=false;trades=new JSONArray();activeSummary=new JSONObject();auditPage=new JSONObject();chart.setData(Collections.emptyList(),trades);chart.setAudit(null);chart.setOverlays(null);status.setText("차트 읽기 실패: "+e.getMessage());}});}
         });
     }
-    @Override public void move(int bars){offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),offset+bars));scheduleNavigation();}
+    @Override public void move(int bars){if(unifiedLive&&replayLimit==0){setReplay(Math.max(1,offset+width+bars));return;}offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),offset+bars));scheduleNavigation();}
     @Override public void zoom(float factor){zoomWidth=Math.max(30,Math.min(600,zoomWidth/factor));int next=(int)zoomWidth;if(next==width)return;int center=offset+width/2;width=next;offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),center-width/2));scheduleNavigation();}
     private void jumpDate(int y,int month,int day){Calendar c=Calendar.getInstance(TimeZone.getTimeZone("UTC"));c.clear();c.set(y,month,day);jump(c.getTimeInMillis());}
     private void jump(long ms){
-        if(market==null)return;String[] m=market.clone();int request=generation.incrementAndGet();
+                if(market==null)return;String[] m=market.clone();int request=generation.incrementAndGet();
+        if(unifiedLive&&replayLimit==0){worker.execute(()->{try{int n=python().getModule("universal_bot.live_timeline").callAttr("offset_for_timestamp",m[0],unifiedFeed.tail,ms).toInt();runOnUiThread(()->{if(disposed||request!=generation.get())return;pendingInspect=ms;setReplay(Math.min(Integer.parseInt(m[4]),n+1));});}catch(Exception e){error(e);}});return;}
         worker.execute(()->{try(SQLiteDatabase db=SQLiteDatabase.openDatabase(m[0],null,SQLiteDatabase.OPEN_READONLY);Cursor c=db.rawQuery("SELECT count(*) FROM ohlcv WHERE asset_class='crypto' AND exchange=? AND symbol=? AND timeframe=? AND timestamp<?",new String[]{m[1],m[2],m[3],""+ms})){
             c.moveToFirst();int n=c.getInt(0);runOnUiThread(()->{if(disposed||request!=generation.get())return;offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),n-width/3));pendingInspect=ms;load();});
         }catch(Exception e){runOnUiThread(()->{if(!disposed)status.setText("날짜 이동 실패: "+e.getMessage());});}});
@@ -420,6 +477,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         JSONArray rows=auditPage.optJSONArray("rows");if(rows!=null)for(int i=0;i<rows.length();i++){JSONObject r=rows.optJSONObject(i);if(r!=null&&r.optLong("timestamp")==inspectedTime)return r;}return new JSONObject();
     }
     @Override public void inspect(long timestamp){
+        if(unifiedLive&&replayLimit==0&&timestamp>unifiedBaseEnd){renderLiveState();return;}
+
         inspectedTime=timestamp;JSONObject r=selectedAudit();
         updateStrategyPanel(r);
         if(r.length()==0){diagnostic.setText(auditPage.has("warmup")?"워밍업 / 계산 범위 밖 · "+auditPage.optInt("warmup")+"봉 준비 필요\n청산으로 계산이 종료된 이후에는 진단이 없습니다.":"전략 적용 후 봉을 터치하세요. 진단 패널을 눌러 상세 보기");return;}
@@ -742,7 +801,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         try{
             JSONObject value=new JSONObject().put("offset",offset).put("width",width).put("replay",replayLimit)
                 .put("rsi_length",chartRsiLength).put("rsi_long_min",chartRsiLongMin).put("rsi_long_max",chartRsiLongMax).put("rsi_short_min",chartRsiShortMin).put("rsi_short_max",chartRsiShortMax)
-                .put("indicators",chartIndicators).put("fullscreen",fullscreen).put("ema",ema).put("bands",bands).put("pane",indicatorPane)
+                .put("unified_live",unifiedLive).put("follow_live",followLive).put("show_live",showLiveTrades).put("show_backtest",showBacktestTrades).put("indicators",chartIndicators).put("fullscreen",fullscreen).put("ema",ema).put("bands",bands).put("pane",indicatorPane)
                 .put("drawings",annotations).put("bookmarks",bookmarks);
             prefs().edit().putString(workspaceKey(),value.toString())
                 .putString("chart_last_market:"+market[0],market[1]+"|"+market[2]+"|"+market[3]).apply();
@@ -755,12 +814,14 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             replayLimit=Math.max(0,Math.min(total,value.optInt("replay",0)));
             offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),value.optInt("offset",Math.max(0,total-width))));
             chartRsiLength=value.optInt("rsi_length",10);chartRsiLongMin=value.optDouble("rsi_long_min",20);chartRsiLongMax=value.optDouble("rsi_long_max",41.5);chartRsiShortMin=value.optDouble("rsi_short_min",65.6);chartRsiShortMax=value.optDouble("rsi_short_max",74.7);
+            unifiedLive=liveCompatible();followLive=unifiedLive&&replayLimit==0;showLiveTrades=value.optBoolean("show_live",true);showBacktestTrades=value.optBoolean("show_backtest",true);
             chartIndicators=value.optJSONObject("indicators");if(chartIndicators==null)chartIndicators=new JSONObject();
             setFullscreen(value.optBoolean("fullscreen",false));
             ema=value.optBoolean("ema",true);bands=value.optBoolean("bands",false);indicatorPane=Math.max(0,Math.min(3,value.optInt("pane",1)));
             annotations=value.optJSONArray("drawings");if(annotations==null)annotations=new JSONArray();
             bookmarks=value.optJSONArray("bookmarks");if(bookmarks==null)bookmarks=new JSONArray();
         }catch(JSONException e){replayLimit=0;annotations=new JSONArray();bookmarks=new JSONArray();}
+        if(!unifiedLive&&unifiedFeed!=null)unifiedFeed.pause();
         replayBar.setVisibility(replayLimit>0?View.VISIBLE:View.GONE);
         chart.drawingMode(0);activeSummary=new JSONObject();chart.setData(Collections.emptyList(),new JSONArray());chart.setAudit(null);chart.setOverlays(null);
     }
@@ -860,7 +921,12 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         new AlertDialog.Builder(this).setTitle("차트 데이터 검사").setView(scroll).setPositiveButton("닫기",null).show();
     }
     private void pauseReplay(){playing=false;playback.removeCallbacks(playbackTick);}
+    private void exitReplay(){
+        pauseReplay();replayLimit=0;followLive=unifiedLive&&liveCompatible();pendingInspect=0;
+        replayBar.setVisibility(View.GONE);offset=Math.max(0,total-width);saveWorkspace();load();
+    }
     private void setReplay(int limit){
+        if(unifiedLive){followLive=false;chart.setLivePosition(new JSONObject());total=Integer.parseInt(market[4]);}
         pauseReplay();replayLimit=Math.max(1,Math.min(total,limit));offset=Math.max(0,replayLimit-width);
         generation.incrementAndGet();activeSummary=new JSONObject();trades=new JSONArray();auditPage=new JSONObject();
         chart.setData(Collections.emptyList(),trades);chart.setAudit(null);chart.setOverlays(null);diagnostic.setText("리플레이 준비 중 · 미래 데이터 숨김");
@@ -1166,11 +1232,11 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             }).setNeutralButton("중지",(d,i)->{if(!retry){Intent intent=new Intent(this,BacktestForegroundService.class);intent.setAction(BacktestForegroundService.ACTION_STOP);startService(intent);}}).setNegativeButton("닫기",null).show();
         }catch(Exception e){error(e);}
     }
-    @Override protected void onResume(){super.onResume();downloadHandler.removeCallbacks(downloadTick);downloadHandler.post(downloadTick);}
-    @Override protected void onPause(){downloadHandler.removeCallbacks(downloadTick);saveWorkspace();pauseReplay();super.onPause();}
+    @Override protected void onResume(){super.onResume();screenActive=true;if(unifiedLive&&liveCompatible()&&unifiedFeed!=null)unifiedFeed.start(market[0]);downloadHandler.removeCallbacks(downloadTick);downloadHandler.post(downloadTick);}
+    @Override protected void onPause(){screenActive=false;if(unifiedFeed!=null)unifiedFeed.pause();downloadHandler.removeCallbacks(downloadTick);saveWorkspace();pauseReplay();super.onPause();}
     @Override public void onBackPressed(){if(fullscreen){setFullscreen(false);return;}super.onBackPressed();}
     @Override protected void onDestroy(){
-        disposed=true;navigationHandler.removeCallbacks(navigationLoad);pauseReplay();
+        disposed=true;if(unifiedFeed!=null)unifiedFeed.close();navigationHandler.removeCallbacks(navigationLoad);pauseReplay();
         // Keep a long local calculation alive across configuration changes. An
         // explicit "중지" (or leaving the screen permanently) still cancels it;
         // the result is persisted before the UI callback so a reopened chart can

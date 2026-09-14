@@ -60,7 +60,7 @@ public class LiveMarketChartActivity extends Activity implements CandleChartView
         if(disposed){opened.close();return;}tunnel=opened;origin="http://127.0.0.1:"+opened.getLocalPort();
         ui.post(()->{if(!disposed){serverStatus.setText("서버 연결됨 · 신호 조회 중");pollServer();}});
     }catch(Exception e){showServerError("SSH 연결 실패: "+e.getMessage());}});}
-    private static JSONObject get(String url,String cookie)throws Exception{
+    static JSONObject get(String url,String cookie)throws Exception{
         HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setConnectTimeout(7000);c.setReadTimeout(7000);c.setInstanceFollowRedirects(false);c.setRequestProperty("Accept","application/json");if(cookie!=null&&!cookie.isEmpty())c.setRequestProperty("Cookie",cookie);
         try{int status=c.getResponseCode();if(status==401||status==403||status==302||status==303)throw new IOException("인증 필요 · 서버 로그인 버튼을 누르세요");if(status!=200)throw new IOException("HTTP "+status);
             try(InputStream input=c.getInputStream();ByteArrayOutputStream output=new ByteArrayOutputStream()){byte[] buffer=new byte[8192];int n;while((n=input.read(buffer))!=-1){if(output.size()+n>2*1024*1024)throw new IOException("응답 크기 초과");output.write(buffer,0,n);}return new JSONObject(output.toString("UTF-8"));}
