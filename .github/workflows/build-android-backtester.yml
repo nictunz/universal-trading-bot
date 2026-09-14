@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build-android-backtester.yml'
       - 'android/**'
+      - 'universal_bot/live_timeline.py'
       - 'universal_bot/local_cache_core.py'
       - 'universal_bot/archive_historical.py'
       - 'universal_bot/historical.py'
@@ -81,6 +82,8 @@ jobs:
           fi
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK 35
         shell: bash
