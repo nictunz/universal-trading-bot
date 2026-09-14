@@ -15,6 +15,8 @@ public class CandleChartView extends View {
     private final GestureDetector gestures;
     private List<double[]> candles = Collections.emptyList();
     private JSONArray trades = new JSONArray();
+    private JSONObject livePosition=new JSONObject();
+    public void setLivePosition(JSONObject value){livePosition=value;invalidate();}
     private final Map<JSONObject,long[]> tradeTimes=new IdentityHashMap<>();
     private final Set<Long> entryTimes=new HashSet<>();
     private final Map<Long,JSONObject> overlays = new HashMap<>();
@@ -178,6 +180,11 @@ public class CandleChartView extends View {
                 p.setColor(price==tp?UP:DOWN);p.setStrokeWidth(d(1));
                 c.drawLine(left+step*at,y(price),left+step*(at+1),y(price),p);
             }
+        }
+        if(livePosition.optDouble("size",0)>0){
+            level(c,livePosition.optDouble("entry",Double.NaN),0,candles.size()-1,Color.CYAN,"서버 진입가");
+            level(c,livePosition.optDouble("tp",Double.NaN),0,candles.size()-1,UP,"서버 고정 TP");
+            level(c,livePosition.optDouble("sl",Double.NaN),0,candles.size()-1,DOWN,"서버 고정 SL");
         }
         drawAnnotations(c);
         c.restore();

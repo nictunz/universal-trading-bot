@@ -147,6 +147,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         toolButton(tools,"거래",this::showTrades);
         toolButton(tools,"리플레이",this::replayMenu);
         toolButton(tools,"그리기·저장",this::chartTools);
+        toolButton(tools,"LIVE 차트",()->{pauseReplay();startActivity(new Intent(this,LiveMarketChartActivity.class));});
         toolButton(tools,"LIVE 서버",()->{pauseReplay();startActivity(new Intent(this,ServerDashboardActivity.class));});
         toolScroll.addView(tools);root.addView(toolScroll);
         downloadStatus=new TextView(this);downloadStatus.setTextColor(Color.CYAN);downloadStatus.setTextSize(12);downloadStatus.setMaxLines(3);downloadStatus.setPadding(dp(10),dp(4),dp(10),dp(4));downloadStatus.setVisibility(View.GONE);downloadStatus.setOnClickListener(v->downloadControls());root.addView(downloadStatus);
