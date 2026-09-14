@@ -836,7 +836,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private void showPerformance(){
         pauseReplay();
         if(replayLimit>0){new AlertDialog.Builder(this).setMessage("리플레이에서는 미래 정보를 포함한 전체 수익률과 성과를 숨깁니다. 현재까지 청산된 거래만 거래 표에서 확인하세요.").setPositiveButton("확인",null).show();return;}
-        if(activeSummary.length()==0){new AlertDialog.Builder(this).setMessage("먼저 이 DB에 전략을 적용하거나 저장된 결과를 선택하세요.").setPositiveButton("결과 선택",(d,i)->chooseResult()).setNegativeButton("닫기",null).show();return;}
+        if(activeSummary.length()==0){new AlertDialog.Builder(this).setMessage("먼저 이 DB에 전략을 적용하거나 저장된 결과를 선택하세요.").setPositiveButton("결과 선택",(d,i)->chooseResult()).setNeutralButton("전략 적용",(d,i)->strategyDialog()).setNegativeButton("닫기",null).show();return;}
         JSONObject summary=activeSummary;
         LinearLayout content=new LinearLayout(this);content.setOrientation(1);content.setPadding(dp(12),dp(10),dp(12),dp(10));content.setBackgroundColor(Color.rgb(16,19,24));
         TextView metrics=new TextView(this);metrics.setTextColor(Color.WHITE);metrics.setTextSize(14);
