@@ -48,7 +48,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
     private long loadedResultModified;
     private JSONObject loadedResult = new JSONObject();
     /** Last result-loading failure is kept visible instead of being replaced by a generic "not applied" label. */
-    private String resultReadError = "";
+    private volatile String resultReadError = "";
     private float zoomWidth=160;
     private TextView diagnostic, warning;
     private JSONObject dataQuality=new JSONObject();
