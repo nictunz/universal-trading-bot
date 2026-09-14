@@ -283,7 +283,15 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
                 if(!m[1].equals("bitget"))alert="⚠ 전략 OHLC 기준은 BITGET입니다. 현재 "+m[1]+" 캔들입니다.";
                 else if(match && s.has("chart_audit_database") && !rows.isEmpty()){
                     try{page=new JSONObject(python().getModule("universal_bot.chart_workspace").callAttr("audit_page",file,(long)rows.get(0)[0],(long)rows.get(rows.size()-1)[0]).toString());}
-                    catch(Exception e){match=false;alert="⚠ "+e.getMessage();}
+                    catch(Exception e){
+                        String reason=e.getMessage()==null?e.toString():e.getMessage();
+                        // A diagnostic-page problem must not erase a valid
+                        // performance result. Only a changed source DB makes
+                        // the result unsafe; other read/indicator errors stay
+                        // visible as a warning while summary/trades remain usable.
+                        if(reason.contains("변경"))match=false;
+                        alert="⚠ 봉별 진단 로드 실패: "+reason;
+                    }
                 }else if(match)alert="⚠ 이전 결과는 봉별 진단이 없습니다. 전략을 다시 적용하세요.";
                 else if(!resultError.isEmpty())alert="⚠ 전략 결과 읽기 실패: "+resultError+" · '전략 적용'에서 다시 계산하세요.";
                 else{
