@@ -119,6 +119,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             public void onItemSelected(AdapterView<?> p,View v,int pos,long id){
                 if(pos<0||pos>=markets.size())return;
                 if(busy)return;
+                if(market==markets.get(pos))return;
                 saveWorkspace();pauseReplay();
                 market=markets.get(pos);total=Integer.parseInt(market[4]);offset=Math.max(0,total-width);trades=new JSONArray();restoreWorkspace();load();
             }
@@ -221,6 +222,8 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         selector.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,labels));
         if(markets.isEmpty()){status.setText("선택한 DB에 암호화폐 캔들 데이터가 없습니다.");return;}
         int preferred=0;for(int i=0;i<markets.size();i++)if(markets.get(i)[1].equals("bitget")){preferred=i;break;}
+        String lastMarket=prefs().getString("chart_last_market:"+selectedDatabasePath,"");
+        for(int i=0;i<markets.size();i++){String[] item=markets.get(i);if((item[1]+"|"+item[2]+"|"+item[3]).equals(lastMarket)){preferred=i;break;}}
         String applyState=prefs().getString("chart_apply_status:"+selectedDatabasePath,"");
         String applyError=prefs().getString("chart_apply_error:"+selectedDatabasePath,"");
         if("RUNNING".equals(applyState)){
@@ -707,9 +710,10 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
         try{
             JSONObject value=new JSONObject().put("offset",offset).put("width",width).put("replay",replayLimit)
                 .put("rsi_length",chartRsiLength).put("rsi_long_min",chartRsiLongMin).put("rsi_long_max",chartRsiLongMax).put("rsi_short_min",chartRsiShortMin).put("rsi_short_max",chartRsiShortMax)
-                .put("ema",ema).put("bands",bands).put("pane",indicatorPane)
+                .put("fullscreen",fullscreen).put("ema",ema).put("bands",bands).put("pane",indicatorPane)
                 .put("drawings",annotations).put("bookmarks",bookmarks);
-            prefs().edit().putString(workspaceKey(),value.toString()).apply();
+            prefs().edit().putString(workspaceKey(),value.toString())
+                .putString("chart_last_market:"+market[0],market[1]+"|"+market[2]+"|"+market[3]).apply();
         }catch(JSONException ignored){}
     }
     private void restoreWorkspace(){
@@ -719,6 +723,7 @@ public class LocalMarketChartActivity extends Activity implements CandleChartVie
             replayLimit=Math.max(0,Math.min(total,value.optInt("replay",0)));
             offset=Math.max(0,Math.min(Math.max(0,availableBars()-width),value.optInt("offset",Math.max(0,total-width))));
             chartRsiLength=value.optInt("rsi_length",10);chartRsiLongMin=value.optDouble("rsi_long_min",20);chartRsiLongMax=value.optDouble("rsi_long_max",41.5);chartRsiShortMin=value.optDouble("rsi_short_min",65.6);chartRsiShortMax=value.optDouble("rsi_short_max",74.7);
+            setFullscreen(value.optBoolean("fullscreen",false));
             ema=value.optBoolean("ema",true);bands=value.optBoolean("bands",false);indicatorPane=Math.max(0,Math.min(3,value.optInt("pane",1)));
             annotations=value.optJSONArray("drawings");if(annotations==null)annotations=new JSONArray();
             bookmarks=value.optJSONArray("bookmarks");if(bookmarks==null)bookmarks=new JSONArray();

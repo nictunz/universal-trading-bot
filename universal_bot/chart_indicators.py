@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import tempfile
+from pathlib import Path
 from contextlib import closing
 from functools import lru_cache
 
@@ -48,8 +52,45 @@ def _dataset(database: str, identity: str, exchange: str, symbol: str, timeframe
 
 def indicator_page(database: str, exchange: str, symbol: str, timeframe: str, first: int, last: int, rsi_length: int = 14) -> str:
     identity = json.dumps(stamp(database), sort_keys=True)
+    # JSON only: never deserialize executable cache formats. Bound disk usage.
+    key = json.dumps(["chart-page-v2", str(Path(database).resolve()), identity,
+                      exchange, symbol, timeframe, int(first), int(last), int(rsi_length)])
+    folder = Path(database).parent / "chart-indicator-cache"
+    cached = folder / (hashlib.sha256(key.encode()).hexdigest() + ".json")
+    try:
+        payload = cached.read_text(encoding="utf-8")
+        rows = json.loads(payload)
+        if isinstance(rows, list) and json.dumps(stamp(database), sort_keys=True) == identity:
+            return payload
+    except (OSError, ValueError):
+        pass
     values = _dataset(database, identity, exchange, symbol, timeframe, int(rsi_length))
-    rows = [{"timestamp": int(t), **row.to_dict()} for t, row in values.loc[first:last].iterrows()]
+    # Vectorized serialization avoids a Python Series allocation for each candle.
+    page = values.loc[first:last].copy()
+    page.insert(0, "timestamp", page.index.astype("int64"))
+    payload = page.to_json(orient="records", double_precision=15)
     if json.dumps(stamp(database), sort_keys=True) != identity:
         raise ValueError("지표 계산 중 DB가 변경됐습니다. 다시 불러오세요.")
-    return json.dumps(clean(rows), allow_nan=False)
+    temporary = None
+    try:
+        folder.mkdir(exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=folder, delete=False) as out:
+            temporary = out.name
+            out.write(payload)
+        os.replace(temporary, cached)
+        temporary = None
+        files = sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        size = 0
+        for i, item in enumerate(files):
+            size += item.stat().st_size
+            if i >= 32 or size > 16 * 1024 * 1024:
+                item.unlink(missing_ok=True)
+    except OSError:
+        pass  # A read-only/full disk must not prevent chart display.
+    finally:
+        if temporary:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass
+    return payload

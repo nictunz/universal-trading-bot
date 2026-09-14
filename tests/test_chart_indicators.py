@@ -45,3 +45,29 @@ def test_custom_rsi_length_is_causal_and_changes_values():
             pass
         else:
             raise AssertionError("invalid RSI length accepted")
+
+
+def test_page_cache_survives_memory_reset_and_invalidates(tmp_path, monkeypatch):
+    import json
+    from universal_bot import chart_indicators as module
+    identity = {"version": 1}
+    calls = []
+    monkeypatch.setattr(module, "stamp", lambda path: dict(identity))
+    def dataset(*args):
+        calls.append(args)
+        return pd.DataFrame({"rsi": [12.5, 42.0]}, index=[1000, 2000])
+    monkeypatch.setattr(module, "_dataset", dataset)
+    args = (str(tmp_path / "candles.db"), "bitget", "BTC/USDT:USDT", "15m", 1000, 2000)
+    first = module.indicator_page(*args, 10)
+    assert module.indicator_page(*args, 10) == first
+    assert len(calls) == 1
+    assert json.loads(first)[0] == {"timestamp": 1000, "rsi": 12.5}
+    module.indicator_page(*args, 14)
+    assert len(calls) == 2
+    identity["version"] = 2
+    module.indicator_page(*args, 10)
+    assert len(calls) == 3
+    for item in (tmp_path / "chart-indicator-cache").glob("*.json"):
+        item.write_text("broken")
+    assert module.indicator_page(*args, 10) == first
+    assert len(calls) == 4
