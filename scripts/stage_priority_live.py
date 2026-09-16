@@ -11,6 +11,7 @@ import shutil
 
 FILES = (
     'universal_bot/main.py',
+    'universal_bot/dashboard.py',
     'universal_bot/priority_controller.py',
     'universal_bot/priority_runtime.py',
     'universal_bot/priority_signals.py',

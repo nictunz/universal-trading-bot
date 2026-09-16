@@ -252,10 +252,17 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
             relay_revision = _relay_snapshot_revision()
             try:
                 status = priority_runtime.scan_once()
-                runtimes[0].last_error = "" if status not in {"HALTED"} else str(priority_runtime.snapshot())
+                snapshot = priority_runtime.snapshot()
+                setattr(runtimes[0].engine, "priority_snapshot", snapshot)
+                if status == "HALTED":
+                    runtimes[0].engine.safety.fail("PRIORITY_RUNTIME_HALTED: " + str(snapshot.get("halted") or "unknown"))
+                    runtimes[0].last_error = str(snapshot)
+                else:
+                    runtimes[0].last_error = ""
             except Exception as exc:
                 runtimes[0].last_error = f"{type(exc).__name__}: {exc}"
                 priority_runtime.controller.halt(runtimes[0].last_error)
+                runtimes[0].engine.safety.fail("PRIORITY_RUNTIME_ERROR: " + runtimes[0].last_error)
             _wait_for_relay_change(relay_revision, max(1, settings.poll_seconds))
         return
 

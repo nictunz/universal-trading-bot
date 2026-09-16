@@ -23,6 +23,9 @@ SOURCE_FILES = (
     "universal_bot/engine.py",
     "universal_bot/main.py",
     "universal_bot/runtime_engine.py",
+    "universal_bot/priority_controller.py",
+    "universal_bot/priority_runtime.py",
+    "universal_bot/priority_signals.py",
     "universal_bot/adapters/bitget_elite.py",
     "universal_bot/providers/mobile_relay.py",
     "universal_bot/trade_history.py",
@@ -69,7 +72,7 @@ def _runtime_info(scanner) -> dict:
     runtimes = []
     for runtime in scanner.runtimes:
         s = runtime.engine.settings
-        runtimes.append({
+        item = {
             "symbol": runtime.symbol,
             "mode": s.bot_mode.upper(),
             "timeframe": s.timeframe,
@@ -85,7 +88,13 @@ def _runtime_info(scanner) -> dict:
                 "max_child_orders": s.live_entry_max_child_orders,
                 "max_adverse_slippage_percent": s.live_entry_max_adverse_slippage_percent,
             },
-        })
+        }
+        priority = getattr(runtime.engine, "priority_snapshot", None)
+        if priority:
+            item["priority"] = priority
+            item["timeframe"] = "5m+15m"
+            item["execution"]["multipliers"] = priority.get("multipliers")
+        runtimes.append(item)
     return {
         "server_commit": commit,
         "source_fingerprint": BOOT_SOURCE["fingerprint"],
@@ -110,6 +119,7 @@ def _one(runtime):
             source_status = getter()
         except Exception:
             source_status = {}
+    priority = getattr(runtime.engine, "priority_snapshot", None)
     if state is None:
         return {
             "symbol": runtime.symbol,
@@ -117,6 +127,7 @@ def _one(runtime):
             "error": runtime.last_error,
             "volume_sources": source_status,
             "live_safety": safety.__dict__,
+            "priority": priority,
         }
     p = state.position
     return {
@@ -148,6 +159,7 @@ def _one(runtime):
             "exchange_position": safety.exchange_position,
             "internal_position": safety.internal_position,
         },
+        "priority": priority,
     }
 
 
