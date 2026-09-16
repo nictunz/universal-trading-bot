@@ -20,6 +20,8 @@ SOURCE_FILES = (
     'universal_bot/runtime_engine.py', 'universal_bot/adapters/bitget_elite.py',
     'universal_bot/providers/mobile_relay.py', 'universal_bot/trade_history.py',
     'universal_bot/dashboard.py',
+    'universal_bot/priority_controller.py', 'universal_bot/priority_runtime.py',
+    'universal_bot/priority_signals.py',
 )
 SERVICE = 'universal-trading-bot-dashboard.service'
 
