@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+import os
 import threading
 import time
 
@@ -18,6 +19,7 @@ from universal_bot.live_settings_dashboard import install_live_settings_dashboar
 from universal_bot.providers.mobile_relay import MobileRelayMarketData
 from universal_bot.rebate_transfer import run_rebate_transfer_worker
 from universal_bot.runtime_engine import TradingEngine
+from universal_bot.priority_runtime import PriorityRuntime
 from universal_bot.scanner import SymbolRuntime, UniversalScanner
 from universal_bot.strategy import UniversalV15Strategy
 from universal_bot.strategy_dashboard import (
@@ -202,12 +204,25 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
     """
     runtimes = scanner.runtimes
 
+    priority_enabled = os.getenv("PRIORITY_LIVE_ENABLED", "0").strip() == "1"
+    priority_runtime = None
+    symbols = list(settings.symbol_list)
+    if priority_enabled and (settings.bot_mode.upper() != "LIVE" or symbols != ["BTC/USDT:USDT"]):
+        raise RuntimeError("priority LIVE requires LIVE mode and exactly BTC/USDT:USDT")
+
     for symbol in settings.symbol_list:
         try:
             local = settings.model_copy(update={"symbol": symbol})
             adapter = build_adapter(local)
             strategy = UniversalV15Strategy(local)
-            runtimes.append(SymbolRuntime(symbol, TradingEngine(local, adapter, strategy)))
+            engine = TradingEngine(local, adapter, strategy)
+            runtimes.append(SymbolRuntime(symbol, engine))
+            if priority_enabled:
+                engine._initialize_live()
+                priority_runtime = PriorityRuntime(
+                    engine,
+                    Path.home() / ".local/state/universal-trading-bot/priority-live.sqlite",
+                )
             profile = local.bitget_execution_profile if local.exchange.lower() == "bitget" else "standard"
             api_family = getattr(adapter, "API_FAMILY", "classic-v2" if isinstance(adapter, BitgetEliteAdapter) else "standard")
             print(
@@ -220,7 +235,7 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
                 flush=True,
             )
 
-    if runtimes:
+    if runtimes and not priority_enabled:
         try:
             _apply_strategy_settings(scanner, _load_strategy_settings())
         except Exception as exc:
@@ -228,6 +243,21 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
                 f"STRATEGY_SETTINGS_APPLY_FAILED error={type(exc).__name__}: {exc}",
                 flush=True,
             )
+
+    if priority_enabled:
+        if priority_runtime is None:
+            raise RuntimeError("priority LIVE runtime was not initialized")
+        print("PRIORITY_LIVE_READY profiles=5m:9.55,15m:5.0", flush=True)
+        while True:
+            relay_revision = _relay_snapshot_revision()
+            try:
+                status = priority_runtime.scan_once()
+                runtimes[0].last_error = "" if status not in {"HALTED"} else str(priority_runtime.snapshot())
+            except Exception as exc:
+                runtimes[0].last_error = f"{type(exc).__name__}: {exc}"
+                priority_runtime.controller.halt(runtimes[0].last_error)
+            _wait_for_relay_change(relay_revision, max(1, settings.poll_seconds))
+        return
 
     limit = _scanner_fetch_limit(settings)
     while True:
