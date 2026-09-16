@@ -1,84 +1,131 @@
-name: check-live-health-once
-
+name: recover-priority-live-after-android-update
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - '.github/workflows/check-live-health-once.yml'
-
+    branches: [fix/priority-backtest-ui-verification]
+    paths: ['.github/workflows/check-live-health-once.yml']
 permissions:
   contents: read
-
 concurrency:
-  group: check-live-health-once
+  group: priority-live-recovery
   cancel-in-progress: false
-
 jobs:
-  check:
+  recover:
     runs-on: [self-hosted, trading-bot]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Authenticate and verify active LIVE runtime
+      - uses: actions/checkout@v4
+      - name: Verify, recover allow-listed HALT, and validate LIVE
         shell: bash
         run: |
           set -euo pipefail
-          cd /home/kpj3669/universal-trading-bot
-          /home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python - <<'PY'
-          import json
-          import time
+          APP_DIR=/home/kpj3669/universal-trading-bot
+          PY=/home/kpj3669/.cache/universal-trading-bot-dashboard-venv/bin/python
+          SERVICE=universal-trading-bot-dashboard.service
+          STATE=/home/kpj3669/.local/state/universal-trading-bot/priority-live.sqlite
+          RELAY=/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json
+          cd "$APP_DIR"
+
+          PYTHONPATH="$APP_DIR" "$PY" - <<'PY'
+          import json, time
           from pathlib import Path
           import requests
           from universal_bot.config import Settings
 
-          def require(condition, message):
-              if not condition:
+          def require(value, message):
+              if not value:
                   raise SystemExit(message)
 
+          def fresh(path, timeframe):
+              path = Path(path)
+              require(path.is_file(), f"missing relay: {path}")
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              require(payload.get("schema_version") == 1, f"bad schema: {path.name}")
+              require(payload.get("timeframe") == timeframe, f"bad timeframe: {path.name}")
+              completed = int(payload.get("snapshot_completed_at_ms") or payload.get("generated_at_ms") or 0)
+              age = time.time() - completed / 1000
+              require(-5 <= age <= 90, f"stale relay: {path.name} age={age:.1f}s")
+              return round(age, 1)
+
+          relay = Path("/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json")
+          ages = {"15m": fresh(relay, "15m"), "5m": fresh(relay.with_name("mobile-market-relay-5m.json"), "5m")}
           s = Settings()
-          require(s.bot_mode.upper() == 'LIVE', 'Configured mode is not LIVE')
-          relay = Path('/home/kpj3669/.cache/universal-trading-bot/mobile-market-relay.json')
-          require(relay.is_file(), 'Mobile relay snapshot is missing')
-          age = time.time() - relay.stat().st_mtime
-          require(0 <= age <= 90, 'Mobile relay snapshot is stale or future-dated')
-          base = 'http://127.0.0.1:8000'
+          require(s.bot_mode.upper() == "LIVE", "mode is not LIVE")
           with requests.Session() as session:
-              response = session.post(
-                  base + '/login',
-                  data={'username': s.dashboard_username, 'password': s.dashboard_password, 'next': '/'},
-                  allow_redirects=False, timeout=10,
-              )
-              require(response.status_code == 303, 'Dashboard login failed')
-              def get(path):
-                  response = session.get(base + path, allow_redirects=False, timeout=30)
-                  require(response.status_code == 200, 'Dashboard check failed: ' + path + ' HTTP ' + str(response.status_code))
-                  return response.json()
-              health = get('/health')
-              ready = get('/api/live-readiness')
-              state = get('/api/state')
-              runtime = get('/api/runtime-info')
-              strategy = get('/api/strategy-settings').get('values')
-          require(health.get('status') == 'ok' and not health.get('errors') and not health.get('live_halted'), 'Runtime health is not OK')
-          require(ready.get('ready') is True, 'LIVE readiness failed')
-          require(any(c.get('name') == 'mode' and c.get('value') == 'LIVE' for c in ready.get('checks', [])), 'Readiness mode is not LIVE')
-          require(ready.get('api_family') == 'classic-v2', 'Unexpected API family')
-          require(runtime.get('source_matches_disk') is True, 'Running source differs from disk')
-          saved = json.loads(Path('data/dashboard-strategy-settings.json').read_text(encoding='utf-8'))
-          require(isinstance(strategy, dict) and bool(strategy) and saved == strategy, 'Saved strategy differs from active API settings')
-          symbols = state.get('symbols') or []
-          require(bool(symbols), 'Runtime has no symbols')
-          summary = []
-          for row in symbols:
-              safety = row.get('live_safety') or {}
-              require(not row.get('error'), 'Symbol runtime error')
-              require(safety.get('enabled') is True and safety.get('halted') is False, 'LIVE safety is disabled or halted')
-              require(safety.get('protection_ok') is True, 'Position protection check failed')
-              flat = (safety.get('exchange_position') or {}).get('side') == 'FLAT'
-              summary.append({'symbol': row.get('symbol'), 'timeframe': row.get('timeframe'),
-                              'signal_reason': row.get('signal_reason'),
-                              'protection': 'NOT_APPLICABLE_FLAT' if flat else 'PASS'})
-          print(json.dumps({'health': 'ok', 'ready': True, 'mode': 'LIVE',
-                            'relay_age_seconds': round(age, 1), 'settings_match': True,
-                            'deployment_commit': runtime.get('deployment_commit'),
-                            'symbols': summary}, ensure_ascii=False))
+              login = session.post("http://127.0.0.1:8000/login",
+                  data={"username": s.dashboard_username, "password": s.dashboard_password, "next": "/"},
+                  allow_redirects=False, timeout=10)
+              require(login.status_code == 303, "dashboard login failed")
+              ready = session.get("http://127.0.0.1:8000/api/live-readiness", timeout=30).json()
+              state = session.get("http://127.0.0.1:8000/api/state", timeout=30).json()
+          require(ready.get("ready") is True, "LIVE readiness failed")
+          positions = [c.get("position") for c in ready.get("checks", []) if c.get("name") == "position_query"]
+          require(positions and positions[0].get("side") == "FLAT", "exchange is not FLAT")
+          rows = state.get("symbols") or []
+          require(len(rows) == 1, "unexpected runtime symbols")
+          row = rows[0]
+          safety = row.get("live_safety") or {}
+          priority = row.get("priority") or {}
+          require((safety.get("exchange_position") or {}).get("side") == "FLAT", "runtime exchange position is not FLAT")
+          require(safety.get("protection_ok") is True, "protection check failed")
+          require(priority.get("owner") is None and priority.get("pending") is None, "priority operation is active")
+          allowed = {
+              "RuntimeError: mobile relay 5m sidecar missing; Android dual-timeframe update required",
+              "mobile relay 5m sidecar missing; Android dual-timeframe update required",
+          }
+          require(priority.get("halted") in allowed, "HALT reason is not allow-listed")
+          print(json.dumps({"preflight":"ok","relay_age_seconds":ages,"position":"FLAT"}))
+          PY
+
+          sudo systemctl stop "$SERVICE"
+          trap 'sudo systemctl start "$SERVICE" || true' EXIT
+          systemctl is-active "$SERVICE" >/dev/null && { echo "service did not stop"; exit 1; } || true
+
+          PYTHONPATH="$APP_DIR" "$PY" "$GITHUB_WORKSPACE/scripts/recover_priority_data_halt.py"             --state "$STATE" --relay "$RELAY" --max-age 90
+          PYTHONPATH="$APP_DIR" "$PY" "$GITHUB_WORKSPACE/scripts/recover_priority_data_halt.py"             --state "$STATE" --relay "$RELAY" --max-age 90 --apply
+
+          sudo systemctl start "$SERVICE"
+          for _ in $(seq 1 30); do
+            systemctl is-active --quiet "$SERVICE" && curl -fsS http://127.0.0.1:8000/health >/dev/null && break
+            sleep 1
+          done
+          systemctl is-active --quiet "$SERVICE"
+          trap - EXIT
+
+          PYTHONPATH="$APP_DIR" "$PY" - <<'PY'
+          import json, time
+          import requests
+          from universal_bot.config import Settings
+
+          s = Settings()
+          with requests.Session() as session:
+              login = session.post("http://127.0.0.1:8000/login",
+                  data={"username": s.dashboard_username, "password": s.dashboard_password, "next": "/"},
+                  allow_redirects=False, timeout=10)
+              if login.status_code != 303:
+                  raise SystemExit("dashboard login failed after recovery")
+              health = session.get("http://127.0.0.1:8000/health", timeout=30).json()
+              ready = session.get("http://127.0.0.1:8000/api/live-readiness", timeout=30).json()
+              state = session.get("http://127.0.0.1:8000/api/state", timeout=30).json()
+          if health.get("status") != "ok" or health.get("errors") or health.get("live_halted"):
+              raise SystemExit("health failed after recovery: " + json.dumps(health))
+          if ready.get("ready") is not True:
+              raise SystemExit("readiness failed after recovery")
+          rows = state.get("symbols") or []
+          if len(rows) != 1:
+              raise SystemExit("unexpected runtime symbols after recovery")
+          safety = rows[0].get("live_safety") or {}
+          priority = rows[0].get("priority") or {}
+          if safety.get("enabled") is not True or safety.get("halted") is not False:
+              raise SystemExit("LIVE safety is not active")
+          if safety.get("protection_ok") is not True:
+              raise SystemExit("position protection failed")
+          if priority.get("status") == "HALTED" or priority.get("halted") is not None:
+              raise SystemExit("priority runtime remains halted")
+          print(json.dumps({
+              "health":"ok","ready":True,"live_safety":"active",
+              "priority_status":priority.get("status"),
+              "owner":priority.get("owner"),"pending":priority.get("pending"),
+              "exchange_position":(safety.get("exchange_position") or {}).get("side"),
+              "protection_ok":True,
+          }))
           PY
