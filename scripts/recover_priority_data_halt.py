@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """Clear only a known, recoverable Priority LIVE market-data HALT.
 
-Fail closed. This script never places/cancels orders and never clears execution,
-protection, ownership, profile, or unfinished-operation faults.
-
-Run only while the Priority LIVE service is stopped. It requires:
-- persisted owner/position/pending are empty;
-- persisted HALT is an allow-listed mobile-relay data fault;
-- both 15m and 5m relay snapshots are fresh and structurally readable;
-- the current profile hash is unchanged.
-
-Exchange FLAT must still be verified separately by the deployment/recovery
-procedure before this script is invoked. This separation keeps this helper
-read-only with respect to the exchange.
+Fail closed. This helper never contacts the exchange and never places/cancels
+orders. Exchange FLAT/stale-plan checks must be completed separately first.
+It additionally requires exclusive ownership of the Priority journal lock, so
+it cannot mutate state while the LIVE controller is running.
 """
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 from pathlib import Path
 import shutil
@@ -25,7 +18,6 @@ import time
 
 from universal_bot.priority_signals import profile_hash
 from universal_bot.providers.mobile_relay import MobileRelayMarketData
-
 
 DEFAULT_STATE = Path.home() / ".local/state/universal-trading-bot/priority-live.sqlite"
 DEFAULT_RELAY = MobileRelayMarketData.DEFAULT_PATH
@@ -51,38 +43,67 @@ def _fresh(path: Path, expected_tf: str, max_age: int) -> None:
         raise RuntimeError(f"relay not fresh: {path.name} age={age:.1f}s")
 
 
-def recover(state_path: Path, relay_path: Path, max_age: int, apply: bool) -> dict:
-    sidecar = relay_path.with_name("mobile-market-relay-5m.json")
-    _fresh(relay_path, "15m", max_age)
-    _fresh(sidecar, "5m", max_age)
-
-    db = sqlite3.connect(state_path)
+def _lock_exclusive(state_path: Path):
+    lock_path = Path(str(state_path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a")
     try:
-        row = db.execute("SELECT body FROM priority_state WHERE id=1").fetchone()
-        if not row:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise RuntimeError("priority journal is in use; stop LIVE service before recovery")
+    return handle
+
+
+def recover(state_path: Path, relay_path: Path, max_age: int, apply: bool) -> dict:
+    state_path = Path(state_path)
+    relay_path = Path(relay_path)
+    lock = _lock_exclusive(state_path)
+    try:
+        sidecar = relay_path.with_name("mobile-market-relay-5m.json")
+        _fresh(relay_path, "15m", max_age)
+        _fresh(sidecar, "5m", max_age)
+        if not state_path.is_file():
             raise RuntimeError("priority state missing")
-        state = json.loads(row[0])
-        if state.get("profile") != profile_hash():
-            raise RuntimeError("profile changed; recovery refused")
-        if state.get("owner") is not None or state.get("position") is not None:
-            raise RuntimeError("persisted position/owner exists; recovery refused")
-        if state.get("pending") is not None:
-            raise RuntimeError("unfinished operation exists; recovery refused")
-        if state.get("halted") not in RECOVERABLE_HALTS:
-            raise RuntimeError(f"HALT is not allow-listed: {state.get('halted')!r}")
-        before = dict(state)
-        if apply:
+
+        db = sqlite3.connect(state_path)
+        try:
+            row = db.execute("SELECT body FROM priority_state WHERE id=1").fetchone()
+            if not row:
+                raise RuntimeError("priority state missing")
+            state = json.loads(row[0])
+            if state.get("profile") != profile_hash():
+                raise RuntimeError("profile changed; recovery refused")
+            if state.get("owner") is not None or state.get("position") is not None:
+                raise RuntimeError("persisted position/owner exists; recovery refused")
+            if state.get("pending") is not None:
+                raise RuntimeError("unfinished operation exists; recovery refused")
+            if state.get("halted") not in RECOVERABLE_HALTS:
+                raise RuntimeError(f"HALT is not allow-listed: {state.get('halted')!r}")
+            before = dict(state)
+            if not apply:
+                return {"ok": True, "changed": False, "before": before, "after": state}
+
             stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             backup = state_path.with_name(f"priority-live-before-auto-recovery-{stamp}.sqlite")
-            db.commit()
-            shutil.copy2(state_path, backup)
+            backup_db = sqlite3.connect(backup)
+            try:
+                db.backup(backup_db)
+            finally:
+                backup_db.close()
+
             state["halted"] = None
             with db:
                 db.execute("UPDATE priority_state SET body=? WHERE id=1", (json.dumps(state, allow_nan=False),))
-            return {"ok": True, "changed": True, "backup": str(backup), "before": before, "after": state}
-        return {"ok": True, "changed": False, "before": before, "after": state}
+            check = json.loads(db.execute("SELECT body FROM priority_state WHERE id=1").fetchone()[0])
+            if check.get("halted") is not None or check.get("owner") is not None or check.get("position") is not None or check.get("pending") is not None:
+                raise RuntimeError("post-recovery state verification failed")
+            return {"ok": True, "changed": True, "backup": str(backup), "before": before, "after": check}
+        finally:
+            db.close()
     finally:
-        db.close()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
 
 
 def main() -> int:
