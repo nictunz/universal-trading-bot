@@ -7,7 +7,7 @@ on:
       - '.github/workflows/priority-relay-check.yml'
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
   actions: read
 jobs:
   compile:
@@ -82,11 +82,34 @@ jobs:
               scope='Android relay update only; does not deploy or activate server trading')
           Path('priority-android-manifest.json').write_text(json.dumps(data, indent=2))
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Publish installable candidate release
+        uses: actions/github-script@v7
         with:
-          name: priority-relay-signed-apk
-          path: |
-            UniversalTradingBacktester-Android-priority.apk
-            priority-android-manifest.json
-          if-no-files-found: error
-          retention-days: 14
+          script: |
+            const fs = require('fs'), crypto = require('crypto');
+            const manifest = JSON.parse(fs.readFileSync('priority-android-manifest.json', 'utf8'));
+            const apk = fs.readFileSync(manifest.apk_name);
+            if (manifest.commit !== context.sha || !manifest.verified ||
+                crypto.createHash('sha256').update(apk).digest('hex') !== manifest.sha256)
+              throw new Error('Candidate manifest mismatch');
+            const tag = 'priority-relay-' + context.runId;
+            const release = (await github.rest.repos.createRelease({
+              ...context.repo, tag_name: tag, target_commitish: context.sha,
+              name: 'Android ' + manifest.version_name + ' dual-timeframe relay',
+              body: 'Signed relay candidate. Adds BTC 5m relay alongside existing 15m. Does not deploy or activate server trading. SHA-256: ' + manifest.sha256,
+              draft: true, prerelease: true
+            })).data;
+            for (const name of [manifest.apk_name, 'priority-android-manifest.json']) {
+              const data = fs.readFileSync(name);
+              const asset = (await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name, data,
+                headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
+              })).data;
+              if (asset.size !== data.length) throw new Error('Asset size mismatch');
+              if (asset.digest && asset.digest !== 'sha256:' + crypto.createHash('sha256').update(data).digest('hex'))
+                throw new Error('Asset digest mismatch');
+            }
+            await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false, prerelease: true, make_latest: 'false'
+            });
+            core.info('CANDIDATE_RELEASE ' + release.html_url);
