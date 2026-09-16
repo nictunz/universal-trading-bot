@@ -120,6 +120,15 @@ class MobileRelayMarketData:
         payload = self._load()
         relay_tf = str(payload.get("timeframe") or "")
         if relay_tf != timeframe:
+            # Preserve the legacy 15m stream. The updated Android app publishes
+            # BTC 5m independently; never split a 15m volume into invented bars.
+            if timeframe == "5m" and self.path.name == "mobile-market-relay.json":
+                sidecar = self.path.with_name("mobile-market-relay-5m.json")
+                if sidecar.is_file():
+                    return MobileRelayMarketData(sidecar, self.max_age_seconds).fetch_volume(
+                        exchange_id, symbol, timeframe, limit
+                    )
+                raise RuntimeError("mobile relay 5m sidecar missing; Android dual-timeframe update required")
             raise RuntimeError(f"mobile relay timeframe mismatch: relay={relay_tf} requested={timeframe}")
         markets = payload.get("markets") or {}
         symbol_key = self._symbol_key(symbol)
@@ -152,10 +161,6 @@ class MobileRelayMarketData:
         return series.tail(max(1, int(limit)))
 
     def latest_common_timestamp(self, symbol: str, timeframe: str) -> pd.Timestamp:
-        payload = self._load()
-        relay_tf = str(payload.get("timeframe") or "")
-        if relay_tf != timeframe:
-            raise RuntimeError(f"mobile relay timeframe mismatch: relay={relay_tf} requested={timeframe}")
         latest: list[pd.Timestamp] = []
         for exchange in ("binance", "bybit"):
             series = self.fetch_volume(exchange, symbol, timeframe, limit=2)

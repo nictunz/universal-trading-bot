@@ -46,6 +46,7 @@ public class MobileMarketRelayService extends Service {
     // Boundary reads start at +1s so a just-closed exchange candle has time to roll over.
     private static final long RELAY_PHASE_MILLIS = 1_000L;
     private static final long TIMEFRAME_MILLIS = 15L * 60L * 1_000L;
+    private static final long FIVE_MINUTE_MILLIS = 5L * 60L * 1_000L;
     // First read at about +1s, then retry at about +2s and +4s if needed.
     private static final long[] ROLLOVER_RETRY_DELAYS_MS = {0L, 1_000L, 2_000L};
     private static final String RELAY_TIMEFRAME = "15m";
@@ -147,7 +148,7 @@ public class MobileMarketRelayService extends Service {
     }
 
     static long millisUntilNextRelaySlot(long nowMs, long confirmedBoundaryOpenMs) {
-        long currentBoundary = nowMs - Math.floorMod(nowMs, TIMEFRAME_MILLIS);
+        long currentBoundary = nowMs - Math.floorMod(nowMs, FIVE_MINUTE_MILLIS);
         long elapsed = nowMs - currentBoundary;
         boolean awaitingBoundary = elapsed < BOUNDARY_WINDOW_MILLIS
                 && confirmedBoundaryOpenMs != currentBoundary;
@@ -160,7 +161,7 @@ public class MobileMarketRelayService extends Service {
             phase = currentBoundary + RELAY_PHASE_MILLIS;
             regimeEnd = currentBoundary + BOUNDARY_WINDOW_MILLIS;
         } else {
-            long nextBoundary = currentBoundary + TIMEFRAME_MILLIS;
+            long nextBoundary = currentBoundary + FIVE_MINUTE_MILLIS;
             long preBoundaryStart = nextBoundary - BOUNDARY_WINDOW_MILLIS;
             if (nowMs >= preBoundaryStart) {
                 interval = PRE_BOUNDARY_INTERVAL_MILLIS;
@@ -184,7 +185,7 @@ public class MobileMarketRelayService extends Service {
         if (marketFetchPool == null || marketFetchPool.isShutdown()) {
             // Binance/Bybit and BTC/ETH are independent public reads. Fetching
             // in parallel prevents an unrelated ETH request delaying BTC LIVE.
-            marketFetchPool = Executors.newFixedThreadPool(4);
+            marketFetchPool = Executors.newFixedThreadPool(6);
         }
         return marketFetchPool;
     }
@@ -226,6 +227,10 @@ public class MobileMarketRelayService extends Service {
                 "Binance", "ETHUSDT", () -> fetchBinanceRows("ETHUSDT")));
         Future<RelayFetch> ethBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
                 "Bybit", "ETHUSDT", () -> fetchBybitRows("ETHUSDT")));
+        Future<RelayFetch> btcFiveBinanceFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Binance", "BTCUSDT", FIVE_MINUTE_MILLIS, () -> fetchBinanceRows("BTCUSDT", "5m")));
+        Future<RelayFetch> btcFiveBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
+                "Bybit", "BTCUSDT", FIVE_MINUTE_MILLIS, () -> fetchBybitRows("BTCUSDT", "5")));
 
         RelayFetch btcBinance;
         RelayFetch btcBybit;
@@ -241,6 +246,8 @@ public class MobileMarketRelayService extends Service {
             btcBybitFuture.cancel(true);
             ethBinanceFuture.cancel(true);
             ethBybitFuture.cancel(true);
+            btcFiveBinanceFuture.cancel(true);
+            btcFiveBybitFuture.cancel(true);
             throw e;
         }
 
@@ -266,19 +273,53 @@ public class MobileMarketRelayService extends Service {
         String remotePath = remoteDir.replaceAll("/+$", "") + "/mobile-market-relay.json";
         relayClient.uploadTextAtomic(remotePath, payload.toString());
 
+        // A 5m failure must not suppress the existing 15m upload above.
+        boolean fiveMinuteReady = false;
+        String fiveMinuteError = "";
+        try {
+            RelayFetch fiveBinance = await(btcFiveBinanceFuture);
+            RelayFetch fiveBybit = await(btcFiveBybitFuture);
+            JSONObject fivePayload = new JSONObject();
+            fivePayload.put("schema_version", 1);
+            fivePayload.put("generated_at_ms", cycleStartedAt);
+            fivePayload.put("timeframe", "5m");
+            fivePayload.put("source", "android-public-futures-rest");
+            JSONObject fiveMarkets = new JSONObject();
+            JSONObject fiveObservedAt = new JSONObject();
+            addSymbol(fiveMarkets, fiveObservedAt, "BTC/USDT:USDT", fiveBinance, fiveBybit);
+            fivePayload.put("markets", fiveMarkets);
+            fivePayload.put("source_observed_at_ms", fiveObservedAt);
+            fivePayload.put("snapshot_completed_at_ms", Math.max(cycleStartedAt, System.currentTimeMillis()));
+            relayClient.uploadTextAtomic(remoteDir.replaceAll("/+$", "") + "/mobile-market-relay-5m.json", fivePayload.toString());
+            long fiveBoundary = System.currentTimeMillis() / FIVE_MINUTE_MILLIS * FIVE_MINUTE_MILLIS;
+            fiveMinuteReady = fiveBinance.observedAtMs >= fiveBoundary && fiveBybit.observedAtMs >= fiveBoundary;
+        } catch (Exception e) {
+            btcFiveBinanceFuture.cancel(true);
+            btcFiveBybitFuture.cancel(true);
+            fiveMinuteError = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
+            if (fiveMinuteError.length() > 180) fiveMinuteError = fiveMinuteError.substring(0, 180);
+        }
+
         long now = System.currentTimeMillis();
-        long boundary = now - Math.floorMod(now, TIMEFRAME_MILLIS);
-        if (now - boundary < BOUNDARY_WINDOW_MILLIS) {
+        long boundary = now - Math.floorMod(now, FIVE_MINUTE_MILLIS);
+        long fifteenBoundary = now - Math.floorMod(now, TIMEFRAME_MILLIS);
+        boolean fifteenReady = btcBinance.observedAtMs >= fifteenBoundary
+                && btcBybit.observedAtMs >= fifteenBoundary
+                && ethBinance.observedAtMs >= fifteenBoundary
+                && ethBybit.observedAtMs >= fifteenBoundary;
+        if (fiveMinuteReady && fifteenReady && now - boundary < BOUNDARY_WINDOW_MILLIS) {
             // All four requests passed rollover validation and the atomic SSH upload
             // completed, so the server has the newly opened candle snapshot.
             confirmedBoundaryOpenMs = boundary;
         }
-        String status = "정상 · Binance/Bybit 선물 · BTC/ETH · 15분봉 · 적응형 경계동기";
+        String status = fiveMinuteError.isEmpty()
+                ? "정상 · Binance/Bybit · BTC 5분+15분 · ETH 15분 · 적응형 경계동기"
+                : "15분 정상 · BTC 5분 오류: " + fiveMinuteError;
         p.edit()
                 .putBoolean("relay_running", continuous)
                 .putLong("relay_last_ok_ms", now)
                 .putString("relay_status", status)
-                .putString("relay_last_error", "")
+                .putString("relay_last_error", fiveMinuteError)
                 .apply();
         appendHistory("성공", status);
         updateNotification(status);
@@ -307,21 +348,27 @@ public class MobileMarketRelayService extends Service {
             String symbol,
             VenueRequest request
     ) throws Exception {
+        return fetchWithRolloverRetry(exchange, symbol, TIMEFRAME_MILLIS, request);
+    }
+
+    private RelayFetch fetchWithRolloverRetry(
+            String exchange, String symbol, long timeframeMillis, VenueRequest request
+    ) throws Exception {
         RelayFetch last = null;
         for (long delay : ROLLOVER_RETRY_DELAYS_MS) {
             if (delay > 0L) Thread.sleep(delay);
             long observedAt = System.currentTimeMillis();
             JSONArray rows = request.fetch();
             last = new RelayFetch(rows, observedAt);
-            if (rolledOverForBoundary(rows, observedAt)) return last;
+            if (rolledOverForBoundary(rows, observedAt, timeframeMillis)) return last;
         }
         throw new IllegalStateException(
-                exchange + " " + symbol + " 15분봉 경계 갱신 지연; 이전 정상 스냅샷을 유지합니다."
+                exchange + " " + symbol + " " + (timeframeMillis / 60_000L) + "분봉 경계 갱신 지연; 이전 정상 스냅샷을 유지합니다."
         );
     }
 
-    private static boolean rolledOverForBoundary(JSONArray rows, long observedAtMs) {
-        long elapsed = Math.floorMod(observedAtMs, TIMEFRAME_MILLIS);
+    private static boolean rolledOverForBoundary(JSONArray rows, long observedAtMs, long timeframeMillis) {
+        long elapsed = Math.floorMod(observedAtMs, timeframeMillis);
         // Outside the post-boundary focus window no rollover confirmation is
         // needed. Inside it, never accept a stale previous candle merely
         // because a slow network request crossed the short retry window.
@@ -351,8 +398,12 @@ public class MobileMarketRelayService extends Service {
     }
 
     private JSONArray fetchBinanceRows(String symbol) throws Exception {
+        return fetchBinanceRows(symbol, RELAY_TIMEFRAME);
+    }
+
+    private JSONArray fetchBinanceRows(String symbol, String timeframe) throws Exception {
         String url = "https://fapi.binance.com/fapi/v1/klines?symbol=" + symbol
-                + "&interval=" + RELAY_TIMEFRAME + "&limit=" + CANDLE_LIMIT;
+                + "&interval=" + timeframe + "&limit=" + CANDLE_LIMIT;
         Object body = new org.json.JSONTokener(get(url)).nextValue();
         if (!(body instanceof JSONArray)) throw new IllegalStateException("Binance 응답 형식 오류");
         JSONArray rows = (JSONArray) body;
@@ -370,8 +421,12 @@ public class MobileMarketRelayService extends Service {
     }
 
     private JSONArray fetchBybitRows(String symbol) throws Exception {
+        return fetchBybitRows(symbol, "15");
+    }
+
+    private JSONArray fetchBybitRows(String symbol, String interval) throws Exception {
         String url = "https://api.bybit.com/v5/market/kline?category=linear&symbol=" + symbol
-                + "&interval=15&limit=" + CANDLE_LIMIT;
+                + "&interval=" + interval + "&limit=" + CANDLE_LIMIT;
         JSONObject body = new JSONObject(get(url));
         if (!"0".equals(String.valueOf(body.opt("retCode")))) {
             throw new IllegalStateException("Bybit 오류: " + body.optString("retMsg"));
