@@ -407,6 +407,15 @@ public class MainActivity extends android.app.Activity {
         Button editSelectedButton = actionButton("✏ 불러온/선택한 전략 수치 직접 수정", PRIMARY);
         editSelectedButton.setOnClickListener(v -> showStrategyParameterEditor());
         backtestCard.addView(editSelectedButton, marginTop(8));
+        Button priorityPreset = actionButton("최신 빌드 프로필 · 5분 / 15분 선택", Color.rgb(30, 41, 59));
+        priorityPreset.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("단일 전략 검증용 프로필")
+                .setItems(new String[]{"BTC 5분 · 9.55배", "BTC 15분 · 5배"},
+                        (dialog, which) -> loadPriorityPreset(which == 0 ? "5m" : "15m"))
+                .setNegativeButton("취소", null).show());
+        backtestCard.addView(priorityPreset, marginTop(12));
+        backtestCard.addView(text("단일 전략 백테스트 · 15분 포지션을 정리하고 5분으로 전환하는 조합 결과는 별도 검증이 필요합니다.",
+                12, MUTED, false), marginTop(6));
         backtestCard.addView(runButton, marginTop(12));
 
         LinearLayout controlRow = new LinearLayout(this);
@@ -657,6 +666,18 @@ enableResultActions(false);
             return;
         }
         startBacktest(selectedStrategyParameters);
+    }
+
+    private void loadPriorityPreset(String timeframe) {
+        executor.execute(() -> {
+            try {
+                PyObject bridge = Python.getInstance().getModule("mobile_bridge");
+                JSONObject parsed = new JSONObject(bridge.callAttr("priority_profile_preset", timeframe).toString());
+                main.post(() -> showImportedJsonCandidates(parsed));
+            } catch (Exception e) {
+                main.post(() -> showTextDialog("프로필 불러오기 실패", stackMessage(e)));
+            }
+        });
     }
 
     private void showJsonPasteDialog() {
@@ -3510,3 +3531,4 @@ private void exportAndShareOptimizationStage(String stage, String label) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
+

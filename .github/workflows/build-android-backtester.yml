@@ -22,6 +22,7 @@ on:
       - 'universal_bot/strategy/**'
       - 'universal_bot/config.py'
       - 'universal_bot/paper.py'
+      - 'universal_bot/priority_signals.py'
       - 'tests/**'
       - 'pyproject.toml'
 
@@ -327,3 +328,4 @@ jobs:
             }
             await github.rest.repos.updateRelease({...repo,release_id:release.id,draft:false,make_latest:'true'});
             core.info('VERIFIED_RELEASE '+release.html_url);
+

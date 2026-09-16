@@ -7,7 +7,7 @@ append a second account trader.
 import pandas as pd
 
 from universal_bot.priority_controller import EngineExecutionPort, PriorityController, PriorityJournal
-from universal_bot.priority_signals import DataUnavailable
+from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 
 class PriorityRuntime:
@@ -53,7 +53,10 @@ class PriorityRuntime:
             owner=self.controller.state['owner'], pending=self.controller.state['pending'],
             halted=self.controller.state['halted'],
             profiles=self.controller.state['profile'],
-            multipliers={'5m':9.55,'15m':5.0})
+            multipliers={tf: values['live_entry_multiplier'] for tf, values in PROFILES.items()},
+            position=self.controller.state['position'],
+            watermark=self.controller.state['watermark'])
 
     def close(self):
         self.journal.close()
+

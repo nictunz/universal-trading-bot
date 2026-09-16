@@ -846,6 +846,25 @@ def _flat_strategy_parameters(payload: dict) -> dict:
     return parameters
 
 
+def priority_profile_preset(timeframe: str) -> str:
+    """Single-profile replay preset sourced from the shipped priority settings."""
+    from universal_bot.priority_signals import COMMON, PROFILES, profile_hash
+    if timeframe not in PROFILES:
+        raise ValueError("5m 또는 15m 프로필을 선택하세요.")
+    parameters = dict(COMMON, **PROFILES[timeframe])
+    parameters["entry_multiplier"] = parameters["live_entry_multiplier"]
+    parameters.update(backtest_fee_percent=0.02, backtest_slippage_percent=0.01,
+                      backtest_max_total_multiplier=15.0, backtest_margin_mode="crossed")
+    return json.dumps({
+        "symbol": "BTC/USDT:USDT", "timeframe": timeframe,
+        "compounding_enabled": True, "execution_model": "signal_close",
+        "items": [{"label": "최신 빌드 " + timeframe + " · 단일 전략 검증",
+                   "parameters": parameters, "effective_parameters": parameters,
+                   "source_context": {"priority_profile_hash": profile_hash(),
+                                      "scope": "single_timeframe_only"}}],
+    }, ensure_ascii=False)
+
+
 def parse_pasted_backtest_json(payload_text: str) -> str:
     """Normalize JSON exported by this app into selectable replay candidates.
 
@@ -2884,3 +2903,4 @@ def upload_result(
             key_path.strip(),
         )
     )
+
