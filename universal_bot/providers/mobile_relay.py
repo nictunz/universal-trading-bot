@@ -8,20 +8,12 @@ import pandas as pd
 
 
 class MobileRelayMarketData:
-    """Read-only Binance/Bybit futures volume uploaded by the Android app.
-
-    The Android app fetches public perpetual-futures candles on the user's
-    network and atomically uploads one JSON snapshot over the phone's existing
-    SSH key. No exchange/API credentials ever leave the server.
-
-    Relay rows can include the exchange's currently-forming candle. This class
-    deliberately removes any candle which had not completed at the snapshot's
-    generated_at_ms. That prevents the server from treating a partial 5m volume
-    value as final during the few seconds around a candle boundary.
-    """
+    """Read-only Binance/Bybit futures volume uploaded by the Android app."""
 
     DEFAULT_PATH = Path.home() / ".cache" / "universal-trading-bot" / "mobile-market-relay.json"
     SUPPORTED_EXCHANGES = {"binance", "bybit"}
+    READ_RETRIES = 4
+    READ_RETRY_SECONDS = 0.025
 
     def __init__(self, path: str | Path | None = None, max_age_seconds: int = 90) -> None:
         self.path = Path(path).expanduser() if path else self.DEFAULT_PATH
@@ -31,11 +23,29 @@ class MobileRelayMarketData:
     def configured(self) -> bool:
         return self.path.is_file()
 
+    def _read_snapshot_text(self) -> str:
+        """Read a relay snapshot without a check-then-open race.
+
+        The Android relay replaces snapshots atomically over SSH.  A reader must
+        therefore open the target directly rather than calling is_file() first.
+        A very short retry window covers remote rename/unlink implementations
+        while preserving fail-closed behaviour when the snapshot is truly gone.
+        """
+        last_exc: OSError | None = None
+        for attempt in range(self.READ_RETRIES):
+            try:
+                return self.path.read_text(encoding="utf-8")
+            except FileNotFoundError as exc:
+                last_exc = exc
+                if attempt + 1 < self.READ_RETRIES:
+                    time.sleep(self.READ_RETRY_SECONDS)
+        raise RuntimeError(f"mobile relay snapshot not found: {self.path}") from last_exc
+
     def _load(self) -> dict:
-        if not self.path.is_file():
-            raise RuntimeError(f"mobile relay snapshot not found: {self.path}")
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = json.loads(self._read_snapshot_text())
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError(f"invalid mobile relay JSON: {type(exc).__name__}: {exc}") from exc
         if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
@@ -43,10 +53,6 @@ class MobileRelayMarketData:
         generated_ms = int(payload.get("generated_at_ms") or 0)
         if generated_ms <= 0:
             raise RuntimeError("mobile relay generated_at_ms is missing")
-        # Newer Android relays keep generated_at_ms at the conservative cycle
-        # start for compatibility with older servers, and publish the time at
-        # which all venue reads completed separately.  Use that completion time
-        # only for freshness; candle completion is still decided per source.
         completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
         if completed_ms < generated_ms:
             raise RuntimeError("mobile relay completion time precedes generation time")
@@ -56,13 +62,6 @@ class MobileRelayMarketData:
         return payload
 
     def _source_observed_at(self, payload: dict, symbol_key: str, exchange: str) -> pd.Timestamp:
-        """Return the conservative instant at which one venue read began.
-
-        A REST call which starts before a 15-minute boundary and finishes after
-        it must not make the previous, still-forming candle look completed.
-        Old app payloads have no per-source timestamp and remain compatible by
-        falling back to generated_at_ms.
-        """
         generated_ms = int(payload["generated_at_ms"])
         completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
         observations = payload.get("source_observed_at_ms") or {}
@@ -74,7 +73,6 @@ class MobileRelayMarketData:
             observed_ms = generated_ms
         if observed_ms <= 0:
             observed_ms = generated_ms
-        # Never trust a source timestamp later than the completed snapshot.
         observed_ms = min(observed_ms, completed_ms)
         if completed_ms - observed_ms > self.max_age_seconds * 1000:
             raise RuntimeError(
@@ -103,12 +101,7 @@ class MobileRelayMarketData:
             raise ValueError(f"invalid timeframe: {timeframe}")
         value = int(text[:-1])
         unit = text[-1]
-        seconds = {
-            "m": 60,
-            "h": 3600,
-            "d": 86400,
-            "w": 604800,
-        }.get(unit)
+        seconds = {"m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit)
         if seconds is None:
             raise ValueError(f"unsupported mobile relay timeframe: {timeframe}")
         return pd.Timedelta(seconds=value * seconds)
@@ -120,15 +113,13 @@ class MobileRelayMarketData:
         payload = self._load()
         relay_tf = str(payload.get("timeframe") or "")
         if relay_tf != timeframe:
-            # Preserve the legacy 15m stream. The updated Android app publishes
-            # BTC 5m independently; never split a 15m volume into invented bars.
             if timeframe == "5m" and self.path.name == "mobile-market-relay.json":
                 sidecar = self.path.with_name("mobile-market-relay-5m.json")
-                if sidecar.is_file():
-                    return MobileRelayMarketData(sidecar, self.max_age_seconds).fetch_volume(
-                        exchange_id, symbol, timeframe, limit
-                    )
-                raise RuntimeError("mobile relay 5m sidecar missing; Android dual-timeframe update required")
+                # Do not pre-check sidecar existence: the sidecar reader owns the
+                # retry/fail-closed policy and avoids the same TOCTOU race.
+                return MobileRelayMarketData(sidecar, self.max_age_seconds).fetch_volume(
+                    exchange_id, symbol, timeframe, limit
+                )
             raise RuntimeError(f"mobile relay timeframe mismatch: relay={relay_tf} requested={timeframe}")
         markets = payload.get("markets") or {}
         symbol_key = self._symbol_key(symbol)
