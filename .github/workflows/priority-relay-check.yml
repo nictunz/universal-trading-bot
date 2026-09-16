@@ -1,4 +1,4 @@
-name: Verify dual-timeframe Android relay
+name: Verify and build dual-timeframe Android relay
 on:
   push:
     branches: [codex/priority-shadow-check]
@@ -11,7 +11,7 @@ permissions:
 jobs:
   compile:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,5 +38,54 @@ jobs:
           cp -R universal_bot/. android/app/src/main/python/universal_bot/
           cp android/compat/config.py android/app/src/main/python/universal_bot/config.py
           cp android/compat/historical.py android/app/src/main/python/universal_bot/historical.py
-      - name: Compile Android Java without publishing or deployment
-        run: gradle -p android :app:compileDebugJavaWithJavac --stacktrace
+      - name: Select candidate version above published releases
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, {...context.repo, per_page: 100});
+            const codes = releases.map(r => /^android-v(\d+)$/.exec(r.tag_name)).filter(Boolean).map(m => Number(m[1]));
+            const runs = await github.rest.actions.listWorkflowRuns({...context.repo, workflow_id: 341262295, per_page: 1});
+            const regular = 100000 + (runs.data.workflow_runs[0]?.run_number || 0);
+            const code = Math.max(100000, regular, ...codes) + 1;
+            core.exportVariable('ANDROID_VERSION_CODE', String(code));
+            core.exportVariable('ANDROID_VERSION_NAME', '1.1.' + (code - 100000) + '-priority');
+      - name: Build release candidate
+        run: gradle -p android :app:assembleRelease --stacktrace
+      - name: Sign candidate with existing update key
+        env:
+          RELAY_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELAY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELAY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELAY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_KEYSTORE_B64" && test -n "$RELAY_STORE_PASSWORD"
+          RELAY_KEYSTORE="$RUNNER_TEMP/priority-release.jks"
+          trap 'rm -f "$RELAY_KEYSTORE"' EXIT
+          printf '%s' "$RELAY_KEYSTORE_B64" | base64 --decode > "$RELAY_KEYSTORE"
+          chmod 600 "$RELAY_KEYSTORE"
+          export RELAY_KEY_PASSWORD="${RELAY_KEY_PASSWORD:-$RELAY_STORE_PASSWORD}"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$RELAY_KEYSTORE" --ks-key-alias "${RELAY_KEY_ALIAS:-universal}" \
+            --ks-pass env:RELAY_STORE_PASSWORD --key-pass env:RELAY_KEY_PASSWORD \
+            --out UniversalTradingBacktester-Android-priority.apk \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose UniversalTradingBacktester-Android-priority.apk
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          apk = Path('UniversalTradingBacktester-Android-priority.apk')
+          data = dict(commit=os.environ['GITHUB_SHA'], version_code=int(os.environ['ANDROID_VERSION_CODE']),
+              version_name=os.environ['ANDROID_VERSION_NAME'], apk_name=apk.name,
+              sha256=hashlib.sha256(apk.read_bytes()).hexdigest(), verified=True,
+              scope='Android relay update only; does not deploy or activate server trading')
+          Path('priority-android-manifest.json').write_text(json.dumps(data, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: priority-relay-signed-apk
+          path: |
+            UniversalTradingBacktester-Android-priority.apk
+            priority-android-manifest.json
+          if-no-files-found: error
+          retention-days: 14
