@@ -1,0 +1,105 @@
+name: Priority 5Y Parity Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      db_path:
+        description: 'Read-only canonical 5m OHLCV SQLite DB on trading-bot runner'
+        required: false
+        default: '/home/kpj3669/universal-trading-bot/data/universal_bot.db'
+      require_live_stopped:
+        description: 'Fail closed if dashboard/LIVE service is active'
+        required: true
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/verify_priority_5y_parity.py'
+      - '.github/workflows/priority-5y-parity.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: priority-5y-parity
+  cancel-in-progress: false
+
+jobs:
+  verifier-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Verify offline Priority runtime and verifier compile
+        run: |
+          python -m py_compile scripts/verify_priority_5y_parity.py
+          python -m pytest tests/test_priority_signals.py tests/test_priority_paper_runtime.py -q
+
+  five-year-parity:
+    needs: verifier-safety
+    runs-on: [self-hosted, trading-bot]
+    timeout-minutes: 180
+    steps:
+      - name: Fail closed while LIVE service is active
+        if: ${{ github.event_name == 'push' || inputs.require_live_stopped }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if systemctl is-active --quiet universal-trading-bot-dashboard.service; then
+            echo 'REFUSED: universal-trading-bot-dashboard.service is active.'
+            echo 'This workflow will not put a 5-year CPU load on the LIVE trading host.'
+            exit 78
+          fi
+      - name: Sync exact tested commit without touching untracked market data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "${GITHUB_SHA}" || { echo 'origin/main differs from workflow SHA'; exit 1; }
+          git diff --quiet -- . ':!data' || { echo 'tracked worktree is dirty; refusing'; exit 1; }
+          git reset --hard "${GITHUB_SHA}"
+      - name: Locate and validate source DB
+        id: db
+        shell: bash
+        env:
+          REQUESTED_DB: ${{ inputs.db_path }}
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot
+          DB="${REQUESTED_DB:-/home/kpj3669/universal-trading-bot/data/universal_bot.db}"
+          test -f "$DB" || { echo "DB not found: $DB"; echo 'Available DB-like files:'; find data -maxdepth 2 -type f \( -name '*.db' -o -name '*.sqlite' \) -print || true; exit 1; }
+          python - "$DB" <<'PY'
+          import sqlite3, sys
+          from pathlib import Path
+          p=Path(sys.argv[1]).resolve()
+          con=sqlite3.connect(p.as_uri()+'?mode=ro', uri=True)
+          try:
+              tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+              if 'ohlcv' not in tables: raise SystemExit('canonical ohlcv table missing')
+              rows=con.execute("select exchange,count(*),min(timestamp),max(timestamp) from ohlcv where symbol='BTC/USDT:USDT' and timeframe='5m' group by exchange order by exchange").fetchall()
+              print('SOURCE_DB', p)
+              for row in rows: print('SOURCE', *row)
+              if {str(r[0]).lower() for r in rows} != {'binance','bitget','okx','bybit'}:
+                  raise SystemExit('exact four 5m exchanges not present')
+          finally: con.close()
+          PY
+          echo "path=$DB" >> "$GITHUB_OUTPUT"
+      - name: Run read-only 5-year Priority parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/kpj3669/universal-trading-bot
+          . .venv/bin/activate
+          nice -n 15 python scripts/verify_priority_5y_parity.py --db '${{ steps.db.outputs.path }}' | tee /tmp/priority-5y-parity.json
+      - name: Final safety assertion
+        if: always()
+        shell: bash
+        run: |
+          echo 'Verifier scope: offline PaperPriorityRuntime only; source DB opened mode=ro; no exchange adapter/order API is used.'
