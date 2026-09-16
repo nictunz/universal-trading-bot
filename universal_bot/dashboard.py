@@ -120,47 +120,42 @@ def _one(runtime):
         except Exception:
             source_status = {}
     priority = getattr(runtime.engine, "priority_snapshot", None)
-    if state is None:
-        return {
-            "symbol": runtime.symbol,
-            "status": "WAITING",
-            "error": runtime.last_error,
-            "volume_sources": source_status,
-            "live_safety": safety.__dict__,
-            "priority": priority,
-        }
-    p = state.position
-    return {
-        "symbol": state.symbol,
-        "timeframe": state.timeframe,
-        "timestamp": state.timestamp.isoformat() if state.timestamp else None,
-        "position": {
-            "side": p.side,
-            "size": p.size,
-            "entry": p.entry_price,
-            "tp": p.tp,
-            "sl": p.sl,
-            "entries": p.entries,
-        },
-        "signal": state.signal.side if state.signal else None,
-        "signal_reason": state.signal.reason if state.signal else None,
-        "values": state.values,
-        "stats": state.stats,
-        "error": runtime.last_error,
-        "volume_sources": source_status,
-        "live_safety": {
-            "enabled": safety.enabled,
-            "halted": safety.halted,
-            "reason": safety.reason,
-            "consecutive_errors": safety.consecutive_errors,
-            "protection_ok": safety.protection_ok,
-            "last_reconciliation": safety.last_reconciliation.isoformat() if safety.last_reconciliation else None,
-            "last_data": safety.last_data.isoformat() if safety.last_data else None,
-            "exchange_position": safety.exchange_position,
-            "internal_position": safety.internal_position,
-        },
-        "priority": priority,
+    live_safety = {
+        "enabled": safety.enabled,
+        "halted": safety.halted or bool(priority and priority.get("halted")),
+        "reason": (priority or {}).get("halted") or safety.reason,
+        "consecutive_errors": safety.consecutive_errors,
+        "protection_ok": safety.protection_ok,
+        "last_reconciliation": safety.last_reconciliation.isoformat() if safety.last_reconciliation else None,
+        "last_data": safety.last_data.isoformat() if safety.last_data else None,
+        "exchange_position": safety.exchange_position,
+        "internal_position": safety.internal_position,
     }
+    common = dict(error=runtime.last_error, volume_sources=source_status,
+                  live_safety=live_safety, priority=priority)
+    if priority:
+        # PriorityRuntime bypasses engine.step, so last_state can be absent or stale.
+        verified = priority.get("position")
+        position = dict(verified) if verified else {
+            "side": "UNKNOWN" if priority.get("halted") or priority.get("pending") else "FLAT",
+            "size": 0 if not priority.get("halted") and not priority.get("pending") else None,
+            "entry": None, "tp": None, "sl": None,
+        }
+        return dict(symbol=runtime.symbol, timeframe="5m + 15m",
+                    timestamp=priority.get("watermark"), status=priority.get("status"),
+                    position=position, signal=None, signal_reason=priority.get("status"),
+                    values={}, stats={}, **common)
+    if state is None:
+        return dict(symbol=runtime.symbol, status="WAITING", **common)
+    p = state.position
+    return dict(
+        symbol=state.symbol, timeframe=state.timeframe,
+        timestamp=state.timestamp.isoformat() if state.timestamp else None,
+        position=dict(side=p.side, size=p.size, entry=p.entry_price,
+                      tp=p.tp, sl=p.sl, entries=p.entries),
+        signal=state.signal.side if state.signal else None,
+        signal_reason=state.signal.reason if state.signal else None,
+        values=state.values, stats=state.stats, **common)
 
 
 class BacktestRequest(BaseModel):
@@ -315,7 +310,7 @@ def create_dashboard(scanner) -> FastAPI:
 
 <div class='card'><b>거래 기록</b><div class='muted' style='margin:4px 0 8px'>BACKTEST는 선택한 실행 1건 · PAPER/LIVE는 선택 기간 기록</div><div style='overflow:auto;max-height:430px'><table><thead><tr><th>모드</th><th>진입 시각</th><th>청산 시각</th><th>방향</th><th>평균 진입</th><th>청산</th><th>수량</th><th>비용</th><th>순손익</th><th>수익률</th><th>사유</th></tr></thead><tbody id='historyTrades'></tbody></table></div></div>
 
-<div class='bar'><b>백테스트 / 과거 데이터</b><div class='muted' style='margin-top:4px'>Crypto: 4개 선물거래소 정규화 거래량 · Stock/ETF: 종목 자체 거래량 · 수수료/슬리피지 반영</div><div class='row' style='margin-top:9px'><button onclick='runBT()'>현재 선택 조건으로 백테스트</button><span id='status' class='status muted'></span></div></div>
+<div class='bar'><b>단일 전략 백테스트 / 과거 데이터</b><div class='muted' style='margin-top:4px'>Crypto: 4개 선물거래소 정규화 거래량 · Stock/ETF: 종목 자체 거래량 · 수수료/슬리피지 반영 · 5분봉 우선 전환 조합 검증은 별도 실행</div><div class='row' style='margin-top:9px'><button onclick='runBT()'>현재 선택 조건으로 백테스트</button><span id='status' class='status muted'></span></div></div>
 
 <div id='bt' style='display:none'><div class='metrics' id='metrics'></div><div class='card'><b>Equity Curve (비용 반영)</b><canvas id='equity' style='width:100%;height:280px'></canvas></div><div class='card'><b>이번 백테스트 거래 내역</b><div style='overflow:auto'><table><thead><tr><th>진입</th><th>청산</th><th>방향</th><th>평균 진입</th><th>청산가</th><th>총손익</th><th>비용</th><th>순손익</th><th>순손익%</th><th>사유</th></tr></thead><tbody id='trades'></tbody></table></div></div></div>
 
@@ -346,9 +341,10 @@ async function refreshHealth(){const badge=document.getElementById('healthBadge'
 async function refreshReadiness(){const badge=document.getElementById('readyBadge'),box=document.getElementById('diagnostics');try{const r=await fetch('/api/live-readiness'),d=await r.json();badge.textContent=d.ready?'LIVE READY':'LIVE NOT READY';badge.className='headerBadge '+(d.ready?'good':'warn');box.innerHTML=(d.checks||[]).map(c=>metric(esc(c.name),c.ok?'PASS':'FAIL',c.ok?'good':'bad')).join('')}catch(e){badge.textContent='READINESS ERROR';badge.className='headerBadge bad';box.innerHTML=metric('오류',esc(e.message),'bad')}}
 async function refreshRuntimeInfo(){try{const d=await(await fetch('/api/runtime-info')).json(),x=(d.runtimes||[])[0]||{},e=x.execution||{},s=x.strategy||{};document.getElementById('runtimeInfo').textContent=`배포 ${String(d.deployment_commit||d.server_commit||'미확인').slice(0,8)}${d.source_matches_disk===false?' · 재시작 필요':''} · 소스 ${d.source_fingerprint||'-'} · 전략 ${d.strategy_settings_hash||'-'} · 시작 ${d.process_started_at||'-'} · ${x.mode||'-'} ${x.timeframe||'-'} · SMA ${s.volume_lookback??'-'} · N-bar ${s.max_nbar_volatility??'-'} · RSI OS max ${s.rsi_oversold_max??'-'} · 재진입 ${s.reentry_bars??'-'} · ${e.mode||'-'} ${e.multiplier??'-'}x / ${e.max_child_orders??'-'}회 / ${e.max_adverse_slippage_percent??'-'}%`}catch(e){document.getElementById('runtimeInfo').textContent='실행 버전 확인 실패: '+e.message}}
 async function runBT(){const status=document.getElementById('status');status.textContent='데이터 수집/백테스트 중...';status.className='status muted';const q={symbol:document.getElementById('symbol').value,asset_class:document.getElementById('asset').value,exchange:document.getElementById('exchange').value,timeframe:document.getElementById('tf').value,start:document.getElementById('start').value||null,end:document.getElementById('end').value||null};try{const r=await fetch('/api/backtest',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(q)}),d=await r.json();if(r.status===401){status.textContent='관리자 로그인 후 백테스트를 계속합니다...';status.className='status warn';location.href='/login?next=/';return}if(!r.ok)throw Error(d.detail||'백테스트 오류');document.getElementById('bt').style.display='block';const cls=v=>Number(v)>0?'good':Number(v)<0?'bad':'';document.getElementById('metrics').innerHTML=metric('심볼',esc(d.symbol))+metric('봉 수',esc(d.bars))+metric('거래',esc(d.trades))+metric('승률',Number(d.win_rate||0).toFixed(2)+'%',cls(d.win_rate-50))+metric('PF',d.profit_factor==null?'-':Number(d.profit_factor).toFixed(2))+metric('총손익',Number(d.gross_pnl||0).toFixed(2),cls(d.gross_pnl))+metric('추정비용',Number(d.estimated_costs||0).toFixed(2),'warn')+metric('순손익',Number(d.pnl||0).toFixed(2),cls(d.pnl))+metric('순수익률',Number(d.return_percent||0).toFixed(2)+'%',cls(d.return_percent))+metric('MDD',Number(d.max_drawdown_percent||0).toFixed(2)+'%','bad')+metric('Data Sources',esc(sourceText(d.volume_source_status||{})));drawEquity(d.equity_curve||[]);document.getElementById('trades').innerHTML=(d.trades_log||[]).slice().reverse().map(t=>`<tr><td>${esc(t.entry_time||'-')}</td><td>${esc(t.exit_time||'-')}</td><td>${esc(t.side)}</td><td>${Number(t.avg_entry_price||0).toFixed(4)}</td><td>${Number(t.exit_price||0).toFixed(4)}</td><td>${Number(t.gross_pnl||0).toFixed(2)}</td><td class='warn'>${Number(t.estimated_cost||0).toFixed(2)}</td><td class='${Number(t.pnl)>=0?'good':'bad'}'>${Number(t.pnl||0).toFixed(2)}</td><td>${Number(t.pnl_percent||0).toFixed(3)}%</td><td>${esc(t.reason)}</td></tr>`).join('');status.textContent=`완료 · Run ${esc(d.run_id||'')} · ${esc(d.data_start||'')} ~ ${esc(d.data_end||'')}`;status.className='status ok';document.getElementById('mode').value='BACKTEST';document.getElementById('run').disabled=false;document.getElementById('run').innerHTML=`<option value="${esc(d.run_id||'')}">${esc(d.run_id||'')}</option>`;document.getElementById('run').value=d.run_id||'';await loadMarket()}catch(e){status.textContent='오류: '+e.message;status.className='status error'}}
-async function refresh(){try{const r=await fetch('/api/state'),d=await r.json();document.getElementById('grid').innerHTML=d.symbols.map(x=>{const v=x.values||{},p=x.position||{},st=x.stats||{},s=x.live_safety||{};const liveEnabled=!!s.enabled;return `<div class='card'><h2>${esc(x.symbol)} <span class='pill'>${esc(x.timeframe||'')}</span></h2><div class='metric'><span>POSITION</span><b>${esc(p.side||'FLAT')}</b></div><div class='metric'><span>SIGNAL</span><b>${esc(x.signal||'NO SIGNAL')}</b></div><div class='metric'><span>Volume</span><b>x${esc(v.volume_ratio?.toFixed?.(2)??'-')}</b></div><div class='metric'><span>Volume Sources</span><b style='font-size:11px;text-align:right'>${esc(sourceText(x.volume_sources||{}))}</b></div><div class='metric'><span>ADX / RSI</span><b>${esc(v.adx?.toFixed?.(2)??'-')} / ${esc(v.rsi?.toFixed?.(2)??'-')}</b></div><div class='metric'><span>고정 TP / SL 가격</span><b>${p.side==='FLAT'?'-':esc(p.tp??'-')+' / '+esc(p.sl??'-')}</b></div><div class='metric'><span>다음 신호 TP / SL</span><b>${esc(v.final_tp_percent??'-')}% / ${esc(v.final_sl_percent??'-')}%</b></div><div class='metric'><span>Realized / Open PnL</span><b>${esc(st.realized_pnl?.toFixed?.(2)??'0')} / ${esc(st.open_pnl?.toFixed?.(2)??'0')}</b></div><div class='metric'><span>Data time</span><b class='nowrap'>${esc(x.timestamp||'-')}</b></div><div class='metric'><span>LIVE SAFETY</span><b class='${s.halted?'bad':liveEnabled?'good':'muted'}'>${liveEnabled?(s.halted?'HALTED':'OK'):'PAPER'}</b></div><div class='metric'><span>Protection</span><b class='${!liveEnabled?'muted':s.protection_ok?'good':'bad'}'>${!liveEnabled?'N/A':s.protection_ok?'VERIFIED':'NOT VERIFIED'}</b></div><div class='muted'>${esc(s.reason||x.signal_reason||'')}${x.error?`<div class='error'>${esc(x.error)}</div>`:''}</div></div>`}).join('')}catch(e){document.getElementById('grid').innerHTML=`<div class='card error'>Dashboard API 오류: ${esc(e.message)}</div>`}}
+async function refresh(){try{const r=await fetch('/api/state'),d=await r.json();document.getElementById('grid').innerHTML=d.symbols.map(x=>{const v=x.values||{},p=x.position||{},st=x.stats||{},s=x.live_safety||{};const liveEnabled=!!s.enabled;const pr=x.priority;return `<div class='card'><h2>${esc(x.symbol)} <span class='pill'>${esc(x.timeframe||'')}</span></h2>${pr?`<div class='metric'><span>실행 모드</span><b>5분봉 우선 전환</b></div><div class='metric'><span>5분 / 15분 진입배수</span><b>${esc(pr.multipliers?.['5m']??'-')}x / ${esc(pr.multipliers?.['15m']??'-')}x</b></div><div class='metric'><span>포지션 담당</span><b>${esc(pr.owner||'-')}</b></div><div class='metric'><span>전환 상태</span><b class='${pr.halted?'bad':'muted'}'>${esc(pr.halted||pr.pending||pr.status||'-')}</b></div>`:''}<div class='metric'><span>POSITION</span><b>${esc(p.side||'확인 대기')}</b></div><div class='metric'><span>SIGNAL</span><b>${esc(pr?'우선 전환 엔진':x.signal||'NO SIGNAL')}</b></div><div class='metric'><span>Volume</span><b>x${esc(v.volume_ratio?.toFixed?.(2)??'-')}</b></div><div class='metric'><span>Volume Sources</span><b style='font-size:11px;text-align:right'>${esc(sourceText(x.volume_sources||{}))}</b></div><div class='metric'><span>ADX / RSI</span><b>${esc(v.adx?.toFixed?.(2)??'-')} / ${esc(v.rsi?.toFixed?.(2)??'-')}</b></div><div class='metric'><span>고정 TP / SL 가격</span><b>${p.side==='FLAT'?'-':esc(p.tp??'-')+' / '+esc(p.sl??'-')}</b></div><div class='metric'><span>다음 신호 TP / SL</span><b>${esc(v.final_tp_percent??'-')}% / ${esc(v.final_sl_percent??'-')}%</b></div><div class='metric'><span>Realized / Open PnL</span><b>${esc(st.realized_pnl?.toFixed?.(2)??'-')} / ${esc(st.open_pnl?.toFixed?.(2)??'-')}</b></div><div class='metric'><span>Data time</span><b class='nowrap'>${esc(x.timestamp||'-')}</b></div><div class='metric'><span>LIVE SAFETY</span><b class='${s.halted?'bad':liveEnabled?'good':'muted'}'>${liveEnabled?(s.halted?'HALTED':'OK'):'PAPER'}</b></div><div class='metric'><span>Protection</span><b class='${!liveEnabled?'muted':s.protection_ok?'good':'bad'}'>${!liveEnabled?'N/A':s.protection_ok?'VERIFIED':'NOT VERIFIED'}</b></div><div class='muted'>${esc(s.reason||x.signal_reason||'')}${x.error?`<div class='error'>${esc(x.error)}</div>`:''}</div></div>`}).join('')}catch(e){document.getElementById('grid').innerHTML=`<div class='card error'>Dashboard API 오류: ${esc(e.message)}</div>`}}
 function installChartGestures(){const c=document.getElementById('marketChart');c.addEventListener('pointerdown',e=>{dragging=true;horizontalDrag=false;dragStartX=e.clientX;dragStartY=e.clientY;dragStartEnd=viewEnd;c.classList.add('dragging')});c.addEventListener('pointermove',e=>{if(!dragging)return;const dx=e.clientX-dragStartX,dy=e.clientY-dragStartY;if(!horizontalDrag&&Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.2){horizontalDrag=true;c.setPointerCapture?.(e.pointerId)}if(!horizontalDrag)return;e.preventDefault();const barPx=Math.max(3,Math.min(12,c.clientWidth/Math.max(40,visibleBars))),delta=Math.round(-dx/barPx);viewEnd=Math.max(Math.min(visibleBars,lastCandles.length),Math.min(lastCandles.length,dragStartEnd+delta));drawMarket();maybeLoadOlder()});const stop=e=>{dragging=false;horizontalDrag=false;c.classList.remove('dragging');try{c.releasePointerCapture?.(e.pointerId)}catch(_){}};c.addEventListener('pointerup',stop);c.addEventListener('pointercancel',stop);c.addEventListener('wheel',e=>{e.preventDefault();zoomChart(e.deltaY<0?0.85:1.18)},{passive:false})}
 setDefaultDates();document.getElementById('run').disabled=false;installChartGestures();refreshHealth();refreshReadiness();refreshRuntimeInfo();refresh();loadMarket();setInterval(refresh,2000);setInterval(refreshHealth,10000);setInterval(refreshRuntimeInfo,30000);window.addEventListener('resize',()=>{drawEquity(lastEquity);drawMarket()});
 </script></div></body></html>"""
 
     return app
+

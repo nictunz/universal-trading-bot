@@ -131,7 +131,7 @@ public class LauncherActivity extends android.app.Activity {
         LinearLayout backtest = panel();
         root.addView(backtest, mt(14));
         backtest.addView(section("전략 검증 · DB 차트"));
-        backtest.addView(text("저장된 DB와 선택한 전략으로 검증하고, 거래내역·차트·결과를 확인하세요.", 12, MUTED, false), mt(5));
+        backtest.addView(text("저장된 DB에서 5분봉·15분봉 전략을 각각 검증합니다. 5분봉 우선 전환 조합과 단일 전략의 결과는 다릅니다.", 12, MUTED, false), mt(5));
         Button openBacktester = actionButton("JSON 전략 · DB 차트 열기", Color.rgb(30, 41, 59));
         openBacktester.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         backtest.addView(openBacktester, mt(10));
@@ -140,7 +140,7 @@ public class LauncherActivity extends android.app.Activity {
         root.addView(relay, mt(16));
         relay.addView(section("📡 LIVE 시장데이터 중계"));
         relay.addView(text(
-                "15분봉 갱신 직후 1초 간격으로 확인합니다. 서버 전송이 확인되면 평상시 주기로 돌아갑니다.",
+                "BTC 5분·15분봉을 함께 중계합니다. 봉 갱신 직후 1초 간격으로 확인하고 전송이 확인되면 평상시 주기로 돌아갑니다.",
                 12, MUTED, false
         ), mt(6));
 
@@ -353,7 +353,15 @@ public class LauncherActivity extends android.app.Activity {
         StringBuilder sb = new StringBuilder();
         sb.append(running || requested ? "● 중계 ON" : "○ 중계 OFF");
         if (lastOk > 0) sb.append("\n마지막 성공: ").append(formatTime(lastOk));
+        if (lastOk > 0) {
+            long ageSeconds = Math.max(0L, (System.currentTimeMillis() - lastOk) / 1000L);
+            sb.append("\n전송 후 ").append(ageSeconds).append("초");
+            relayStatus.setTextColor(ageSeconds > 90 ? Color.rgb(251, 191, 36) : TEXT);
+        } else {
+            relayStatus.setTextColor(MUTED);
+        }
         sb.append("\n").append(detail);
+        sb.append("\n중계 상태와 실제 주문·보호주문 상태는 별도입니다.");
         sb.append("\n\n🔎 눌러서 이전 로그 보기");
         relayStatus.setText(sb.toString());
         startRelayButton.setAlpha(running || requested ? 0.55f : 1f);
@@ -592,3 +600,4 @@ public class LauncherActivity extends android.app.Activity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }
+
