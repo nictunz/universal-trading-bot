@@ -183,9 +183,8 @@ public class MobileMarketRelayService extends Service {
 
     private synchronized ExecutorService ensureFetchPool() {
         if (marketFetchPool == null || marketFetchPool.isShutdown()) {
-            // Binance/Bybit and BTC/ETH are independent public reads. Fetching
-            // in parallel prevents an unrelated ETH request delaying BTC LIVE.
-            marketFetchPool = Executors.newFixedThreadPool(6);
+            // BTC 5m/15m Binance+Bybit reads are independent and run in parallel.
+            marketFetchPool = Executors.newFixedThreadPool(4);
         }
         return marketFetchPool;
     }
@@ -223,10 +222,6 @@ public class MobileMarketRelayService extends Service {
                 "Binance", "BTCUSDT", () -> fetchBinanceRows("BTCUSDT")));
         Future<RelayFetch> btcBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
                 "Bybit", "BTCUSDT", () -> fetchBybitRows("BTCUSDT")));
-        Future<RelayFetch> ethBinanceFuture = pool.submit(() -> fetchWithRolloverRetry(
-                "Binance", "ETHUSDT", () -> fetchBinanceRows("ETHUSDT")));
-        Future<RelayFetch> ethBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
-                "Bybit", "ETHUSDT", () -> fetchBybitRows("ETHUSDT")));
         Future<RelayFetch> btcFiveBinanceFuture = pool.submit(() -> fetchWithRolloverRetry(
                 "Binance", "BTCUSDT", FIVE_MINUTE_MILLIS, () -> fetchBinanceRows("BTCUSDT", "5m")));
         Future<RelayFetch> btcFiveBybitFuture = pool.submit(() -> fetchWithRolloverRetry(
@@ -234,18 +229,12 @@ public class MobileMarketRelayService extends Service {
 
         RelayFetch btcBinance;
         RelayFetch btcBybit;
-        RelayFetch ethBinance;
-        RelayFetch ethBybit;
         try {
             btcBinance = await(btcBinanceFuture);
             btcBybit = await(btcBybitFuture);
-            ethBinance = await(ethBinanceFuture);
-            ethBybit = await(ethBybitFuture);
         } catch (Exception e) {
             btcBinanceFuture.cancel(true);
             btcBybitFuture.cancel(true);
-            ethBinanceFuture.cancel(true);
-            ethBybitFuture.cancel(true);
             btcFiveBinanceFuture.cancel(true);
             btcFiveBybitFuture.cancel(true);
             throw e;
@@ -261,7 +250,6 @@ public class MobileMarketRelayService extends Service {
         JSONObject markets = new JSONObject();
         JSONObject sourceObservedAt = new JSONObject();
         addSymbol(markets, sourceObservedAt, "BTC/USDT:USDT", btcBinance, btcBybit);
-        addSymbol(markets, sourceObservedAt, "ETH/USDT:USDT", ethBinance, ethBybit);
         payload.put("markets", markets);
         payload.put("source_observed_at_ms", sourceObservedAt);
         payload.put("snapshot_completed_at_ms", Math.max(cycleStartedAt, System.currentTimeMillis()));
@@ -304,16 +292,14 @@ public class MobileMarketRelayService extends Service {
         long boundary = now - Math.floorMod(now, FIVE_MINUTE_MILLIS);
         long fifteenBoundary = now - Math.floorMod(now, TIMEFRAME_MILLIS);
         boolean fifteenReady = btcBinance.observedAtMs >= fifteenBoundary
-                && btcBybit.observedAtMs >= fifteenBoundary
-                && ethBinance.observedAtMs >= fifteenBoundary
-                && ethBybit.observedAtMs >= fifteenBoundary;
+                && btcBybit.observedAtMs >= fifteenBoundary;
         if (fiveMinuteReady && fifteenReady && now - boundary < BOUNDARY_WINDOW_MILLIS) {
-            // All four requests passed rollover validation and the atomic SSH upload
-            // completed, so the server has the newly opened candle snapshot.
+            // BTC 5m/15m Binance+Bybit rollover validation and atomic SSH uploads
+            // completed, so the server has the newly opened candle snapshots.
             confirmedBoundaryOpenMs = boundary;
         }
         String status = fiveMinuteError.isEmpty()
-                ? "정상 · Binance/Bybit · BTC 5분+15분 · ETH 15분 · 적응형 경계동기"
+                ? "정상 · Binance/Bybit · BTC 5분+15분 · 적응형 경계동기"
                 : "15분 정상 · BTC 5분 오류: " + fiveMinuteError;
         p.edit()
                 .putBoolean("relay_running", continuous)
