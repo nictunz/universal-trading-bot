@@ -1,3 +1,4 @@
+import fcntl
 import json
 import sqlite3
 import time
@@ -61,7 +62,22 @@ def test_apply_clears_only_allowlisted_halt_and_preserves_watermark(tmp_path):
     assert after['halted'] is None
     assert after['watermark'] == '2026-09-16T13:10:00+00:00'
     assert after['owner'] is None and after['position'] is None and after['pending'] is None
-    assert out['backup']
+    backup = out['backup']
+    assert backup
+    assert read_state(backup)['halted'] in RECOVERABLE_HALTS
+
+
+def test_refuses_when_priority_journal_lock_is_held(tmp_path):
+    state, relay = setup_files(tmp_path)
+    lock = open(str(state)+'.lock', 'a')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match='journal is in use'):
+            recover(state, relay, 90, True)
+        assert read_state(state)['halted'] in RECOVERABLE_HALTS
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
 
 
 @pytest.mark.parametrize('updates', [
