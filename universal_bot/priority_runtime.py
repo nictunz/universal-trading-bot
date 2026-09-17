@@ -11,13 +11,9 @@ from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 
 class PriorityRuntime:
-    # The Android relay and public exchanges do not roll a just-closed candle at
-    # exactly the same millisecond.  Keep the healthy fast path immediate, but
-    # treat the short post-boundary synchronization window as expected lag rather
-    # than an incident.  A genuine outage still fails closed before the 30s
-    # signal-admission boundary expires.
     DATA_ALERT_SECONDS = 15.0
     DATA_HALT_SECONDS = 25.0
+    DATA_RECOVERY_CONFIRMATIONS = 3
     TRANSIENT_DATA_ERRORS = (
         'mobile relay snapshot not found:',
         'mobile relay is stale:',
@@ -39,32 +35,81 @@ class PriorityRuntime:
         self._data_blocked_count = 0
         self._data_blocked_since = None
         self._alert_key = None
+        self._data_recovery_confirmations = 0
 
     def _recover_persisted_data_halt(self):
-        """Clear only a stale data-only HALT after proving the account is flat.
-
-        Execution/reconciliation/profile/pending failures remain fail-closed.
-        This runs before the main loop can mirror the journal HALT into
-        engine.safety, so a previous transient relay outage cannot permanently
-        brick an otherwise healthy restarted runtime.
-        """
+        """Clear only a stale data-only HALT after proving the account is flat."""
         c = self.controller
         reason = str(c.state.get('halted') or '')
         if not reason.startswith(self.DATA_HALT_PREFIX):
             return False
         if c.state.get('owner') is not None or c.state.get('position') is not None or c.state.get('pending') is not None:
             return False
-        # snapshot() checks engine safety, reads the exchange position twice when
-        # FLAT, reconciles the internal engine, and verifies protection for any
-        # live position.  Only a confirmed flat account may auto-recover here.
         if c.port.snapshot() is not None:
             return False
         c.state['halted'] = None
         c.journal.save(c.state)
         return True
 
+    def _recover_running_data_halt(self):
+        """Recover a transient data-only HALT without restarting the service.
+
+        Recovery is deliberately stricter than the normal scan: only the exact
+        data-unavailable HALT is eligible, no controller-owned/pending position
+        may exist, both 5m and 15m market-data batches must be readable, and the
+        exchange must report FLAT twice for three consecutive recovery probes.
+        Execution/reconciliation/protection/profile halts are never cleared.
+        """
+        c = self.controller
+        reason = str(c.state.get('halted') or '')
+        if not reason.startswith(self.DATA_HALT_PREFIX):
+            self._data_recovery_confirmations = 0
+            return False
+        if c.state.get('owner') is not None or c.state.get('position') is not None or c.state.get('pending') is not None:
+            self._data_recovery_confirmations = 0
+            return False
+        safety = self.engine.safety
+        mirrored = 'PRIORITY_RUNTIME_HALTED: ' + reason
+        if safety.halted and str(safety.reason or '') != mirrored:
+            self._data_recovery_confirmations = 0
+            return False
+        try:
+            symbol = self.engine.settings.symbol
+            for tf in ('5m', '15m'):
+                self.engine.adapter.fetch_ohlcv(symbol, tf, limit=500)
+                self.engine.adapter.fetch_volume_sources(symbol, tf, limit=500)
+            first = self.engine.adapter.position(symbol)
+            second = self.engine.adapter.position(symbol)
+            for position in (first, second):
+                if str(position.get('side') or 'FLAT') != 'FLAT' or float(position.get('size') or 0.0) > 1e-9:
+                    self._data_recovery_confirmations = 0
+                    return False
+        except Exception:
+            self._data_recovery_confirmations = 0
+            return False
+        self._data_recovery_confirmations += 1
+        if self._data_recovery_confirmations < self.DATA_RECOVERY_CONFIRMATIONS:
+            return False
+        c.state['halted'] = None
+        c.journal.save(c.state)
+        if safety.halted and str(safety.reason or '') == mirrored:
+            safety.halted = False
+            safety.reason = ''
+            safety.consecutive_errors = 0
+            safety.protection_ok = True
+        self._data_recovery_confirmations = 0
+        self._data_blocked_count = 0
+        self._data_blocked_since = None
+        self._alert_key = None
+        self._notify(
+            '🟢 LIVE 데이터 HALT 자동복구',
+            심볼=self.engine.settings.symbol,
+            이전오류=reason,
+            확인='5m/15m 데이터 정상 · Bitget FLAT 2회 × 3연속 확인',
+        )
+        return True
+
     def _notify(self, title, **fields):
-        """Best-effort only: Discord must never affect trading or safety state."""
         try:
             notify = getattr(self.engine, '_notify_live', None)
             if callable(notify):
@@ -120,9 +165,6 @@ class PriorityRuntime:
         self._data_blocked_count += 1
         elapsed = max(0.0, (now - self._data_blocked_since).total_seconds())
         self.last_status = 'DATA_BLOCKED: ' + reason
-        # Count-based alerting used to report a normal 4-5 second exchange/relay
-        # rollover as an outage.  Time-based alerting keeps retries immediate and
-        # silent during the expected synchronization window.
         if elapsed >= self.DATA_ALERT_SECONDS:
             self._alert_once(
                 'DATA_BLOCKED:' + reason,
@@ -143,15 +185,17 @@ class PriorityRuntime:
     def scan_once(self):
         now = self.clock()
         c = self.controller
+        if str(c.state.get('halted') or '').startswith(self.DATA_HALT_PREFIX):
+            if not self._recover_running_data_halt():
+                self.last_status = 'HALTED'
+                self._halt_alert()
+                return self.last_status
         if c.poll(now) == 'HALTED':
             self.last_status = 'HALTED'
             self._halt_alert()
             return self.last_status
         boundary = now.floor('5min')
         if now-boundary > pd.Timedelta(seconds=30):
-            # A transient data fault belongs only to the boundary being processed.
-            # Do not carry its timer into the next 5-minute boundary and falsely
-            # convert a short gap into a ~300 second persistent outage.
             self._data_blocked_count = 0
             self._data_blocked_since = None
             if self._alert_key and str(self._alert_key).startswith('DATA_BLOCKED:'):
@@ -174,14 +218,9 @@ class PriorityRuntime:
         except DataUnavailable as exc:
             self._data_blocked(str(exc), now)
         except Exception as exc:
-            # Relay snapshots are replaced asynchronously by the Android writer.
-            # A short missing/stale window is data unavailability, not an
-            # execution fault. Keep entries blocked and HALT only if it persists.
             if self._is_transient_data_error(exc):
                 self._data_blocked(str(exc), now)
             else:
-                # No ordering calls precede the completed data batch in this scope.
-                # Unexpected controller failures remain fail-closed for inspection.
                 self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
                 self._halt_alert()
         return self.last_status
