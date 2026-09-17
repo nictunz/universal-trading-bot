@@ -1,0 +1,3 @@
+Live parity Android build trigger.
+UI source commit: 983d2b2bbec6e4f859d73d67f71c5b666709e032
+Purpose: trigger signed Android build after the live-parity UI refresh.
