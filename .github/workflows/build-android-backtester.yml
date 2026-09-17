@@ -1,4 +1,4 @@
-# build-request: priority-routing-1.1.336
+# build-request: priority-routing-artifact-quota-fix
 name: Build Android Backtester APK
 
 on:
@@ -70,45 +70,31 @@ jobs:
           grep -q "_resample_5m_to_15m" universal_bot/priority_backtest.py
       - name: Build unsigned release APK
         id: build_apk
-        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           gradle -p android :app:assembleRelease -PappVersionCode="$VERSION_CODE" -PappVersionName="$VERSION_NAME" 2>&1 | tee "$RUNNER_TEMP/android-build.log"
       - name: Upload build log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: android-build-log-${{ github.run_number }}
           path: ${{ runner.temp }}/android-build.log
           if-no-files-found: ignore
           retention-days: 14
-      - name: Publish Android build failure report
-        if: steps.build_apk.outcome != 'success'
-        shell: bash
-        run: |
-          mkdir -p reports
-          { echo '# Android build failure'; echo; echo "- Run: $GITHUB_RUN_ID"; echo "- Commit: $GITHUB_SHA"; echo "- Version: $VERSION_NAME ($VERSION_CODE)"; echo; echo '```text'; tail -n 160 "$RUNNER_TEMP/android-build.log" || true; echo '```'; } > reports/android-build-failure.md
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add reports/android-build-failure.md
-          git commit -m "ci: record Android build failure for $VERSION_NAME" || true
-          git push origin HEAD:main || true
-          exit 1
       - name: Prepare unsigned build artifact
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         run: |
           APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"; test -f "$APK"; cp "$APK" "android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}-unsigned.apk"
       - name: Upload unsigned APK
-        if: steps.build_apk.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: UniversalBacktester-${{ env.VERSION_NAME }}-unsigned
           path: android/app/build/outputs/apk/release/UniversalBacktester-${{ env.VERSION_NAME }}-unsigned.apk
           retention-days: 30
       - name: Configure stable release signing
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
           ANDROID_UPDATE_KEYSTORE_B64: ${{ secrets.ANDROID_UPDATE_KEYSTORE_B64 }}
@@ -120,7 +106,6 @@ jobs:
           test -n "${ANDROID_UPDATE_KEYSTORE_B64:-}"; test -n "${ANDROID_UPDATE_KEYSTORE_PASSWORD:-}"; test -n "${ANDROID_UPDATE_KEY_ALIAS:-}"; test -n "${ANDROID_UPDATE_KEY_PASSWORD:-}"
           KEYSTORE="$RUNNER_TEMP/universal-update.jks"; printf '%s' "$ANDROID_UPDATE_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"; echo "ANDROID_UPDATE_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
       - name: Sign stable update APK
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
           ANDROID_UPDATE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEYSTORE_PASSWORD }}
@@ -135,7 +120,6 @@ jobs:
           keytool -printcert -jarfile "$SIGNED" | tee "$RUNNER_TEMP/android-signing-cert.txt"
           sha256sum "$SIGNED" | tee "$RUNNER_TEMP/android-apk-sha256.txt"
       - name: Prepare signed update manifest
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -143,7 +127,6 @@ jobs:
           printf '{\n  "version_name": "%s",\n  "version_code": %s,\n  "sha256": "%s",\n  "file_name": "UniversalBacktester-%s.apk",\n  "source_commit": "%s"\n}\n' "$VERSION_NAME" "$VERSION_CODE" "$SHA256" "$VERSION_NAME" "$GITHUB_SHA" > "$RUNNER_TEMP/android-update.json"
           cat "$RUNNER_TEMP/android-update.json"
       - name: Configure private update server
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
           ANDROID_UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
@@ -156,7 +139,6 @@ jobs:
           test -n "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}"; test -n "${ANDROID_UPDATE_SERVER_HOST:-}"; test -n "${ANDROID_UPDATE_SERVER_USER:-}"; test -n "${ANDROID_UPDATE_SERVER_PATH:-}"
           KEY="$RUNNER_TEMP/android-update-server-key"; printf '%s\n' "$ANDROID_UPDATE_SSH_PRIVATE_KEY" > "$KEY"; chmod 600 "$KEY"; echo "ANDROID_UPDATE_SERVER_KEY=$KEY" >> "$GITHUB_ENV"; echo "ANDROID_UPDATE_SERVER_PORT_EFFECTIVE=${ANDROID_UPDATE_SERVER_PORT:-22}" >> "$GITHUB_ENV"
       - name: Publish verified update to server
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
           ANDROID_UPDATE_SERVER_HOST: ${{ secrets.ANDROID_UPDATE_SERVER_HOST }}
@@ -169,7 +151,7 @@ jobs:
           scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$SIGNED" "$DEST:$ANDROID_UPDATE_SERVER_PATH/UniversalBacktester-${VERSION_NAME}.apk"
           scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$RUNNER_TEMP/android-update.json" "$DEST:$ANDROID_UPDATE_SERVER_PATH/android-update.json"
       - name: Upload signed update artifact
-        if: steps.build_apk.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: UniversalBacktester-${{ env.VERSION_NAME }}-signed
@@ -180,7 +162,6 @@ jobs:
             ${{ runner.temp }}/android-apk-sha256.txt
           retention-days: 30
       - name: Publish GitHub Android update release
-        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
