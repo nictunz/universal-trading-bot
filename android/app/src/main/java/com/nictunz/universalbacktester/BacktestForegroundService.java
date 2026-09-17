@@ -29,6 +29,7 @@ public class BacktestForegroundService extends Service {
     public static final String ACTION_RESUME = "com.nictunz.universalbacktester.BACKTEST_RESUME";
     public static final String ACTION_STOP = "com.nictunz.universalbacktester.BACKTEST_STOP";
     public static final String ACTION_DOWNLOAD_DB = "com.nictunz.universalbacktester.DB_DOWNLOAD";
+    private static final String REQUEST_PRIORITY_5M_15M = "PRIORITY_5M_15M";
 
     private static final String CHANNEL_ID = "backtest_worker";
     private static final int NOTIFICATION_ID = 4501;
@@ -84,7 +85,11 @@ public class BacktestForegroundService extends Service {
             if ((ACTION_START.equals(action) || ACTION_DOWNLOAD_DB.equals(action)) && intent != null) {
                 stopRequested = false;
                 request = requestFromIntent(intent);
-                request.put("db_only", ACTION_DOWNLOAD_DB.equals(action));
+                boolean priorityRequest = REQUEST_PRIORITY_5M_15M.equals(request.optString("request_type", ""));
+                if (priorityRequest && !ACTION_START.equals(action)) {
+                    throw new IllegalArgumentException("PRIORITY_5M_15M must use ACTION_START");
+                }
+                request.put("db_only", priorityRequest ? false : ACTION_DOWNLOAD_DB.equals(action));
                 prefs().edit().putString("backtest_request", request.toString())
                         .putBoolean("backtest_requested", true)
                         .putBoolean("backtest_paused", false)
@@ -132,7 +137,30 @@ public class BacktestForegroundService extends Service {
                     ? "DB 다운로드 중 · 화면을 꺼도 계속됩니다"
                     : "백테스트 실행 중 · 화면을 꺼도 계속됩니다");
             String response;
-            if (request.optBoolean("db_only", false)) {
+            boolean priorityRequest = REQUEST_PRIORITY_5M_15M.equals(request.optString("request_type", ""));
+            if (priorityRequest) {
+                String databasePath = request.optString("database_path", "");
+                File priorityDb = new File(databasePath);
+                if (!request.optBoolean("priority_live_parity", false)) {
+                    throw new IllegalArgumentException("PRIORITY_5M_15M missing priority_live_parity=true");
+                }
+                if (request.optBoolean("db_only", false)) {
+                    throw new IllegalArgumentException("PRIORITY_5M_15M cannot run as DB download");
+                }
+                if (!"5m+15m".equals(request.optString("timeframe", ""))) {
+                    throw new IllegalArgumentException("PRIORITY_5M_15M requires timeframe=5m+15m");
+                }
+                if (!priorityDb.isFile() || !priorityDb.getName().toLowerCase(java.util.Locale.US).endsWith("-5m.db")) {
+                    throw new IllegalArgumentException("PRIORITY_5M_15M requires an existing -5m.db source");
+                }
+                updateNotification("LIVE 5분+15분 통합 백테스트 실행 중");
+                response = bridge.callAttr(
+                    "run_priority_live_backtest",
+                    request.getString("symbol"), request.getString("start"), request.getString("end"),
+                    request.getString("output_dir"), databasePath,
+                    request.optDouble("initial_capital", 1000.0), request.optBoolean("compounding_enabled", true)
+                ).toString();
+            } else if (request.optBoolean("db_only", false)) {
                 response = bridge.callAttr(
                         "download_cache_only",
                         request.getString("symbol"),
@@ -140,14 +168,6 @@ public class BacktestForegroundService extends Service {
                         request.getString("start"),
                         request.getString("end"),
                         request.getString("output_dir")
-                ).toString();
-            } else if (request.optBoolean("priority_live_parity", false)) {
-                updateNotification("LIVE 5분+15분 통합 백테스트 실행 중");
-                response = bridge.callAttr(
-                    "run_priority_live_backtest",
-                    request.getString("symbol"), request.getString("start"), request.getString("end"),
-                    request.getString("output_dir"), request.optString("database_path", ""),
-                    request.optDouble("initial_capital", 1000.0), request.optBoolean("compounding_enabled", true)
                 ).toString();
             } else {
                 response = bridge.callAttr(
@@ -238,6 +258,7 @@ public class BacktestForegroundService extends Service {
         request.put("adaptive_regime_enabled", intent.getBooleanExtra("adaptive_regime_enabled", false));
         request.put("database_path", intent.getStringExtra("database_path"));
         request.put("priority_live_parity", intent.getBooleanExtra("priority_live_parity", false));
+        request.put("request_type", intent.getStringExtra("request_type"));
         return request;
     }
 

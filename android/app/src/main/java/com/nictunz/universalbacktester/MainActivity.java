@@ -1483,6 +1483,7 @@ enableResultActions(false);
                     intent.putExtra("start", start); intent.putExtra("end", end); intent.putExtra("database_path", selectedDbPath);
                     intent.putExtra("initial_capital", initialCapital); intent.putExtra("compounding_enabled", compounding);
                     intent.putExtra("priority_live_parity", true);
+                    intent.putExtra("request_type", "PRIORITY_5M_15M");
                     getSharedPreferences("universal_bot", MODE_PRIVATE).edit()
                             .putBoolean("backtest_requested", true)
                             .putBoolean("backtest_paused", false)
@@ -1495,7 +1496,7 @@ enableResultActions(false);
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent); else startService(intent);
                     lastDbPath = ""; lastResultPath = ""; lastUploadEligible = false; lastSummary = null;
                     enableUpload(false); enableResultActions(false);
-                    setFullLog("LIVE 통합 Priority 백테스트 시작\n선택 5분 DB: " + priorityDb.getName() + "\n4거래소 5분 원본 확인 → 15분 자동 생성 → 5분+15분 단일 포지션 재생\n5분 9.55배 + 15분 5배 · 5분 우선\n");
+                    setFullLog("LIVE 통합 Priority 백테스트 시작\n요청타입: PRIORITY_5M_15M · ACTION_START\n선택 5분 DB: " + priorityDb.getName() + "\ntimeframe: 5m+15m · Python: run_priority_live_backtest\n4거래소 5분 원본 확인 → 15분 자동 생성 → 5분+15분 단일 포지션 재생\n5분 9.55배 + 15분 5배 · 5분 우선\n");
                     setBusy(true, "LIVE 통합 백테스트 실행 중"); setBacktestControlState("RUNNING");
                     toast("5분+15분 통합 백테스트를 시작했습니다.");
                 }).setNegativeButton("취소", null).show();
