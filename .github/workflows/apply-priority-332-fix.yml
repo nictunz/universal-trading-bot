@@ -1,0 +1,43 @@
+name: Apply Priority 1.1.332 Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/apply_priority_backtest_wiring.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply guarded source patch
+        run: python .github/scripts/apply_priority_backtest_wiring.py
+      - name: Verify expected 1.1.332 wiring
+        shell: bash
+        run: |
+          grep -F 'LIVE 통합 백테스트는 5분 DB를 선택해야 합니다' android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java
+          grep -F '.putString("backtest_log", "")' android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java
+          grep -F 'run_priority_live_backtest' android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java
+          grep -F '_resample_5m_to_15m' universal_bot/priority_backtest.py
+      - name: Commit patched Android sources
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'Patch already applied.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java
+          git commit -m 'fix: priority integrated backtest DB and stale log handling'
+          git push origin HEAD:main
