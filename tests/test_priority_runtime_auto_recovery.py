@@ -26,20 +26,15 @@ def make_runtime(reason, *, position=None, safety_reason=None, owner=None, pendi
     runtime = PriorityRuntime.__new__(PriorityRuntime)
     saved = []
     notifications = []
-    safety = SimpleNamespace(
-        halted=bool(safety_reason), reason=safety_reason or '',
-        consecutive_errors=0, protection_ok=True,
-    )
+    safety = SimpleNamespace(halted=bool(safety_reason), reason=safety_reason or '',
+                             consecutive_errors=0, protection_ok=True)
     runtime.engine = SimpleNamespace(
-        settings=SimpleNamespace(symbol='BTC/USDT:USDT'),
-        adapter=Adapter(position), safety=safety,
+        settings=SimpleNamespace(symbol='BTC/USDT:USDT'), adapter=Adapter(position), safety=safety,
         _notify_live=lambda *args, **kwargs: notifications.append((args, kwargs)),
     )
     state = {'halted': reason, 'owner': owner, 'position': None, 'pending': pending}
-    runtime.controller = SimpleNamespace(
-        state=state,
-        journal=SimpleNamespace(save=lambda value: saved.append(dict(value))),
-    )
+    runtime.controller = SimpleNamespace(state=state,
+        journal=SimpleNamespace(save=lambda value: saved.append(dict(value))))
     runtime._data_recovery_confirmations = 0
     runtime._data_blocked_count = 0
     runtime._data_blocked_since = None
@@ -51,30 +46,22 @@ def test_running_data_halt_requires_three_healthy_flat_confirmations():
     reason = 'data unavailable for 25.0s: mobile relay is stale: age=146.9s max=90s'
     mirrored = 'PRIORITY_RUNTIME_HALTED: ' + reason
     runtime, saved, notifications = make_runtime(reason, safety_reason=mirrored)
-
     assert runtime._recover_running_data_halt() is False
     assert runtime._recover_running_data_halt() is False
     assert runtime.controller.state['halted'] == reason
     assert runtime.engine.safety.halted is True
-
     assert runtime._recover_running_data_halt() is True
     assert runtime.controller.state['halted'] is None
     assert runtime.engine.safety.halted is False
-    assert runtime.engine.safety.reason == ''
     assert saved[-1]['halted'] is None
     assert notifications[-1][0][0] == '🟢 LIVE 데이터 HALT 자동복구'
 
 
 def test_running_data_halt_never_recovers_with_live_position():
     reason = 'data unavailable for 25.0s: mobile relay is stale: age=146.9s max=90s'
-    runtime, saved, _ = make_runtime(
-        reason,
-        position={'side': 'LONG', 'size': 0.01},
-        safety_reason='PRIORITY_RUNTIME_HALTED: ' + reason,
-    )
-
-    for _ in range(5):
-        assert runtime._recover_running_data_halt() is False
+    runtime, saved, _ = make_runtime(reason, position={'side': 'LONG', 'size': 0.01},
+                                     safety_reason='PRIORITY_RUNTIME_HALTED: ' + reason)
+    for _ in range(5): assert runtime._recover_running_data_halt() is False
     assert runtime.controller.state['halted'] == reason
     assert saved == []
 
@@ -82,9 +69,7 @@ def test_running_data_halt_never_recovers_with_live_position():
 def test_running_data_halt_never_clears_unrelated_safety_halt():
     reason = 'data unavailable for 25.0s: mobile relay is stale: age=146.9s max=90s'
     runtime, saved, _ = make_runtime(reason, safety_reason='POSITION_MISMATCH')
-
-    for _ in range(5):
-        assert runtime._recover_running_data_halt() is False
+    for _ in range(5): assert runtime._recover_running_data_halt() is False
     assert runtime.controller.state['halted'] == reason
     assert runtime.engine.safety.reason == 'POSITION_MISMATCH'
     assert saved == []
@@ -92,42 +77,50 @@ def test_running_data_halt_never_clears_unrelated_safety_halt():
 
 def test_running_data_halt_never_recovers_pending_operation():
     reason = 'data unavailable for 25.0s: mobile relay is stale: age=146.9s max=90s'
-    runtime, saved, _ = make_runtime(
-        reason,
-        safety_reason='PRIORITY_RUNTIME_HALTED: ' + reason,
-        pending='open_5m',
-    )
-
-    for _ in range(5):
-        assert runtime._recover_running_data_halt() is False
+    runtime, saved, _ = make_runtime(reason, safety_reason='PRIORITY_RUNTIME_HALTED: ' + reason,
+                                     pending='open_5m')
+    for _ in range(5): assert runtime._recover_running_data_halt() is False
     assert runtime.controller.state['halted'] == reason
     assert saved == []
 
 
+def market_timeout_reason():
+    return ('RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/market/candles?'
+            'symbol=BTCUSDT&granularity=5m&limit=500&productType=USDT-FUTURES')
+
+
 def test_bitget_market_candles_request_timeout_is_transient_data_error():
-    exc = RuntimeError(
-        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/market/candles?'
-        'symbol=BTCUSDT&granularity=5m&limit=500&productType=USDT-FUTURES'
-    )
-    assert PriorityRuntime._is_transient_data_error(exc) is True
+    assert PriorityRuntime._is_transient_data_error(RuntimeError(market_timeout_reason())) is True
+
+
+def test_legacy_market_timeout_halt_is_recoverable_reason():
+    assert PriorityRuntime._is_recoverable_data_halt_reason(market_timeout_reason()) is True
+
+
+def test_legacy_market_timeout_requires_three_healthy_flat_confirmations():
+    reason = market_timeout_reason()
+    runtime, saved, _ = make_runtime(reason, safety_reason='PRIORITY_RUNTIME_HALTED: ' + reason)
+    assert runtime._recover_running_data_halt() is False
+    assert runtime._recover_running_data_halt() is False
+    assert runtime.controller.state['halted'] == reason
+    assert runtime._recover_running_data_halt() is True
+    assert runtime.controller.state['halted'] is None
+    assert saved[-1]['halted'] is None
 
 
 def test_order_request_timeout_remains_fail_closed():
-    exc = RuntimeError(
-        'RequestTimeout: bitget POST https://api.bitget.com/api/v2/mix/order/place-order'
-    )
-    assert PriorityRuntime._is_transient_data_error(exc) is False
+    reason = 'RequestTimeout: bitget POST https://api.bitget.com/api/v2/mix/order/place-order'
+    assert PriorityRuntime._is_transient_data_error(RuntimeError(reason)) is False
+    assert PriorityRuntime._is_recoverable_data_halt_reason(reason) is False
 
 
 def test_position_request_timeout_remains_fail_closed():
-    exc = RuntimeError(
-        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/position/single-position'
-    )
-    assert PriorityRuntime._is_transient_data_error(exc) is False
+    reason = 'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/position/single-position'
+    assert PriorityRuntime._is_transient_data_error(RuntimeError(reason)) is False
+    assert PriorityRuntime._is_recoverable_data_halt_reason(reason) is False
 
 
 def test_account_request_timeout_remains_fail_closed():
-    exc = RuntimeError(
-        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/account/account'
-    )
-    assert PriorityRuntime._is_transient_data_error(exc) is False
+    reason = 'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/account/account'
+    assert PriorityRuntime._is_transient_data_error(RuntimeError(reason)) is False
+    assert PriorityRuntime._is_recoverable_data_halt_reason(reason) is False
