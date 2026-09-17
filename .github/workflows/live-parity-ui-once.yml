@@ -1,0 +1,71 @@
+name: Live parity UI one-shot
+
+on:
+  push:
+    paths:
+      - '.github/workflows/live-parity-ui-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply live parity UI refresh
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          main = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
+          text = main.read_text(encoding='utf-8')
+          replacements = {
+              'root.addView(text("전략 검증", 24, TEXT, true));':
+                  'root.addView(text("실거래 동등 백테스트", 24, TEXT, true));',
+              'root.addView(text("JSON 전략을 불러오고 저장된 DB로 검증하세요.", 13, MUTED, false), marginTop(4));':
+                  'root.addView(text("현재 LIVE 엔진과 같은 전략 수치·비용·체결 기준으로 저장 DB를 검증합니다.", 13, MUTED, false), marginTop(4));',
+              'Button priorityPreset = actionButton("최신 빌드 프로필 · 5분 / 15분 선택", Color.rgb(30, 41, 59));':
+                  'Button priorityPreset = actionButton("🟢 실거래 동등 프로필 · 5분 / 15분", SUCCESS);',
+              '.setTitle("단일 전략 검증용 프로필")':
+                  '.setTitle("현재 LIVE 동등 프로필")',
+              '.setItems(new String[]{"BTC 5분 · 9.55배", "BTC 15분 · 5배"},':
+                  '.setItems(new String[]{"BTC 5분 · 9.55배 · 신호봉 확정 즉시", "BTC 15분 · 5배 · 신호봉 확정 즉시"},',
+              'backtestCard.addView(text("단일 전략 백테스트 · 15분 포지션을 정리하고 5분으로 전환하는 조합 결과는 별도 검증이 필요합니다.",\n                12, MUTED, false), marginTop(6));':
+                  'backtestCard.addView(text("LIVE 동등 기준: 신호봉 확정 종가 진입(signal_close) · 편도 수수료 0.02% + 슬리피지 0.01% · 최대 진입 1회 · TP/SL은 최초 진입가 기준 고정. 데이터가 정상일 때 서버는 별도 대기 없이 주문합니다. 5분/15분 우선 전환 조합 성과는 단일 프로필 결과와 구분합니다.",\n                12, MUTED, false), marginTop(6));',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit('MainActivity anchor missing: ' + old[:90])
+              text = text.replace(old, new, 1)
+          main.write_text(text, encoding='utf-8')
+
+          launcher = Path('android/app/src/main/java/com/nictunz/universalbacktester/LauncherActivity.java')
+          text = launcher.read_text(encoding='utf-8')
+          replacements = {
+              'backtest.addView(section("전략 검증 · DB 차트"));':
+                  'backtest.addView(section("🧪 실거래 동등 백테스트 · DB 차트"));',
+              'backtest.addView(text("저장된 DB에서 5분봉·15분봉 전략을 각각 검증합니다. 5분봉 우선 전환 조합과 단일 전략의 결과는 다릅니다.", 12, MUTED, false), mt(5));':
+                  'backtest.addView(text("현재 LIVE 5분(9.55배)·15분(5배) 프로필을 한 번에 불러와 저장 DB에서 검증합니다. 신호봉 확정 즉시 진입 기준과 실거래 비용을 명확히 표시하며, 우선 전환 조합과 단일 전략 결과는 구분합니다.", 12, MUTED, false), mt(5));',
+              'Button openBacktester = actionButton("JSON 전략 · DB 차트 열기", Color.rgb(30, 41, 59));':
+                  'Button openBacktester = actionButton("실거래 동등 백테스트 열기", SUCCESS);',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit('LauncherActivity anchor missing: ' + old[:90])
+              text = text.replace(old, new, 1)
+          launcher.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit UI refresh
+        run: |
+          if git diff --quiet; then
+            echo 'No changes needed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java android/app/src/main/java/com/nictunz/universalbacktester/LauncherActivity.java
+          git commit -m 'feat: surface live parity backtest workflow'
+          git push origin HEAD:main
