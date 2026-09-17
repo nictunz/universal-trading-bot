@@ -11,8 +11,13 @@ from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 
 class PriorityRuntime:
-    DATA_ALERT_THRESHOLD = 3
-    DATA_HALT_SECONDS = 15.0
+    # The Android relay and public exchanges do not roll a just-closed candle at
+    # exactly the same millisecond.  Keep the healthy fast path immediate, but
+    # treat the short post-boundary synchronization window as expected lag rather
+    # than an incident.  A genuine outage still fails closed before the 30s
+    # signal-admission boundary expires.
+    DATA_ALERT_SECONDS = 15.0
+    DATA_HALT_SECONDS = 25.0
     TRANSIENT_DATA_ERRORS = (
         'mobile relay snapshot not found:',
         'mobile relay is stale:',
@@ -115,7 +120,10 @@ class PriorityRuntime:
         self._data_blocked_count += 1
         elapsed = max(0.0, (now - self._data_blocked_since).total_seconds())
         self.last_status = 'DATA_BLOCKED: ' + reason
-        if self._data_blocked_count >= self.DATA_ALERT_THRESHOLD:
+        # Count-based alerting used to report a normal 4-5 second exchange/relay
+        # rollover as an outage.  Time-based alerting keeps retries immediate and
+        # silent during the expected synchronization window.
+        if elapsed >= self.DATA_ALERT_SECONDS:
             self._alert_once(
                 'DATA_BLOCKED:' + reason,
                 '🟠 LIVE 데이터 연속 장애',
@@ -123,7 +131,7 @@ class PriorityRuntime:
                 오류=reason,
                 연속횟수=self._data_blocked_count,
                 지속초=f'{elapsed:.1f}',
-                안내='순간 지연은 무시하고 연속 장애만 알립니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.',
+                안내='경계 동기화 유예시간을 초과했습니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.',
             )
         if elapsed >= self.DATA_HALT_SECONDS:
             self.last_status = self.controller.halt(
