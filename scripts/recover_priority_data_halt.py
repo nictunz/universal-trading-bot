@@ -27,6 +27,14 @@ RECOVERABLE_HALTS = {
 }
 
 
+def _is_recoverable_halt(halted: object, sidecar: Path) -> bool:
+    """Accept only the legacy 5m HALTs or the exact configured 5m sidecar miss."""
+    text = str(halted or "")
+    if text in RECOVERABLE_HALTS:
+        return True
+    return text == f"RuntimeError: mobile relay snapshot not found: {sidecar}"
+
+
 def _fresh(path: Path, expected_tf: str, max_age: int) -> None:
     if not path.is_file():
         raise RuntimeError(f"relay missing: {path}")
@@ -78,7 +86,7 @@ def recover(state_path: Path, relay_path: Path, max_age: int, apply: bool) -> di
                 raise RuntimeError("persisted position/owner exists; recovery refused")
             if state.get("pending") is not None:
                 raise RuntimeError("unfinished operation exists; recovery refused")
-            if state.get("halted") not in RECOVERABLE_HALTS:
+            if not _is_recoverable_halt(state.get("halted"), sidecar):
                 raise RuntimeError(f"HALT is not allow-listed: {state.get('halted')!r}")
             before = dict(state)
             if not apply:
