@@ -46,35 +46,49 @@ def _load(con: sqlite3.Connection, symbol: str, timeframe: str, exchange: str,
     return frame.astype(float)
 
 
+def _resample_5m_to_15m(frame: pd.DataFrame) -> pd.DataFrame:
+    """Build exchange-native-equivalent 15m OHLCV from complete 5m candles."""
+    if frame.empty:
+        return frame.copy()
+    out = frame.resample("15min", label="left", closed="left").agg({
+        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
+    })
+    counts = frame["close"].resample("15min", label="left", closed="left").count()
+    out = out.loc[counts == 3].dropna()
+    return out.astype(float)
+
+
 def run_priority_backtest(database_path: str, start: str, end: str,
                           initial_capital: float = 1000.0,
                           compounding: bool = True,
                           symbol: str = "BTC/USDT:USDT") -> dict:
     """Replay both LIVE profiles on one position/equity timeline.
 
-    Signal admission is identical to LIVE: at each 5m boundary both due frames
-    must be complete, DualTimeframeSignals evaluates 5m before 15m, a 5m owner
-    blocks all new entries, and a 5m signal preempts a 15m owner. TP/SL are fixed
-    from entry and same-bar TP+SL resolves to SL first.
+    The selected DB is the 5m source DB. 15m candles for every exchange are
+    deterministically derived from the same 5m rows, so the mobile app no longer
+    requires an impossible single DB containing both 5m and 15m datasets.
     """
     if symbol != "BTC/USDT:USDT":
         raise ValueError("LIVE 통합 프로필은 BTC/USDT:USDT 전용입니다")
     db = Path(database_path)
     if not db.is_file():
-        raise ValueError("실거래 동등 통합 백테스트는 먼저 저장 DB를 선택해야 합니다")
+        raise ValueError("실거래 동등 통합 백테스트는 먼저 5분 저장 DB를 선택해야 합니다")
     capital = float(initial_capital)
     if not math.isfinite(capital) or capital < 10:
         raise ValueError("초기자산은 10 USDT 이상이어야 합니다")
     start_ts, end_ts = _utc_day(start), _utc_day(end, True)
-    # LIVE evaluator needs 200 completed warmup bars; load extra history.
     warmup = start_ts - pd.Timedelta(days=4)
     frames, volumes = {}, {}
     with sqlite3.connect(str(db)) as con:
-        for tf in ("5m", "15m"):
-            frames[tf] = _load(con, symbol, tf, "bitget", warmup, end_ts)
-            volumes[tf] = {
-                ex: _load(con, symbol, tf, ex, warmup, end_ts)["volume"] for ex in EXCHANGES
-            }
+        five = {ex: _load(con, symbol, "5m", ex, warmup, end_ts) for ex in EXCHANGES}
+    frames["5m"] = five["bitget"]
+    volumes["5m"] = {ex: five[ex]["volume"] for ex in EXCHANGES}
+    fifteen = {ex: _resample_5m_to_15m(five[ex]) for ex in EXCHANGES}
+    for ex, frame in fifteen.items():
+        if frame.empty:
+            raise ValueError(f"{ex} 15m: 선택한 5분 DB에서 15분봉을 생성할 수 없습니다")
+    frames["15m"] = fifteen["bitget"]
+    volumes["15m"] = {ex: fifteen[ex]["volume"] for ex in EXCHANGES}
 
     signals = DualTimeframeSignals()
     history: dict[str, dict[str, str]] = {}
@@ -112,9 +126,6 @@ def run_priority_backtest(database_path: str, start: str, end: str,
 
     boundaries = pd.date_range(start=start_ts.ceil("5min"), end=end_ts.floor("5min"), freq="5min", tz="UTC")
     for boundary in boundaries:
-        # The 5m candle whose open is boundary-5m is now complete. Protection
-        # touch is processed before a new boundary signal, matching one-position
-        # ownership and conservative same-bar SL-first behavior.
         if position is not None:
             bar_open = boundary - pd.Timedelta("5m")
             if bar_open in frames["5m"].index:
@@ -138,7 +149,7 @@ def run_priority_backtest(database_path: str, start: str, end: str,
             curve.append({"time": boundary.isoformat(), "equity": equity})
             continue
         if candidates:
-            signal = candidates[0]  # exact LIVE 5m-first ordering
+            signal = candidates[0]
             owner = position["owner"] if position else None
             if owner != "5m" and not (owner and signal.owner == "15m"):
                 if owner == "15m" and signal.owner == "5m":
@@ -170,6 +181,7 @@ def run_priority_backtest(database_path: str, start: str, end: str,
         mode="priority_live_parity", profile_hash=profile_hash(), symbol=symbol,
         profiles={tf: {"multiplier": PROFILES[tf]["live_entry_multiplier"]} for tf in ("5m","15m")},
         priority_rule="5m first; 5m preempts 15m; one shared position",
+        data_model="selected 5m DB; 15m deterministically resampled from same 5m OHLCV",
         execution_model="signal_close", same_bar_policy="SL_FIRST",
         fee_percent_per_side=FEE*100, slippage_percent_per_side=SLIPPAGE*100,
         initial_capital=capital, final_equity=equity, compounding_enabled=bool(compounding),
