@@ -139,6 +139,14 @@ public class BacktestForegroundService extends Service {
                         request.getString("end"),
                         request.getString("output_dir")
                 ).toString();
+            } else if (request.optBoolean("priority_live_parity", false)) {
+                updateNotification("LIVE 5분+15분 통합 백테스트 실행 중");
+                response = bridge.callAttr(
+                    "run_priority_live_backtest",
+                    request.getString("symbol"), request.getString("start"), request.getString("end"),
+                    request.getString("output_dir"), request.optString("database_path", ""),
+                    request.optDouble("initial_capital", 1000.0), request.optBoolean("compounding_enabled", true)
+                ).toString();
             } else {
                 response = bridge.callAttr(
                     "run_backtest",
@@ -227,6 +235,7 @@ public class BacktestForegroundService extends Service {
         request.put("precheck_enabled", intent.getBooleanExtra("precheck_enabled", true));
         request.put("adaptive_regime_enabled", intent.getBooleanExtra("adaptive_regime_enabled", false));
         request.put("database_path", intent.getStringExtra("database_path"));
+        request.put("priority_live_parity", intent.getBooleanExtra("priority_live_parity", false));
         return request;
     }
 

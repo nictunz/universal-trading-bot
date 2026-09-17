@@ -407,14 +407,10 @@ public class MainActivity extends android.app.Activity {
         Button editSelectedButton = actionButton("✏ 불러온/선택한 전략 수치 직접 수정", PRIMARY);
         editSelectedButton.setOnClickListener(v -> showStrategyParameterEditor());
         backtestCard.addView(editSelectedButton, marginTop(8));
-        Button priorityPreset = actionButton("🟢 실거래 동등 프로필 · 5분 / 15분", SUCCESS);
-        priorityPreset.setOnClickListener(v -> new AlertDialog.Builder(this)
-                .setTitle("현재 LIVE 동등 프로필")
-                .setItems(new String[]{"BTC 5분 · 9.55배 · 신호봉 확정 즉시", "BTC 15분 · 5배 · 신호봉 확정 즉시"},
-                        (dialog, which) -> loadPriorityPreset(which == 0 ? "5m" : "15m"))
-                .setNegativeButton("취소", null).show());
+        Button priorityPreset = actionButton("🟢 LIVE 통합 백테스트 · 5분 9.55배 + 15분 5배", SUCCESS);
+        priorityPreset.setOnClickListener(v -> startPriorityLiveParityBacktest());
         backtestCard.addView(priorityPreset, marginTop(12));
-        backtestCard.addView(text("LIVE 동등 기준: 신호봉 확정 종가 진입(signal_close) · 편도 수수료 0.02% + 슬리피지 0.01% · 최대 진입 1회 · TP/SL은 최초 진입가 기준 고정. 데이터가 정상일 때 서버는 별도 대기 없이 주문합니다. 5분/15분 우선 전환 조합 성과는 단일 프로필 결과와 구분합니다.",
+        backtestCard.addView(text("두 전략을 따로 계산하지 않습니다. 실제 Priority Runtime처럼 하나의 포지션을 공유하고 5분 신호가 15분보다 우선하며, 15분 보유 중 5분 신호가 오면 15분을 정리한 뒤 5분으로 전환합니다. 신호봉 확정 종가 · 고정 TP/SL · 동봉 SL 우선 · 편도 수수료 0.02% + 슬리피지 0.01%.",
                 12, MUTED, false), marginTop(6));
         backtestCard.addView(runButton, marginTop(12));
 
@@ -1456,6 +1452,38 @@ enableResultActions(false);
             return !stored.equals(value);
         }
         return !String.valueOf(stored).equals(String.valueOf(value));
+    }
+
+    private void startPriorityLiveParityBacktest() {
+        String symbol = symbolInput.getText().toString().trim();
+        if (!"BTC/USDT:USDT".equalsIgnoreCase(symbol)) { toast("LIVE 통합 프로필은 BTC/USDT:USDT 전용입니다."); return; }
+        if (selectedDbPath == null || selectedDbPath.trim().isEmpty()) { toast("먼저 5분·15분 및 4거래소 데이터가 들어있는 저장 DB를 선택하세요."); return; }
+        String start = startInput.getText().toString().trim();
+        String end = endInput.getText().toString().trim();
+        Calendar startCal = parseDate(start);
+        Calendar endCal = parseDate(end);
+        if (startCal == null || endCal == null || endCal.before(startCal)) { toast("백테스트 시작일과 종료일을 확인하세요."); return; }
+        double initialCapital;
+        try { initialCapital = Double.parseDouble(initialCapitalInput.getText().toString().trim().replace(",", "")); }
+        catch (Exception ignored) { toast("초기자산을 숫자로 입력하세요."); return; }
+        boolean compounding = !"고정식".equals(sizingModeInput.getText().toString().trim());
+        new AlertDialog.Builder(this)
+                .setTitle("LIVE 통합 Priority 백테스트")
+                .setMessage("5분 9.55배 + 15분 5배를 한 계좌/한 포지션으로 시간순 재생합니다.\n\n• 5분 신호 우선\n• 5분 보유 중 신규 신호 차단\n• 15분 보유 중 5분 신호 → 15분 정리 후 5분 진입\n• 고정 TP/SL · 동봉 SL 우선\n• 수수료 0.02% + 슬리피지 0.01% / side")
+                .setPositiveButton("통합 백테스트 실행", (dialog, which) -> {
+                    Intent intent = new Intent(this, BacktestForegroundService.class);
+                    intent.setAction(BacktestForegroundService.ACTION_START);
+                    intent.putExtra("symbol", "BTC/USDT:USDT"); intent.putExtra("timeframe", "5m+15m");
+                    intent.putExtra("start", start); intent.putExtra("end", end); intent.putExtra("database_path", selectedDbPath);
+                    intent.putExtra("initial_capital", initialCapital); intent.putExtra("compounding_enabled", compounding);
+                    intent.putExtra("priority_live_parity", true);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent); else startService(intent);
+                    lastDbPath = ""; lastResultPath = ""; lastUploadEligible = false; lastSummary = null;
+                    enableUpload(false); enableResultActions(false);
+                    setFullLog("LIVE 통합 Priority 백테스트 시작\n5분 9.55배 + 15분 5배 · 단일 포지션 · 5분 우선\n");
+                    setBusy(true, "LIVE 통합 백테스트 실행 중"); setBacktestControlState("RUNNING");
+                    toast("5분+15분 통합 백테스트를 시작했습니다.");
+                }).setNegativeButton("취소", null).show();
     }
 
     private void startBacktest(JSONObject fixedParameters) {

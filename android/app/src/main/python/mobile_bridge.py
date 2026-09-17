@@ -1607,6 +1607,37 @@ def engine_status() -> str:
     )
 
 
+def run_priority_live_backtest(
+    symbol: str,
+    start_text: str,
+    end_text: str,
+    output_dir: str,
+    database_path: str,
+    initial_capital: float = 1000.0,
+    compounding_enabled: bool = True,
+) -> str:
+    from universal_bot.priority_backtest import run_priority_backtest
+    logs = [
+        "LIVE 통합 Priority 백테스트 시작",
+        "5분 9.55배 + 15분 5배 · 단일 포지션 · 5분 우선",
+        "신호봉 확정 종가 · 고정 TP/SL · 동봉 SL 우선 · 수수료 0.02% + 슬리피지 0.01%/side",
+    ]
+    result = run_priority_backtest(
+        database_path=database_path, start=start_text, end=end_text,
+        initial_capital=float(initial_capital), compounding=bool(compounding_enabled), symbol=symbol,
+    )
+    history_dir = Path(output_dir) / "BacktestResults"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    archive = history_dir / f"{stamp}-btc-usdt-priority-live-parity.json"
+    payload = dict(result)
+    payload.update({"database": str(database_path), "requested_start": start_text, "requested_end": end_text,
+                    "selected_database": True, "result_path": str(archive),
+                    "optimization_pipeline": {"stage": "priority_live_parity", "paper_live_applied": False}})
+    archive.write_text(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    logs.append(f"통합 백테스트 완료 · 거래 {int(payload.get('trades') or 0)} · 수익률 {float(payload.get('return_percent') or 0):.2f}% · MDD {float(payload.get('max_drawdown_percent') or 0):.2f}%")
+    return json.dumps({"db": str(database_path), "result": str(archive), "summary": payload, "logs": logs}, ensure_ascii=False)
+
 def run_backtest(
     symbol: str,
     timeframe: str,
