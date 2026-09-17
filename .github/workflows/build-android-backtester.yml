@@ -1,4 +1,4 @@
-# build-request: single-pass-signed-phone-build
+# build-request: priority-routing-1.1.333
 name: Build Android Backtester APK
 
 on:
@@ -69,28 +69,26 @@ jobs:
           destination = "."
           if "-d" in args:
               index = args.index("-d")
-              destination = args[index + 1]
+              if index + 1 < len(args):
+                  destination = args[index + 1]
               del args[index:index + 2]
           archives = [arg for arg in args if not arg.startswith("-")]
           if not archives:
-              raise SystemExit("unzip wrapper: archive path is required")
-          with zipfile.ZipFile(archives[0]) as bundle:
-              bundle.extractall(destination)
+              raise SystemExit("usage: unzip archive.zip [-d destination]")
+          with zipfile.ZipFile(archives[0]) as archive:
+              archive.extractall(destination)
           """, encoding="utf-8")
-          target.chmod(0o755)
           PY
+            chmod +x "$UNZIP_WRAPPER"
             echo "$RUNNER_TEMP/android-tools-bin" >> "$GITHUB_PATH"
           fi
 
       - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
 
       - name: Install Android SDK 35
-        shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -99,233 +97,200 @@ jobs:
       - name: Set monotonic app version
         shell: bash
         run: |
-          echo "ANDROID_VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
-          echo "ANDROID_VERSION_NAME=1.1.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          VERSION_CODE=$((1000000 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.1.${GITHUB_RUN_NUMBER}"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "Building $VERSION_NAME ($VERSION_CODE)"
 
       - name: Verify Python project
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
-          python -m compileall -q universal_bot
-          pytest -q
+        run: python -m compileall -q universal_bot android/app/src/main/python
 
       - name: Sync shared Python engine into Android app
-        shell: bash
-        run: |
-          rm -rf android/app/src/main/python/universal_bot
-          cp -R universal_bot android/app/src/main/python/universal_bot
-          cp android/compat/config.py android/app/src/main/python/universal_bot/config.py
-          cp android/compat/historical.py android/app/src/main/python/universal_bot/historical.py
-          find android/app/src/main/python/universal_bot -type d -name '__pycache__' -prune -exec rm -rf {} + || true
-          echo 'Android compatibility modules applied'
+        run: bash scripts/sync_android_python.sh
 
       - name: Build unsigned release APK
+        id: build_apk
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          nice -n 15 gradle -p android :app:assembleRelease --stacktrace 2>&1 | tee android-build.log
+          gradle -p android :app:assembleRelease \
+            -PappVersionCode="$VERSION_CODE" \
+            -PappVersionName="$VERSION_NAME" 2>&1 | tee "$RUNNER_TEMP/android-build.log"
 
       - name: Upload build log
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: Android-build-log
-          path: android-build.log
+          name: android-build-log-${{ github.run_number }}
+          path: ${{ runner.temp }}/android-build.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
 
       - name: Publish Android build failure report
-        if: failure()
+        if: steps.build_apk.outcome != 'success'
         shell: bash
         run: |
           mkdir -p reports
           {
-            echo '# Latest Android build failure'
+            echo '# Android build failure'
             echo
-            echo "- Source commit: $GITHUB_SHA"
-            echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Run: $GITHUB_RUN_ID"
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
             echo
-            echo '~~~text'
-            if [[ -f android-build.log ]]; then
-              tail -n 300 android-build.log
-            else
-              echo 'android-build.log was not created; failure occurred before Gradle build.'
-            fi
-            echo '~~~'
-          } > reports/latest-android-build-failure.md
+            echo '```text'
+            tail -n 160 "$RUNNER_TEMP/android-build.log" || true
+            echo '```'
+          } > reports/android-build-failure.md
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add reports/latest-android-build-failure.md
-          git commit -m 'ci: publish Android build failure [skip ci]' || exit 0
-          git push origin HEAD:main
+          git add reports/android-build-failure.md
+          git commit -m "ci: record Android build failure for $VERSION_NAME" || true
+          git push origin HEAD:main || true
+          exit 1
 
       - name: Prepare unsigned build artifact
+        if: steps.build_apk.outcome == 'success'
         shell: bash
         run: |
-          cp android/app/build/outputs/apk/release/app-release-unsigned.apk UniversalTradingBacktester-Android-unsigned.apk
-          ls -lh UniversalTradingBacktester-Android-unsigned.apk
+          APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -f "$APK"
+          cp "$APK" "android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}-unsigned.apk"
 
       - name: Upload unsigned APK
-        continue-on-error: true
+        if: steps.build_apk.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: UniversalTradingBacktester-Android-unsigned
-          path: UniversalTradingBacktester-Android-unsigned.apk
-          if-no-files-found: error
+          name: UniversalBacktester-${{ env.VERSION_NAME }}-unsigned
+          path: android/app/build/outputs/apk/release/UniversalBacktester-${{ env.VERSION_NAME }}-unsigned.apk
           retention-days: 30
 
       - name: Configure stable release signing
-        id: signing
+        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD_SECRET: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_UPDATE_KEYSTORE_B64: ${{ secrets.ANDROID_UPDATE_KEYSTORE_B64 }}
+          ANDROID_UPDATE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEYSTORE_PASSWORD }}
+          ANDROID_UPDATE_KEY_ALIAS: ${{ secrets.ANDROID_UPDATE_KEY_ALIAS }}
+          ANDROID_UPDATE_KEY_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEY_PASSWORD }}
         run: |
-          if [[ -z "$KEYSTORE_B64" || -z "$STORE_PASSWORD" ]]; then
-            echo 'UPDATE_RELEASE_READY=false' >> "$GITHUB_ENV"
-            echo 'Stable signing secrets are not configured; debug build is valid but no self-update release will be published.'
-            exit 0
+          set -euo pipefail
+          if [ -z "${ANDROID_UPDATE_KEYSTORE_B64:-}" ] || [ -z "${ANDROID_UPDATE_KEYSTORE_PASSWORD:-}" ] || [ -z "${ANDROID_UPDATE_KEY_ALIAS:-}" ] || [ -z "${ANDROID_UPDATE_KEY_PASSWORD:-}" ]; then
+            echo "Stable Android update signing secrets are not configured." >&2
+            exit 1
           fi
-          KEYSTORE="$RUNNER_TEMP/universal-release.jks"
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
-          chmod 600 "$KEYSTORE"
-          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
-          echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_ALIAS=${KEY_ALIAS_SECRET:-universal}" >> "$GITHUB_ENV"
-          echo "ANDROID_KEY_PASSWORD=${KEY_PASSWORD_SECRET:-$STORE_PASSWORD}" >> "$GITHUB_ENV"
-          echo 'UPDATE_RELEASE_READY=true' >> "$GITHUB_ENV"
+          KEYSTORE="$RUNNER_TEMP/universal-update.jks"
+          printf '%s' "$ANDROID_UPDATE_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+          echo "ANDROID_UPDATE_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
 
       - name: Sign stable update APK
-        if: env.UPDATE_RELEASE_READY == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          UNSIGNED=android/app/build/outputs/apk/release/app-release-unsigned.apk
-          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          test -s "$UNSIGNED"
-          "$APKSIGNER" sign \
-            --ks "$ANDROID_KEYSTORE_PATH" \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out UniversalTradingBacktester-Android.apk \
-            "$UNSIGNED"
-          "$APKSIGNER" verify --verbose UniversalTradingBacktester-Android.apk
-          test -s UniversalTradingBacktester-Android.apk
-          ls -lh UniversalTradingBacktester-Android.apk
-
-      - name: Prepare signed update manifest
-        if: env.UPDATE_RELEASE_READY == 'true'
-        shell: bash
-        run: |
-          ANDROID_UPDATE_APK_NAME="UniversalTradingBacktester-Android-${ANDROID_VERSION_CODE}.apk"
-          cp UniversalTradingBacktester-Android.apk "$ANDROID_UPDATE_APK_NAME"
-          APK_SHA256="$(sha256sum "$ANDROID_UPDATE_APK_NAME" | awk '{print $1}')"
-          echo "ANDROID_UPDATE_APK_NAME=$ANDROID_UPDATE_APK_NAME" >> "$GITHUB_ENV"
-          export APK_SHA256 ANDROID_UPDATE_APK_NAME
-          python - <<'PY'
-          import json, os
-          data = {
-              'schema_version': 1,
-              'package_id': 'com.nictunz.universalbacktester',
-              'version_code': int(os.environ['ANDROID_VERSION_CODE']),
-              'version_name': os.environ['ANDROID_VERSION_NAME'],
-              'commit': os.environ['GITHUB_SHA'],
-              'apk_name': os.environ['ANDROID_UPDATE_APK_NAME'],
-              'sha256': os.environ['APK_SHA256'],
-              'verified': True,
-          }
-          with open('android-update.json', 'w', encoding='utf-8') as f:
-              json.dump(data, f, ensure_ascii=False, indent=2)
-              f.write('\n')
-          print(json.dumps(data, ensure_ascii=False))
-          PY
-
-      - name: Configure private update server
-        if: env.UPDATE_RELEASE_READY == 'true'
+        if: steps.build_apk.outcome == 'success'
         shell: bash
         env:
-          UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
+          ANDROID_UPDATE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEYSTORE_PASSWORD }}
+          ANDROID_UPDATE_KEY_ALIAS: ${{ secrets.ANDROID_UPDATE_KEY_ALIAS }}
+          ANDROID_UPDATE_KEY_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEY_PASSWORD }}
         run: |
-          if [[ -z "$UPDATE_SSH_PRIVATE_KEY" ]]; then
-            echo 'UPDATE_SERVER_READY=false' >> "$GITHUB_ENV"
-            echo 'Android update server SSH secret is not configured; signed build can be archived but not pushed to the phone update channel.'
-            exit 0
-          fi
-          KEYFILE="$RUNNER_TEMP/android-update-ssh"
-          printf '%s\n' "$UPDATE_SSH_PRIVATE_KEY" > "$KEYFILE"
-          chmod 600 "$KEYFILE"
-          mkdir -p "$HOME/.ssh"
-          timeout 15 ssh-keyscan -T 10 -H 34.132.172.40 >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-          echo "ANDROID_UPDATE_SSH_KEYFILE=$KEYFILE" >> "$GITHUB_ENV"
-          echo 'UPDATE_SERVER_READY=true' >> "$GITHUB_ENV"
+          set -euo pipefail
+          UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
+          ALIGNED="$RUNNER_TEMP/UniversalBacktester-${VERSION_NAME}-aligned.apk"
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$ANDROID_UPDATE_KEYSTORE" \
+            --ks-key-alias "$ANDROID_UPDATE_KEY_ALIAS" \
+            --ks-pass "pass:$ANDROID_UPDATE_KEYSTORE_PASSWORD" \
+            --key-pass "pass:$ANDROID_UPDATE_KEY_PASSWORD" \
+            --out "$SIGNED" \
+            "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
+          keytool -printcert -jarfile "$SIGNED" | tee "$RUNNER_TEMP/android-signing-cert.txt"
+          sha256sum "$SIGNED" | tee "$RUNNER_TEMP/android-apk-sha256.txt"
 
-      - name: Publish verified update to server
-        if: env.UPDATE_RELEASE_READY == 'true' && env.UPDATE_SERVER_READY == 'true'
-        continue-on-error: true
+      - name: Prepare signed update manifest
+        if: steps.build_apk.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
-          HOST=34.132.172.40
-          USER=kpj3669
-          REMOTE=/home/kpj3669/.cache/universal-trading-bot/android-updates
-          SSH_OPTS=(-o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
-          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" "mkdir -p '$REMOTE'"
-          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$ANDROID_UPDATE_APK_NAME" "$USER@$HOST:$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading"
-          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" android-update.json "$USER@$HOST:$REMOTE/android-update.json.uploading"
-          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SSH_KEYFILE" "$USER@$HOST" \
-            "mv '$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading' '$REMOTE/$ANDROID_UPDATE_APK_NAME' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
-          echo 'Verified Android update published to private SFTP channel.'
+          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
+          SHA256=$(sha256sum "$SIGNED" | awk '{print $1}')
+          cat > "$RUNNER_TEMP/android-update.json" <<JSON
+          {
+            "version_name": "$VERSION_NAME",
+            "version_code": $VERSION_CODE,
+            "sha256": "$SHA256",
+            "file_name": "UniversalBacktester-${VERSION_NAME}.apk",
+            "source_commit": "$GITHUB_SHA"
+          }
+          JSON
+          cat "$RUNNER_TEMP/android-update.json"
+
+      - name: Configure private update server
+        if: steps.build_apk.outcome == 'success'
+        shell: bash
+        env:
+          ANDROID_UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
+          ANDROID_UPDATE_SERVER_HOST: ${{ secrets.ANDROID_UPDATE_SERVER_HOST }}
+          ANDROID_UPDATE_SERVER_USER: ${{ secrets.ANDROID_UPDATE_SERVER_USER }}
+          ANDROID_UPDATE_SERVER_PORT: ${{ secrets.ANDROID_UPDATE_SERVER_PORT }}
+          ANDROID_UPDATE_SERVER_PATH: ${{ secrets.ANDROID_UPDATE_SERVER_PATH }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_HOST:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_USER:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_PATH:-}" ]; then
+            echo "Private Android update server secrets are not configured." >&2
+            exit 1
+          fi
+          KEY="$RUNNER_TEMP/android-update-server-key"
+          printf '%s\n' "$ANDROID_UPDATE_SSH_PRIVATE_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "ANDROID_UPDATE_SERVER_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "ANDROID_UPDATE_SERVER_PORT_EFFECTIVE=${ANDROID_UPDATE_SERVER_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Publish verified update to server
+        if: steps.build_apk.outcome == 'success'
+        shell: bash
+        env:
+          ANDROID_UPDATE_SERVER_HOST: ${{ secrets.ANDROID_UPDATE_SERVER_HOST }}
+          ANDROID_UPDATE_SERVER_USER: ${{ secrets.ANDROID_UPDATE_SERVER_USER }}
+          ANDROID_UPDATE_SERVER_PATH: ${{ secrets.ANDROID_UPDATE_SERVER_PATH }}
+        run: |
+          set -euo pipefail
+          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
+          PORT="$ANDROID_UPDATE_SERVER_PORT_EFFECTIVE"
+          DEST="${ANDROID_UPDATE_SERVER_USER}@${ANDROID_UPDATE_SERVER_HOST}"
+          ssh -i "$ANDROID_UPDATE_SERVER_KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "$DEST" \
+            "mkdir -p '$ANDROID_UPDATE_SERVER_PATH'"
+          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new \
+            "$SIGNED" "$DEST:$ANDROID_UPDATE_SERVER_PATH/UniversalBacktester-${VERSION_NAME}.apk"
+          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new \
+            "$RUNNER_TEMP/android-update.json" "$DEST:$ANDROID_UPDATE_SERVER_PATH/android-update.json"
 
       - name: Upload signed update artifact
-        if: env.UPDATE_RELEASE_READY == 'true'
-        continue-on-error: true
+        if: steps.build_apk.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: UniversalTradingBacktester-Android-signed
+          name: UniversalBacktester-${{ env.VERSION_NAME }}-signed
           path: |
-            UniversalTradingBacktester-Android.apk
-            android-update.json
-          if-no-files-found: error
+            android/app/build/outputs/apk/release/UniversalBacktester-${{ env.VERSION_NAME }}.apk
+            ${{ runner.temp }}/android-update.json
+            ${{ runner.temp }}/android-signing-cert.txt
+            ${{ runner.temp }}/android-apk-sha256.txt
           retention-days: 30
 
       - name: Publish GitHub Android update release
-        if: env.UPDATE_RELEASE_READY == 'true'
-        uses: actions/github-script@v7
-        with:
-          retries: 3
-          script: |
-            const fs=require('fs'), crypto=require('crypto');
-            const manifest=JSON.parse(fs.readFileSync('android-update.json','utf8'));
-            const repo=context.repo, tag='android-v'+manifest.version_code;
-            const apk=fs.readFileSync('UniversalTradingBacktester-Android.apk');
-            if(!manifest.verified || manifest.commit!==context.sha ||
-               crypto.createHash('sha256').update(apk).digest('hex')!==manifest.sha256)
-              throw new Error('Verified APK manifest mismatch');
-            const releases=await github.paginate(github.rest.repos.listReleases,{...repo,per_page:100});
-            let release=releases.find(r=>r.tag_name===tag);
-            if(!release) release=(await github.rest.repos.createRelease({
-              ...repo,tag_name:tag,target_commitish:context.sha,name:'Android '+manifest.version_name,
-              body:'Verified Android build and signing for '+context.sha+'. SHA-256: '+manifest.sha256,
-              draft:true,prerelease:false
-            })).data;
-            for(const name of ['UniversalTradingBacktester-Android.apk','android-update.json']){
-              const data=fs.readFileSync(name);
-              const assets=(await github.rest.repos.listReleaseAssets({...repo,release_id:release.id})).data;
-              const old=assets.find(a=>a.name===name);
-              if(old) await github.rest.repos.deleteReleaseAsset({...repo,asset_id:old.id});
-              const asset=(await github.rest.repos.uploadReleaseAsset({
-                ...repo,release_id:release.id,name,data,
-                headers:{'content-type':'application/octet-stream','content-length':data.length}
-              })).data;
-              if(asset.size!==data.length) throw new Error('Asset size mismatch');
-              if(asset.digest && asset.digest!=='sha256:'+crypto.createHash('sha256').update(data).digest('hex'))
-                throw new Error('Asset digest mismatch');
-            }
-            await github.rest.repos.updateRelease({...repo,release_id:release.id,draft:false,make_latest:'true'});
-            core.info('VERIFIED_RELEASE '+release.html_url);
-
+        if: steps.build_apk.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
+          TAG="android-${VERSION_NAME}"
+          gh release create "$TAG" "$SIGNED" "$RUNNER_TEMP/android-update.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "UniversalBacktester ${VERSION_NAME}" \
+            --notes "Stable signed Android update ${VERSION_NAME}. Source commit: ${GITHUB_SHA}."
