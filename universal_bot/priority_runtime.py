@@ -116,6 +116,13 @@ class PriorityRuntime:
             return self.last_status
         boundary = now.floor('5min')
         if now-boundary > pd.Timedelta(seconds=30):
+            # A transient data fault belongs only to the boundary being processed.
+            # Do not carry its timer into the next 5-minute boundary and falsely
+            # convert a short gap into a ~300 second persistent outage.
+            self._data_blocked_count = 0
+            self._data_blocked_since = None
+            if self._alert_key and str(self._alert_key).startswith('DATA_BLOCKED:'):
+                self._alert_key = None
             self.last_status = 'WAITING_FOR_BOUNDARY'
             return self.last_status
         if c.state['watermark'] and boundary <= pd.Timestamp(c.state['watermark']):
@@ -126,7 +133,7 @@ class PriorityRuntime:
             for tf in c.signals.due(boundary):
                 frames[tf] = self.engine.adapter.fetch_ohlcv(self.engine.settings.symbol,tf,limit=500)
                 volumes[tf] = self.engine.adapter.fetch_volume_sources(self.engine.settings.symbol,tf,limit=500)
-            self.last_status = c.step(frames,volumes,boundary,self.clock())
+            self.last_status = c.step(frames,volumes,boundary,now)
             if self.last_status == 'HALTED':
                 self._halt_alert()
             else:

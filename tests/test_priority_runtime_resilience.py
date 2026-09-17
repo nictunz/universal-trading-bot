@@ -72,3 +72,25 @@ def test_healthy_data_resets_gap_state():
 
     assert runtime._data_blocked_count == 0
     assert runtime._data_blocked_since is None
+
+
+def test_stale_boundary_clears_transient_data_block_state():
+    """A transient data fault must not leak into the next 5m boundary."""
+    runtime = runtime_stub()
+
+    runtime._data_blocked_count = 3
+    runtime._data_blocked_since = pd.Timestamp("2026-09-17T01:00:05Z")
+    runtime._alert_key = "DATA_BLOCKED:temporary"
+
+    # scan_once() polls the controller before checking the 5m boundary.
+    runtime.controller.poll = lambda now: "RUNNING"
+
+    now = pd.Timestamp("2026-09-17T01:05:31Z")
+    runtime.clock = lambda: now
+
+    status = runtime.scan_once()
+
+    assert status == "WAITING_FOR_BOUNDARY"
+    assert runtime._data_blocked_count == 0
+    assert runtime._data_blocked_since is None
+    assert runtime._alert_key is None
