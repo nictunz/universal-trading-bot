@@ -89,6 +89,8 @@ public class BacktestForegroundService extends Service {
                         .putBoolean("backtest_requested", true)
                         .putBoolean("backtest_paused", false)
                         .putString("backtest_status", "RUNNING")
+                        .putString("backtest_log", "")
+                        .putString("backtest_result", "")
                         .putString("backtest_error", "")
                         .apply();
             } else {
