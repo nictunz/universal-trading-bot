@@ -20,6 +20,14 @@ class PriorityRuntime:
         'mobile relay source is stale:',
         'mobile relay has no completed candles',
     )
+    MARKET_DATA_TIMEOUT_MARKERS = (
+        '/market/candles',
+        '/market/tickers',
+        '/market/ticker',
+        '/market/books',
+        '/market/orderbook',
+        '/market/trades',
+    )
     DATA_HALT_PREFIX = 'data unavailable for '
 
     def __init__(self, engine, journal_path, clock=lambda: pd.Timestamp.now(tz='UTC')):
@@ -150,9 +158,20 @@ class PriorityRuntime:
         )
 
     @classmethod
+    def _is_market_data_timeout(cls, exc):
+        text = str(exc).lower()
+        timeout = 'requesttimeout' in type(exc).__name__.lower() or 'requesttimeout:' in text or 'request timeout' in text or 'timed out' in text
+        if not timeout:
+            return False
+        # Only public market-data endpoints are recoverable. Never classify
+        # order, position, account, plan/protection or other private endpoints
+        # as transient because their execution state can be ambiguous.
+        return '/market/' in text and any(marker in text for marker in cls.MARKET_DATA_TIMEOUT_MARKERS)
+
+    @classmethod
     def _is_transient_data_error(cls, exc):
         text = str(exc)
-        return any(marker in text for marker in cls.TRANSIENT_DATA_ERRORS)
+        return any(marker in text for marker in cls.TRANSIENT_DATA_ERRORS) or cls._is_market_data_timeout(exc)
 
     def _data_blocked(self, reason, now):
         now = pd.Timestamp(now)
