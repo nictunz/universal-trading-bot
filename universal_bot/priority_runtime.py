@@ -19,12 +19,14 @@ class PriorityRuntime:
         'mobile relay source is stale:',
         'mobile relay has no completed candles',
     )
+    DATA_HALT_PREFIX = 'data unavailable for '
 
     def __init__(self, engine, journal_path, clock=lambda: pd.Timestamp.now(tz='UTC')):
         self.engine, self.clock = engine, clock
         self.journal = PriorityJournal(journal_path)
         try:
             self.controller = PriorityController(EngineExecutionPort(engine), self.journal, clock=clock)
+            self._recover_persisted_data_halt()
         except Exception:
             self.journal.close()
             raise
@@ -32,6 +34,29 @@ class PriorityRuntime:
         self._data_blocked_count = 0
         self._data_blocked_since = None
         self._alert_key = None
+
+    def _recover_persisted_data_halt(self):
+        """Clear only a stale data-only HALT after proving the account is flat.
+
+        Execution/reconciliation/profile/pending failures remain fail-closed.
+        This runs before the main loop can mirror the journal HALT into
+        engine.safety, so a previous transient relay outage cannot permanently
+        brick an otherwise healthy restarted runtime.
+        """
+        c = self.controller
+        reason = str(c.state.get('halted') or '')
+        if not reason.startswith(self.DATA_HALT_PREFIX):
+            return False
+        if c.state.get('owner') is not None or c.state.get('position') is not None or c.state.get('pending') is not None:
+            return False
+        # snapshot() checks engine safety, reads the exchange position twice when
+        # FLAT, reconciles the internal engine, and verifies protection for any
+        # live position.  Only a confirmed flat account may auto-recover here.
+        if c.port.snapshot() is not None:
+            return False
+        c.state['halted'] = None
+        c.journal.save(c.state)
+        return True
 
     def _notify(self, title, **fields):
         """Best-effort only: Discord must never affect trading or safety state."""
