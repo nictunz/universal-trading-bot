@@ -164,24 +164,6 @@ public final class SshBridge {
         }
     }
 
-    public static DashboardTunnel openDashboardTunnel(
-            String host,
-            String username,
-            String keyPath,
-            int remotePort
-    ) throws Exception {
-        Session session = connect(host, username, keyPath);
-        session.setServerAliveInterval(15000);
-        session.setServerAliveCountMax(3);
-        try {
-            int localPort = session.setPortForwardingL(0, "127.0.0.1", remotePort);
-            return new DashboardTunnel(session, localPort);
-        } catch (Exception e) {
-            session.disconnect();
-            throw e;
-        }
-    }
-
     public static final class RelayClient implements AutoCloseable {
         private final Session session;
         private final ChannelSftp sftp;
@@ -211,12 +193,32 @@ public final class SshBridge {
             } catch (SftpException ignored) {
             }
             sftp.put(new ByteArrayInputStream(bytes), temp);
+
+            // Never remove the live snapshot before the replacement is ready.
+            // POSIX rename on the Linux server atomically replaces the destination,
+            // so readers always see either the previous complete snapshot or the
+            // newly uploaded complete snapshot, never a missing-file gap.
+            String command = "mv -f -- " + shellQuote(temp) + " " + shellQuote(remotePath);
+            ChannelExec exec = (ChannelExec) session.openChannel("exec");
+            exec.setCommand(command);
+            exec.setInputStream(null);
+            exec.connect(10000);
             try {
-                sftp.rm(remotePath);
-            } catch (SftpException e) {
-                if (e.id != ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e;
+                long deadline = System.currentTimeMillis() + 10000;
+                while (!exec.isClosed() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(25);
+                }
+                if (!exec.isClosed()) {
+                    throw new IllegalStateException("atomic relay replace timed out: " + remotePath);
+                }
+                if (exec.getExitStatus() != 0) {
+                    throw new IllegalStateException(
+                            "atomic relay replace failed: exit=" + exec.getExitStatus() + " path=" + remotePath
+                    );
+                }
+            } finally {
+                exec.disconnect();
             }
-            sftp.rename(temp, remotePath);
         }
 
         @Override
@@ -268,6 +270,7 @@ public final class SshBridge {
                 manifest.put("database_size_bytes", database.length());
                 manifest.put("database_sha256", sha256(database));
                 manifest.put("result", result.getName());
+                manifest.put("symbol", resultMeta.optString("symbol", ""));
                 manifest.put("symbol", resultMeta.optString("symbol", ""));
                 manifest.put("timeframe", resultMeta.optString("timeframe", ""));
                 manifest.put("requested_start", resultMeta.optString("requested_start", ""));
@@ -329,12 +332,11 @@ public final class SshBridge {
     private static void uploadAtomic(ChannelSftp sftp, File local, String remoteDir, JSONArray logs) throws Exception {
         String remote = joinRemote(remoteDir, local.getName());
         String temp = remote + ".uploading";
-        logs.put("업로드: " + local.getName());
         try {
             sftp.rm(temp);
         } catch (SftpException ignored) {
         }
-        sftp.put(local.getAbsolutePath(), temp);
+        sftp.put(new FileInputStream(local), temp);
         try {
             sftp.rm(remote);
         } catch (SftpException e) {
@@ -344,46 +346,49 @@ public final class SshBridge {
         logs.put("완료: " + remote);
     }
 
+    private static void ensureRemoteDir(Session session, String remoteDir, JSONArray logs) throws Exception {
+        ensureRemoteDir(session, remoteDir);
+        logs.put("서버 폴더 확인: " + remoteDir);
+    }
+
     private static String joinRemote(String dir, String name) {
-        String trimmed = dir.endsWith("/") ? dir.substring(0, dir.length() - 1) : dir;
-        return trimmed + "/" + name;
+        return dir.replaceAll("/+$", "") + "/" + name;
     }
 
     private static String shellQuote(String value) {
         return "'" + value.replace("'", "'\\''") + "'";
     }
 
+    private static String stripExtension(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot <= 0 ? name : name.substring(0, dot);
+    }
+
     private static String readText(File file) throws Exception {
-        try (InputStream in = new FileInputStream(file); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+        try (FileInputStream in = new FileInputStream(file);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192];
             int n;
-            while ((n = in.read(buffer)) >= 0) {
-                out.write(buffer, 0, n);
-            }
-            return out.toString("UTF-8");
+            while ((n = in.read(buffer)) >= 0) out.write(buffer, 0, n);
+            return out.toString(StandardCharsets.UTF_8.name());
         }
     }
 
     private static String sha256(File file) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        try (InputStream in = new FileInputStream(file)) {
-            byte[] buffer = new byte[1024 * 1024];
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
             int n;
             while ((n = in.read(buffer)) >= 0) digest.update(buffer, 0, n);
         }
-        StringBuilder sb = new StringBuilder();
-        for (byte b : digest.digest()) sb.append(String.format(Locale.US, "%02x", b));
-        return sb.toString();
+        StringBuilder out = new StringBuilder();
+        for (byte b : digest.digest()) out.append(String.format(Locale.US, "%02x", b));
+        return out.toString();
     }
 
     private static String utcNow() {
-        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
-        f.setTimeZone(TimeZone.getTimeZone("UTC"));
-        return f.format(new Date());
-    }
-
-    private static String stripExtension(String name) {
-        int i = name.lastIndexOf('.');
-        return i > 0 ? name.substring(0, i) : name;
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return format.format(new Date());
     }
 }
