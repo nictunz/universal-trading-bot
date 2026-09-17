@@ -1,4 +1,4 @@
-# build-request: priority-routing-1.1.334
+# build-request: priority-routing-1.1.335
 name: Build Android Backtester APK
 
 on:
@@ -8,21 +8,7 @@ on:
     paths:
       - '.github/workflows/build-android-backtester.yml'
       - 'android/**'
-      - 'universal_bot/live_timeline.py'
-      - 'universal_bot/local_cache_core.py'
-      - 'universal_bot/archive_historical.py'
-      - 'universal_bot/historical.py'
-      - 'universal_bot/fast_backtest.py'
-      - 'universal_bot/backtest.py'
-      - 'universal_bot/backtest_engine.py'
-      - 'universal_bot/indicators.py'
-      - 'universal_bot/backtest_service.py'
-      - 'universal_bot/providers/**'
-      - 'universal_bot/adapters/**'
-      - 'universal_bot/strategy/**'
-      - 'universal_bot/config.py'
-      - 'universal_bot/paper.py'
-      - 'universal_bot/priority_signals.py'
+      - 'universal_bot/**'
       - 'tests/**'
       - 'pyproject.toml'
 
@@ -48,38 +34,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Prepare unzip compatibility
-        shell: bash
-        run: |
-          if ! command -v unzip >/dev/null 2>&1; then
-            mkdir -p "$RUNNER_TEMP/android-tools-bin"
-            UNZIP_WRAPPER="$RUNNER_TEMP/android-tools-bin/unzip"
-            python - "$UNZIP_WRAPPER" <<'PY'
-          import sys
-          import zipfile
-          from pathlib import Path
-          target = Path(sys.argv[1])
-          target.write_text("""#!/usr/bin/env python3
-          import sys
-          import zipfile
-          args = sys.argv[1:]
-          destination = "."
-          if "-d" in args:
-              index = args.index("-d")
-              if index + 1 < len(args):
-                  destination = args[index + 1]
-              del args[index:index + 2]
-          archives = [arg for arg in args if not arg.startswith("-")]
-          if not archives:
-              raise SystemExit("usage: unzip archive.zip [-d destination]")
-          with zipfile.ZipFile(archives[0]) as archive:
-              archive.extractall(destination)
-          """, encoding="utf-8")
-          PY
-            chmod +x "$UNZIP_WRAPPER"
-            echo "$RUNNER_TEMP/android-tools-bin" >> "$GITHUB_PATH"
-          fi
 
       - name: Use preinstalled Android SDK
         shell: bash
@@ -114,11 +68,15 @@ jobs:
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "Building $VERSION_NAME ($VERSION_CODE)"
 
-      - name: Verify Python project
-        run: python -m compileall -q universal_bot android/app/src/main/python
-
-      - name: Sync shared Python engine into Android app
-        run: bash scripts/sync_android_python.sh
+      - name: Verify bundled Python project
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q universal_bot android/app/src/main/python
+          test -f android/app/src/main/python/mobile_bridge.py
+          test -f android/app/src/main/python/universal_bot/priority_backtest.py
+          grep -q "run_priority_live_backtest" android/app/src/main/python/mobile_bridge.py
+          grep -q "_resample_5m_to_15m" android/app/src/main/python/universal_bot/priority_backtest.py
 
       - name: Build unsigned release APK
         id: build_apk
@@ -188,10 +146,10 @@ jobs:
           ANDROID_UPDATE_KEY_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${ANDROID_UPDATE_KEYSTORE_B64:-}" ] || [ -z "${ANDROID_UPDATE_KEYSTORE_PASSWORD:-}" ] || [ -z "${ANDROID_UPDATE_KEY_ALIAS:-}" ] || [ -z "${ANDROID_UPDATE_KEY_PASSWORD:-}" ]; then
-            echo "Stable Android update signing secrets are not configured." >&2
-            exit 1
-          fi
+          test -n "${ANDROID_UPDATE_KEYSTORE_B64:-}"
+          test -n "${ANDROID_UPDATE_KEYSTORE_PASSWORD:-}"
+          test -n "${ANDROID_UPDATE_KEY_ALIAS:-}"
+          test -n "${ANDROID_UPDATE_KEY_PASSWORD:-}"
           KEYSTORE="$RUNNER_TEMP/universal-update.jks"
           printf '%s' "$ANDROID_UPDATE_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
           echo "ANDROID_UPDATE_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
@@ -215,8 +173,7 @@ jobs:
             --ks-key-alias "$ANDROID_UPDATE_KEY_ALIAS" \
             --ks-pass "pass:$ANDROID_UPDATE_KEYSTORE_PASSWORD" \
             --key-pass "pass:$ANDROID_UPDATE_KEY_PASSWORD" \
-            --out "$SIGNED" \
-            "$ALIGNED"
+            --out "$SIGNED" "$ALIGNED"
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
           keytool -printcert -jarfile "$SIGNED" | tee "$RUNNER_TEMP/android-signing-cert.txt"
           sha256sum "$SIGNED" | tee "$RUNNER_TEMP/android-apk-sha256.txt"
@@ -250,10 +207,10 @@ jobs:
           ANDROID_UPDATE_SERVER_PATH: ${{ secrets.ANDROID_UPDATE_SERVER_PATH }}
         run: |
           set -euo pipefail
-          if [ -z "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_HOST:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_USER:-}" ] || [ -z "${ANDROID_UPDATE_SERVER_PATH:-}" ]; then
-            echo "Private Android update server secrets are not configured." >&2
-            exit 1
-          fi
+          test -n "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}"
+          test -n "${ANDROID_UPDATE_SERVER_HOST:-}"
+          test -n "${ANDROID_UPDATE_SERVER_USER:-}"
+          test -n "${ANDROID_UPDATE_SERVER_PATH:-}"
           KEY="$RUNNER_TEMP/android-update-server-key"
           printf '%s\n' "$ANDROID_UPDATE_SSH_PRIVATE_KEY" > "$KEY"
           chmod 600 "$KEY"
@@ -272,12 +229,9 @@ jobs:
           SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
           PORT="$ANDROID_UPDATE_SERVER_PORT_EFFECTIVE"
           DEST="${ANDROID_UPDATE_SERVER_USER}@${ANDROID_UPDATE_SERVER_HOST}"
-          ssh -i "$ANDROID_UPDATE_SERVER_KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "$DEST" \
-            "mkdir -p '$ANDROID_UPDATE_SERVER_PATH'"
-          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new \
-            "$SIGNED" "$DEST:$ANDROID_UPDATE_SERVER_PATH/UniversalBacktester-${VERSION_NAME}.apk"
-          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new \
-            "$RUNNER_TEMP/android-update.json" "$DEST:$ANDROID_UPDATE_SERVER_PATH/android-update.json"
+          ssh -i "$ANDROID_UPDATE_SERVER_KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "$DEST" "mkdir -p '$ANDROID_UPDATE_SERVER_PATH'"
+          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$SIGNED" "$DEST:$ANDROID_UPDATE_SERVER_PATH/UniversalBacktester-${VERSION_NAME}.apk"
+          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$RUNNER_TEMP/android-update.json" "$DEST:$ANDROID_UPDATE_SERVER_PATH/android-update.json"
 
       - name: Upload signed update artifact
         if: steps.build_apk.outcome == 'success'
@@ -301,7 +255,6 @@ jobs:
           SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
           TAG="android-${VERSION_NAME}"
           gh release create "$TAG" "$SIGNED" "$RUNNER_TEMP/android-update.json" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "UniversalBacktester ${VERSION_NAME}" \
             --notes "Stable signed Android update ${VERSION_NAME}. Source commit: ${GITHUB_SHA}."
