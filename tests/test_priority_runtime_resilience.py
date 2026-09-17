@@ -7,7 +7,7 @@ from universal_bot.priority_runtime import PriorityRuntime
 
 class FakeController:
     def __init__(self):
-        self.state = {'halted': None, 'owner': None, 'pending': None}
+        self.state = {'halted': None, 'owner': None, 'position': None, 'pending': None}
 
     def halt(self, reason):
         self.state['halted'] = reason
@@ -26,6 +26,17 @@ def runtime_stub():
     runtime._data_blocked_since = None
     runtime._alert_key = None
     return runtime
+
+
+def recovery_runtime(reason, snapshot=None, owner=None, position=None, pending=None):
+    runtime = runtime_stub()
+    saved = []
+    runtime.controller.state.update(
+        halted=reason, owner=owner, position=position, pending=pending
+    )
+    runtime.controller.port = SimpleNamespace(snapshot=lambda: snapshot)
+    runtime.controller.journal = SimpleNamespace(save=lambda state: saved.append(dict(state)))
+    return runtime, saved
 
 
 def test_mobile_relay_missing_is_transient_data_error():
@@ -94,3 +105,44 @@ def test_stale_boundary_clears_transient_data_block_state():
     assert runtime._data_blocked_count == 0
     assert runtime._data_blocked_since is None
     assert runtime._alert_key is None
+
+
+def test_persisted_data_halt_recovers_only_after_confirmed_flat_snapshot():
+    runtime, saved = recovery_runtime(
+        'data unavailable for 300.4s: 5m: missing completed OHLCV bars'
+    )
+
+    assert runtime._recover_persisted_data_halt() is True
+    assert runtime.controller.state['halted'] is None
+    assert saved and saved[-1]['halted'] is None
+
+
+def test_persisted_data_halt_stays_closed_if_position_exists():
+    live_position = {'side': 'LONG', 'size': 0.01, 'entry': 60000.0}
+    runtime, saved = recovery_runtime(
+        'data unavailable for 300.4s: 5m: missing completed OHLCV bars',
+        snapshot=live_position,
+    )
+
+    assert runtime._recover_persisted_data_halt() is False
+    assert runtime.controller.state['halted'] is not None
+    assert saved == []
+
+
+def test_non_data_halt_never_auto_recovers():
+    runtime, saved = recovery_runtime('position ownership changed or unknown')
+
+    assert runtime._recover_persisted_data_halt() is False
+    assert runtime.controller.state['halted'] == 'position ownership changed or unknown'
+    assert saved == []
+
+
+def test_data_halt_with_pending_operation_never_auto_recovers():
+    runtime, saved = recovery_runtime(
+        'data unavailable for 300.4s: 5m: missing completed OHLCV bars',
+        pending='open',
+    )
+
+    assert runtime._recover_persisted_data_halt() is False
+    assert runtime.controller.state['halted'] is not None
+    assert saved == []
