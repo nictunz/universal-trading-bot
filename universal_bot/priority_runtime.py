@@ -11,6 +11,8 @@ from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 
 class PriorityRuntime:
+    DATA_ALERT_THRESHOLD = 3
+
     def __init__(self, engine, journal_path, clock=lambda: pd.Timestamp.now(tz='UTC')):
         self.engine, self.clock = engine, clock
         self.journal = PriorityJournal(journal_path)
@@ -20,19 +22,64 @@ class PriorityRuntime:
             self.journal.close()
             raise
         self.last_status = 'ATTACHED'
+        self._data_blocked_count = 0
+        self._alert_key = None
+
+    def _notify(self, title, **fields):
+        """Best-effort only: Discord must never affect trading or safety state."""
+        try:
+            notify = getattr(self.engine, '_notify_live', None)
+            if callable(notify):
+                notify(title, **fields)
+        except Exception:
+            pass
+
+    def _alert_once(self, key, title, **fields):
+        if key == self._alert_key:
+            return
+        self._alert_key = key
+        self._notify(title, **fields)
+
+    def _healthy(self, status):
+        self._data_blocked_count = 0
+        if self._alert_key and str(self._alert_key).startswith('DATA_BLOCKED:'):
+            previous = self._alert_key.split(':', 1)[1]
+            self._alert_key = None
+            self._notify(
+                '🟢 LIVE 데이터 장애 복구',
+                심볼=self.engine.settings.symbol,
+                상태=status,
+                이전오류=previous,
+                안내='Priority Runtime 데이터 수신이 정상화되었습니다.',
+            )
+
+    def _halt_alert(self):
+        reason = str(self.controller.state.get('halted') or 'unknown')
+        self._alert_once(
+            'HALTED:' + reason,
+            '🔴 LIVE Priority Runtime HALT',
+            심볼=self.engine.settings.symbol,
+            오류=reason,
+            owner=self.controller.state.get('owner'),
+            pending=self.controller.state.get('pending'),
+            안내='신규 진입이 차단되었습니다. 서버 상태를 확인하세요.',
+        )
 
     def scan_once(self):
         now = self.clock()
         c = self.controller
         if c.poll(now) == 'HALTED':
             self.last_status = 'HALTED'
+            self._halt_alert()
             return self.last_status
         boundary = now.floor('5min')
         if now-boundary > pd.Timedelta(seconds=30):
             self.last_status = 'WAITING_FOR_BOUNDARY'
+            self._healthy(self.last_status)
             return self.last_status
         if c.state['watermark'] and boundary <= pd.Timestamp(c.state['watermark']):
             self.last_status = 'DUPLICATE_OR_OLD'
+            self._healthy(self.last_status)
             return self.last_status
         frames, volumes = {}, {}
         try:
@@ -40,12 +87,28 @@ class PriorityRuntime:
                 frames[tf] = self.engine.adapter.fetch_ohlcv(self.engine.settings.symbol,tf,limit=500)
                 volumes[tf] = self.engine.adapter.fetch_volume_sources(self.engine.settings.symbol,tf,limit=500)
             self.last_status = c.step(frames,volumes,boundary,self.clock())
+            if self.last_status == 'HALTED':
+                self._halt_alert()
+            else:
+                self._healthy(self.last_status)
         except DataUnavailable as exc:
-            self.last_status = 'DATA_BLOCKED: ' + str(exc)
+            reason = str(exc)
+            self.last_status = 'DATA_BLOCKED: ' + reason
+            self._data_blocked_count += 1
+            if self._data_blocked_count >= self.DATA_ALERT_THRESHOLD:
+                self._alert_once(
+                    'DATA_BLOCKED:' + reason,
+                    '🟠 LIVE 데이터 연속 장애',
+                    심볼=self.engine.settings.symbol,
+                    오류=reason,
+                    연속횟수=self._data_blocked_count,
+                    안내='순간 지연은 무시하고 연속 장애만 알립니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.',
+                )
         except Exception as exc:
             # No ordering calls precede the completed data batch in this scope.
             # Unexpected controller failures also remain blocked for inspection.
             self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
+            self._halt_alert()
         return self.last_status
 
     def snapshot(self):
@@ -59,4 +122,3 @@ class PriorityRuntime:
 
     def close(self):
         self.journal.close()
-
