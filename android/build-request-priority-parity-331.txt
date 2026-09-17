@@ -1,0 +1,3 @@
+Trigger signed Android build after fixing integrated Priority backtest DB handling.
+Selected 5m DB is authoritative; 15m OHLCV is deterministically resampled from the same four-exchange 5m data.
+Source fix commit: 46871148bad0f949683deb0370f46520c19fc076
