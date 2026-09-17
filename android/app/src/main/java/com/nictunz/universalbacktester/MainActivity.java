@@ -245,8 +245,8 @@ public class MainActivity extends android.app.Activity {
         root.setPadding(dp(16), dp(16), dp(16), dp(28));
         root.setBackgroundColor(BG);
 
-        root.addView(text("전략 검증", 24, TEXT, true));
-        root.addView(text("JSON 전략을 불러오고 저장된 DB로 검증하세요.", 13, MUTED, false), marginTop(4));
+        root.addView(text("실거래 동등 백테스트", 24, TEXT, true));
+        root.addView(text("현재 LIVE 엔진과 같은 전략 수치·비용·체결 기준으로 저장 DB를 검증합니다.", 13, MUTED, false), marginTop(4));
         LinearLayout navigation = new LinearLayout(this);
         navigation.setOrientation(LinearLayout.HORIZONTAL);
         Button databaseChart = actionButton("DB 선택 · 캔들 차트", PRIMARY);
@@ -407,14 +407,14 @@ public class MainActivity extends android.app.Activity {
         Button editSelectedButton = actionButton("✏ 불러온/선택한 전략 수치 직접 수정", PRIMARY);
         editSelectedButton.setOnClickListener(v -> showStrategyParameterEditor());
         backtestCard.addView(editSelectedButton, marginTop(8));
-        Button priorityPreset = actionButton("최신 빌드 프로필 · 5분 / 15분 선택", Color.rgb(30, 41, 59));
+        Button priorityPreset = actionButton("🟢 실거래 동등 프로필 · 5분 / 15분", SUCCESS);
         priorityPreset.setOnClickListener(v -> new AlertDialog.Builder(this)
-                .setTitle("단일 전략 검증용 프로필")
-                .setItems(new String[]{"BTC 5분 · 9.55배", "BTC 15분 · 5배"},
+                .setTitle("현재 LIVE 동등 프로필")
+                .setItems(new String[]{"BTC 5분 · 9.55배 · 신호봉 확정 즉시", "BTC 15분 · 5배 · 신호봉 확정 즉시"},
                         (dialog, which) -> loadPriorityPreset(which == 0 ? "5m" : "15m"))
                 .setNegativeButton("취소", null).show());
         backtestCard.addView(priorityPreset, marginTop(12));
-        backtestCard.addView(text("단일 전략 백테스트 · 15분 포지션을 정리하고 5분으로 전환하는 조합 결과는 별도 검증이 필요합니다.",
+        backtestCard.addView(text("LIVE 동등 기준: 신호봉 확정 종가 진입(signal_close) · 편도 수수료 0.02% + 슬리피지 0.01% · 최대 진입 1회 · TP/SL은 최초 진입가 기준 고정. 데이터가 정상일 때 서버는 별도 대기 없이 주문합니다. 5분/15분 우선 전환 조합 성과는 단일 프로필 결과와 구분합니다.",
                 12, MUTED, false), marginTop(6));
         backtestCard.addView(runButton, marginTop(12));
 

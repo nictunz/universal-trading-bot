@@ -130,9 +130,9 @@ public class LauncherActivity extends android.app.Activity {
 
         LinearLayout backtest = panel();
         root.addView(backtest, mt(14));
-        backtest.addView(section("전략 검증 · DB 차트"));
-        backtest.addView(text("저장된 DB에서 5분봉·15분봉 전략을 각각 검증합니다. 5분봉 우선 전환 조합과 단일 전략의 결과는 다릅니다.", 12, MUTED, false), mt(5));
-        Button openBacktester = actionButton("JSON 전략 · DB 차트 열기", Color.rgb(30, 41, 59));
+        backtest.addView(section("🧪 실거래 동등 백테스트 · DB 차트"));
+        backtest.addView(text("현재 LIVE 5분(9.55배)·15분(5배) 프로필을 한 번에 불러와 저장 DB에서 검증합니다. 신호봉 확정 즉시 진입 기준과 실거래 비용을 명확히 표시하며, 우선 전환 조합과 단일 전략 결과는 구분합니다.", 12, MUTED, false), mt(5));
+        Button openBacktester = actionButton("실거래 동등 백테스트 열기", SUCCESS);
         openBacktester.setOnClickListener(v -> startActivity(new Intent(this, MainActivity.class)));
         backtest.addView(openBacktester, mt(10));
 
