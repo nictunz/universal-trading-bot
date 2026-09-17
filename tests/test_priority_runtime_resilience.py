@@ -16,9 +16,10 @@ class FakeController:
 
 def runtime_stub():
     runtime = PriorityRuntime.__new__(PriorityRuntime)
+    runtime.notifications = []
     runtime.engine = SimpleNamespace(
         settings=SimpleNamespace(symbol='BTC/USDT:USDT'),
-        _notify_live=lambda *args, **kwargs: None,
+        _notify_live=lambda *args, **kwargs: runtime.notifications.append((args, kwargs)),
     )
     runtime.controller = FakeController()
     runtime.last_status = 'ATTACHED'
@@ -46,32 +47,43 @@ def test_mobile_relay_missing_is_transient_data_error():
     assert PriorityRuntime._is_transient_data_error(exc)
 
 
-def test_transient_gap_blocks_without_immediate_halt():
+def test_normal_rollover_lag_stays_silent_and_does_not_halt():
     runtime = runtime_stub()
     start = pd.Timestamp('2026-09-17T01:00:00Z')
+    reason = '5m: missing completed OHLCV bars'
 
-    status = runtime._data_blocked('mobile relay snapshot not found: /tmp/relay.json', start)
+    runtime._data_blocked(reason, start)
+    status = runtime._data_blocked(reason, start + pd.Timedelta(seconds=12))
+
     assert status.startswith('DATA_BLOCKED:')
     assert runtime.controller.state['halted'] is None
+    assert runtime.notifications == []
 
-    status = runtime._data_blocked(
-        'mobile relay snapshot not found: /tmp/relay.json',
-        start + pd.Timedelta(seconds=14),
-    )
+
+def test_extended_gap_alerts_after_grace_but_stays_fail_closed():
+    runtime = runtime_stub()
+    start = pd.Timestamp('2026-09-17T01:00:00Z')
+    reason = '5m: missing completed OHLCV bars'
+
+    runtime._data_blocked(reason, start)
+    status = runtime._data_blocked(reason, start + pd.Timedelta(seconds=15))
+
     assert status.startswith('DATA_BLOCKED:')
     assert runtime.controller.state['halted'] is None
+    assert len(runtime.notifications) == 1
+    assert runtime.notifications[0][0][0] == '🟠 LIVE 데이터 연속 장애'
 
 
-def test_persistent_gap_halts_after_safety_window():
+def test_persistent_gap_halts_before_signal_admission_window_expires():
     runtime = runtime_stub()
     start = pd.Timestamp('2026-09-17T01:00:00Z')
     reason = 'mobile relay snapshot not found: /tmp/relay.json'
 
     runtime._data_blocked(reason, start)
-    status = runtime._data_blocked(reason, start + pd.Timedelta(seconds=15))
+    status = runtime._data_blocked(reason, start + pd.Timedelta(seconds=25))
 
     assert status == 'HALTED'
-    assert runtime.controller.state['halted'].startswith('data unavailable for 15.0s:')
+    assert runtime.controller.state['halted'].startswith('data unavailable for 25.0s:')
 
 
 def test_healthy_data_resets_gap_state():
