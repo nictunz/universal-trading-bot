@@ -20,12 +20,7 @@ def _payload(generated_at_ms: int) -> dict:
         "schema_version": 1,
         "generated_at_ms": generated_at_ms,
         "timeframe": "5m",
-        "markets": {
-            "BTC/USDT:USDT": {
-                "binance": rows,
-                "bybit": rows,
-            }
-        },
+        "markets": {"BTC/USDT:USDT": {"binance": rows, "bybit": rows}},
     }
 
 
@@ -33,7 +28,6 @@ def test_mobile_relay_parses_volume_and_common_timestamp(tmp_path):
     path = tmp_path / "relay.json"
     path.write_text(json.dumps(_payload(int(time.time() * 1000))), encoding="utf-8")
     relay = MobileRelayMarketData(path, max_age_seconds=90)
-
     series = relay.fetch_volume("binance", "BTC/USDT:USDT", "5m", limit=3)
     assert list(series.astype(float)) == [2.0, 3.0, 4.0]
     assert isinstance(series.index, pd.DatetimeIndex)
@@ -45,7 +39,6 @@ def test_mobile_relay_fails_closed_when_stale(tmp_path):
     path = tmp_path / "relay.json"
     path.write_text(json.dumps(_payload(int((time.time() - 180) * 1000))), encoding="utf-8")
     relay = MobileRelayMarketData(path, max_age_seconds=90)
-
     with pytest.raises(RuntimeError, match="stale"):
         relay.fetch_volume("bybit", "BTC/USDT:USDT", "5m")
 
@@ -55,35 +48,19 @@ def test_mobile_relay_uses_per_source_observation_at_boundary(tmp_path):
     now_ms = int(time.time() * 1000)
     delta_ms = 300_000
     boundary_ms = now_ms // delta_ms * delta_ms
-    rows = [
-        [boundary_ms - 2 * delta_ms, 10.0],
-        [boundary_ms - delta_ms, 20.0],
-        [boundary_ms, 30.0],
-    ]
+    rows = [[boundary_ms - 2 * delta_ms, 10.0], [boundary_ms - delta_ms, 20.0], [boundary_ms, 30.0]]
     payload = {
         "schema_version": 1,
         "generated_at_ms": boundary_ms - 1,
         "snapshot_completed_at_ms": now_ms,
-        "source_observed_at_ms": {
-            "BTC/USDT:USDT": {
-                "binance": boundary_ms - 1,
-                "bybit": now_ms,
-            }
-        },
+        "source_observed_at_ms": {"BTC/USDT:USDT": {"binance": boundary_ms - 1, "bybit": now_ms}},
         "timeframe": "5m",
-        "markets": {
-            "BTC/USDT:USDT": {
-                "binance": rows,
-                "bybit": rows,
-            }
-        },
+        "markets": {"BTC/USDT:USDT": {"binance": rows, "bybit": rows}},
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     relay = MobileRelayMarketData(path, max_age_seconds=600)
-
     binance = relay.fetch_volume("binance", "BTC/USDT:USDT", "5m", limit=10)
     bybit = relay.fetch_volume("bybit", "BTC/USDT:USDT", "5m", limit=10)
-
     assert binance.index[-1] == pd.to_datetime(boundary_ms - 2 * delta_ms, unit="ms", utc=True)
     assert bybit.index[-1] == pd.to_datetime(boundary_ms - delta_ms, unit="ms", utc=True)
 
@@ -93,7 +70,6 @@ def test_relay_change_wakes_server_without_waiting_for_poll_timeout(tmp_path):
     path.write_text("old", encoding="utf-8")
     previous = _relay_snapshot_revision(path)
     path.write_text("new-longer", encoding="utf-8")
-
     assert _wait_for_relay_change(previous, 10, path=path)
 
 
@@ -101,16 +77,11 @@ def test_relay_wait_keeps_poll_timeout_as_fallback(tmp_path):
     path = tmp_path / "mobile-market-relay.json"
     path.write_text("same", encoding="utf-8")
     previous = _relay_snapshot_revision(path)
-
     assert not _wait_for_relay_change(previous, 0, path=path)
 
 
 def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
-    service = (
-        ROOT
-        / "android/app/src/main/java/com/nictunz/universalbacktester/MobileMarketRelayService.java"
-    ).read_text(encoding="utf-8")
-
+    service = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MobileMarketRelayService.java").read_text(encoding="utf-8")
     assert "scheduleWithFixedDelay" not in service
     assert "millisUntilNextRelaySlot" in service
     assert "RELAY_PHASE_MILLIS = 1_000L" in service
@@ -126,13 +97,19 @@ def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
     assert 'payload.put("snapshot_completed_at_ms", Math.max(cycleStartedAt, System.currentTimeMillis()))' in service
 
 
-def test_android_relay_atomic_replace_never_removes_live_snapshot_first():
-    bridge = (
-        ROOT
-        / "android/app/src/main/java/com/nictunz/universalbacktester/SshBridge.java"
-    ).read_text(encoding="utf-8")
-    method = bridge.split("public synchronized void uploadTextAtomic", 1)[1].split("@Override", 1)[0]
+def test_android_relay_observation_timestamp_is_taken_after_fetch():
+    service = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/MobileMarketRelayService.java").read_text(encoding="utf-8")
+    method = service.split("private RelayFetch fetchWithRolloverRetry(String exchange, String symbol, long timeframeMillis", 1)[1].split("private static boolean rolledOverForBoundary", 1)[0]
+    fetch_pos = method.index("JSONArray rows = request.fetch();")
+    observed_pos = method.index("long observedAt = System.currentTimeMillis();")
+    assert fetch_pos < observed_pos
+    assert "Thread.sleep(delay)" in method
+    assert method.count("Thread.sleep") == 1
 
+
+def test_android_relay_atomic_replace_never_removes_live_snapshot_first():
+    bridge = (ROOT / "android/app/src/main/java/com/nictunz/universalbacktester/SshBridge.java").read_text(encoding="utf-8")
+    method = bridge.split("public synchronized void uploadTextAtomic", 1)[1].split("@Override", 1)[0]
     assert 'exec.setCommand("mv -f -- "' in method
     assert "sftp.rm(remotePath)" not in method
     assert "sftp.rename(temp, remotePath)" not in method
