@@ -2,6 +2,7 @@ from pathlib import Path
 
 # 1.1.332 hardening patch for the integrated LIVE Priority backtest.
 # Safe to run repeatedly: every replacement is guarded by the new text.
+# Trigger: apply guarded patch to current main and then build Android 1.1.332.
 
 main = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
 text = main.read_text(encoding='utf-8')
