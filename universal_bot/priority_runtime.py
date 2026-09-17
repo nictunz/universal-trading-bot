@@ -12,6 +12,13 @@ from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 class PriorityRuntime:
     DATA_ALERT_THRESHOLD = 3
+    DATA_HALT_SECONDS = 15.0
+    TRANSIENT_DATA_ERRORS = (
+        'mobile relay snapshot not found:',
+        'mobile relay is stale:',
+        'mobile relay source is stale:',
+        'mobile relay has no completed candles',
+    )
 
     def __init__(self, engine, journal_path, clock=lambda: pd.Timestamp.now(tz='UTC')):
         self.engine, self.clock = engine, clock
@@ -23,6 +30,7 @@ class PriorityRuntime:
             raise
         self.last_status = 'ATTACHED'
         self._data_blocked_count = 0
+        self._data_blocked_since = None
         self._alert_key = None
 
     def _notify(self, title, **fields):
@@ -42,6 +50,7 @@ class PriorityRuntime:
 
     def _healthy(self, status):
         self._data_blocked_count = 0
+        self._data_blocked_since = None
         if self._alert_key and str(self._alert_key).startswith('DATA_BLOCKED:'):
             previous = self._alert_key.split(':', 1)[1]
             self._alert_key = None
@@ -65,6 +74,39 @@ class PriorityRuntime:
             안내='신규 진입이 차단되었습니다. 서버 상태를 확인하세요.',
         )
 
+    @classmethod
+    def _is_transient_data_error(cls, exc):
+        text = str(exc)
+        return any(marker in text for marker in cls.TRANSIENT_DATA_ERRORS)
+
+    def _data_blocked(self, reason, now):
+        now = pd.Timestamp(now)
+        if now.tzinfo is None:
+            now = now.tz_localize('UTC')
+        else:
+            now = now.tz_convert('UTC')
+        if self._data_blocked_since is None:
+            self._data_blocked_since = now
+        self._data_blocked_count += 1
+        elapsed = max(0.0, (now - self._data_blocked_since).total_seconds())
+        self.last_status = 'DATA_BLOCKED: ' + reason
+        if self._data_blocked_count >= self.DATA_ALERT_THRESHOLD:
+            self._alert_once(
+                'DATA_BLOCKED:' + reason,
+                '🟠 LIVE 데이터 연속 장애',
+                심볼=self.engine.settings.symbol,
+                오류=reason,
+                연속횟수=self._data_blocked_count,
+                지속초=f'{elapsed:.1f}',
+                안내='순간 지연은 무시하고 연속 장애만 알립니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.',
+            )
+        if elapsed >= self.DATA_HALT_SECONDS:
+            self.last_status = self.controller.halt(
+                f'data unavailable for {elapsed:.1f}s: {reason}'
+            )
+            self._halt_alert()
+        return self.last_status
+
     def scan_once(self):
         now = self.clock()
         c = self.controller
@@ -75,11 +117,9 @@ class PriorityRuntime:
         boundary = now.floor('5min')
         if now-boundary > pd.Timedelta(seconds=30):
             self.last_status = 'WAITING_FOR_BOUNDARY'
-            self._healthy(self.last_status)
             return self.last_status
         if c.state['watermark'] and boundary <= pd.Timestamp(c.state['watermark']):
             self.last_status = 'DUPLICATE_OR_OLD'
-            self._healthy(self.last_status)
             return self.last_status
         frames, volumes = {}, {}
         try:
@@ -92,23 +132,18 @@ class PriorityRuntime:
             else:
                 self._healthy(self.last_status)
         except DataUnavailable as exc:
-            reason = str(exc)
-            self.last_status = 'DATA_BLOCKED: ' + reason
-            self._data_blocked_count += 1
-            if self._data_blocked_count >= self.DATA_ALERT_THRESHOLD:
-                self._alert_once(
-                    'DATA_BLOCKED:' + reason,
-                    '🟠 LIVE 데이터 연속 장애',
-                    심볼=self.engine.settings.symbol,
-                    오류=reason,
-                    연속횟수=self._data_blocked_count,
-                    안내='순간 지연은 무시하고 연속 장애만 알립니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.',
-                )
+            self._data_blocked(str(exc), now)
         except Exception as exc:
-            # No ordering calls precede the completed data batch in this scope.
-            # Unexpected controller failures also remain blocked for inspection.
-            self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
-            self._halt_alert()
+            # Relay snapshots are replaced asynchronously by the Android writer.
+            # A short missing/stale window is data unavailability, not an
+            # execution fault. Keep entries blocked and HALT only if it persists.
+            if self._is_transient_data_error(exc):
+                self._data_blocked(str(exc), now)
+            else:
+                # No ordering calls precede the completed data batch in this scope.
+                # Unexpected controller failures remain fail-closed for inspection.
+                self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
+                self._halt_alert()
         return self.last_status
 
     def snapshot(self):
