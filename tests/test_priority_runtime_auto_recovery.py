@@ -102,3 +102,32 @@ def test_running_data_halt_never_recovers_pending_operation():
         assert runtime._recover_running_data_halt() is False
     assert runtime.controller.state['halted'] == reason
     assert saved == []
+
+
+def test_bitget_market_candles_request_timeout_is_transient_data_error():
+    exc = RuntimeError(
+        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/market/candles?'
+        'symbol=BTCUSDT&granularity=5m&limit=500&productType=USDT-FUTURES'
+    )
+    assert PriorityRuntime._is_transient_data_error(exc) is True
+
+
+def test_order_request_timeout_remains_fail_closed():
+    exc = RuntimeError(
+        'RequestTimeout: bitget POST https://api.bitget.com/api/v2/mix/order/place-order'
+    )
+    assert PriorityRuntime._is_transient_data_error(exc) is False
+
+
+def test_position_request_timeout_remains_fail_closed():
+    exc = RuntimeError(
+        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/position/single-position'
+    )
+    assert PriorityRuntime._is_transient_data_error(exc) is False
+
+
+def test_account_request_timeout_remains_fail_closed():
+    exc = RuntimeError(
+        'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/account/account'
+    )
+    assert PriorityRuntime._is_transient_data_error(exc) is False
