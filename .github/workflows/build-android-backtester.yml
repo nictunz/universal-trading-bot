@@ -1,4 +1,4 @@
-# build-request: priority-routing-1.1.333
+# build-request: priority-routing-1.1.334
 name: Build Android Backtester APK
 
 on:
@@ -59,12 +59,10 @@ jobs:
           import sys
           import zipfile
           from pathlib import Path
-
           target = Path(sys.argv[1])
           target.write_text("""#!/usr/bin/env python3
           import sys
           import zipfile
-
           args = sys.argv[1:]
           destination = "."
           if "-d" in args:
@@ -83,12 +81,25 @@ jobs:
             echo "$RUNNER_TEMP/android-tools-bin" >> "$GITHUB_PATH"
           fi
 
-      - uses: android-actions/setup-android@v3
+      - name: Use preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          test -n "$SDKMANAGER"
+          echo "ANDROID_SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          "$SDKMANAGER" --version
 
       - name: Install Android SDK 35
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          set -euo pipefail
+          yes | "$ANDROID_SDKMANAGER" --licenses >/dev/null || true
+          "$ANDROID_SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
