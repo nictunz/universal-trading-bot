@@ -1,4 +1,4 @@
-# build-request: priority-routing-artifact-quota-fix
+# build-request: restore-stable-signing-secret-names
 name: Build Android Backtester APK
 
 on:
@@ -97,20 +97,22 @@ jobs:
       - name: Configure stable release signing
         shell: bash
         env:
-          ANDROID_UPDATE_KEYSTORE_B64: ${{ secrets.ANDROID_UPDATE_KEYSTORE_B64 }}
-          ANDROID_UPDATE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEYSTORE_PASSWORD }}
-          ANDROID_UPDATE_KEY_ALIAS: ${{ secrets.ANDROID_UPDATE_KEY_ALIAS }}
-          ANDROID_UPDATE_KEY_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "${ANDROID_UPDATE_KEYSTORE_B64:-}"; test -n "${ANDROID_UPDATE_KEYSTORE_PASSWORD:-}"; test -n "${ANDROID_UPDATE_KEY_ALIAS:-}"; test -n "${ANDROID_UPDATE_KEY_PASSWORD:-}"
-          KEYSTORE="$RUNNER_TEMP/universal-update.jks"; printf '%s' "$ANDROID_UPDATE_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"; echo "ANDROID_UPDATE_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          test -n "${ANDROID_KEYSTORE_BASE64:-}"; test -n "${ANDROID_KEYSTORE_PASSWORD:-}"
+          KEYSTORE="$RUNNER_TEMP/universal-update.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          echo "ANDROID_UPDATE_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "ANDROID_UPDATE_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_UPDATE_KEY_ALIAS=${ANDROID_KEY_ALIAS:-universal}" >> "$GITHUB_ENV"
+          echo "ANDROID_UPDATE_KEY_PASSWORD=${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}" >> "$GITHUB_ENV"
       - name: Sign stable update APK
         shell: bash
-        env:
-          ANDROID_UPDATE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEYSTORE_PASSWORD }}
-          ANDROID_UPDATE_KEY_ALIAS: ${{ secrets.ANDROID_UPDATE_KEY_ALIAS }}
-          ANDROID_UPDATE_KEY_PASSWORD: ${{ secrets.ANDROID_UPDATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"; SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"; ALIGNED="$RUNNER_TEMP/UniversalBacktester-${VERSION_NAME}-aligned.apk"; BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
