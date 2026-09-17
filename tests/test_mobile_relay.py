@@ -124,3 +124,15 @@ def test_android_relay_is_wall_clock_aligned_and_boundary_safe():
     assert "elapsed >= BOUNDARY_WINDOW_MILLIS" in service
     assert 'payload.put("source_observed_at_ms", sourceObservedAt)' in service
     assert 'payload.put("snapshot_completed_at_ms", Math.max(cycleStartedAt, System.currentTimeMillis()))' in service
+
+
+def test_android_relay_atomic_replace_never_removes_live_snapshot_first():
+    bridge = (
+        ROOT
+        / "android/app/src/main/java/com/nictunz/universalbacktester/SshBridge.java"
+    ).read_text(encoding="utf-8")
+    method = bridge.split("public synchronized void uploadTextAtomic", 1)[1].split("@Override", 1)[0]
+
+    assert 'exec.setCommand("mv -f -- "' in method
+    assert "sftp.rm(remotePath)" not in method
+    assert "sftp.rename(temp, remotePath)" not in method
