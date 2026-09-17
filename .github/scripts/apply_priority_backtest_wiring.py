@@ -1,40 +1,63 @@
 from pathlib import Path
 
-# 1.1.332 hardening patch for the integrated LIVE Priority backtest.
-# Safe to run repeatedly: every replacement is guarded by the new text.
-# Trigger: apply guarded patch to current main and then build Android 1.1.332.
+# 1.1.333 hardening patch for the integrated LIVE Priority backtest.
+# The integrated request now has an explicit request type and the service
+# refuses to route it through the DB-only download path.
 
 main = Path('android/app/src/main/java/com/nictunz/universalbacktester/MainActivity.java')
 text = main.read_text(encoding='utf-8')
 
-old = '        if (selectedDbPath == null || selectedDbPath.trim().isEmpty()) { toast("먼저 5분·15분 및 4거래소 데이터가 들어있는 저장 DB를 선택하세요."); return; }\n'
-new = '''        if (selectedDbPath == null || selectedDbPath.trim().isEmpty()) { toast("먼저 4거래소 5분 저장 DB를 선택하세요."); return; }\n        File priorityDb = new File(selectedDbPath);\n        String priorityDbName = priorityDb.getName().toLowerCase(Locale.US);\n        if (!priorityDb.isFile() || !priorityDbName.endsWith("-5m.db")) {\n            toast("LIVE 통합 백테스트는 5분 DB를 선택해야 합니다. 15분봉은 같은 5분 DB에서 자동 생성됩니다.");\n            return;\n        }\n'''
-if old in text:
-    text = text.replace(old, new, 1)
+needle = '                    intent.putExtra("priority_live_parity", true);\n'
+replacement = '''                    intent.putExtra("priority_live_parity", true);\n                    intent.putExtra("request_type", "PRIORITY_5M_15M");\n'''
+if 'intent.putExtra("request_type", "PRIORITY_5M_15M")' not in text:
+    if needle not in text:
+        raise SystemExit('MainActivity priority intent wiring not found')
+    text = text.replace(needle, replacement, 1)
 
-old = '                .setMessage("5분 9.55배 + 15분 5배를 한 계좌/한 포지션으로 시간순 재생합니다.\\n\\n• 5분 신호 우선\\n• 5분 보유 중 신규 신호 차단\\n• 15분 보유 중 5분 신호 → 15분 정리 후 5분 진입\\n• 고정 TP/SL · 동봉 SL 우선\\n• 수수료 0.02% + 슬리피지 0.01% / side")\n'
-new = '                .setMessage("선택한 5분 DB의 Binance/Bitget/OKX/Bybit 원본을 함께 읽고, 각 거래소의 완전한 5분봉 3개로 15분봉을 자동 생성합니다.\\n\\n5분 9.55배 + 15분 5배를 한 계좌/한 포지션으로 시간순 재생합니다.\\n\\n• 5분 신호 우선\\n• 5분 보유 중 신규 신호 차단\\n• 15분 보유 중 5분 신호 → 15분 정리 후 5분 진입\\n• 고정 TP/SL · 동봉 SL 우선\\n• 수수료 0.02% + 슬리피지 0.01% / side")\n'
-if old in text:
-    text = text.replace(old, new, 1)
-
-old = '''                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent); else startService(intent);\n                    lastDbPath = ""; lastResultPath = ""; lastUploadEligible = false; lastSummary = null;\n'''
-new = '''                    getSharedPreferences("universal_bot", MODE_PRIVATE).edit()\n                            .putBoolean("backtest_requested", true)\n                            .putBoolean("backtest_paused", false)\n                            .putString("backtest_status", "RUNNING")\n                            .putString("backtest_log", "")\n                            .putString("backtest_result", "")\n                            .putString("backtest_error", "")\n                            .apply();\n                    appliedServiceResultPath = "";\n                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent); else startService(intent);\n                    lastDbPath = ""; lastResultPath = ""; lastUploadEligible = false; lastSummary = null;\n'''
-if old in text:
-    text = text.replace(old, new, 1)
-
-old = '                    setFullLog("LIVE 통합 Priority 백테스트 시작\\n5분 9.55배 + 15분 5배 · 단일 포지션 · 5분 우선\\n");\n'
-new = '                    setFullLog("LIVE 통합 Priority 백테스트 시작\\n선택 5분 DB: " + priorityDb.getName() + "\\n4거래소 5분 원본 확인 → 15분 자동 생성 → 5분+15분 단일 포지션 재생\\n5분 9.55배 + 15분 5배 · 5분 우선\\n");\n'
-if old in text:
-    text = text.replace(old, new, 1)
-
+old_log = '                    setFullLog("LIVE 통합 Priority 백테스트 시작\\n선택 5분 DB: " + priorityDb.getName() + "\\n4거래소 5분 원본 확인 → 15분 자동 생성 → 5분+15분 단일 포지션 재생\\n5분 9.55배 + 15분 5배 · 5분 우선\\n");\n'
+new_log = '                    setFullLog("LIVE 통합 Priority 백테스트 시작\\n요청타입: PRIORITY_5M_15M · ACTION_START\\n선택 5분 DB: " + priorityDb.getName() + "\\ntimeframe: 5m+15m · Python: run_priority_live_backtest\\n4거래소 5분 원본 확인 → 15분 자동 생성 → 5분+15분 단일 포지션 재생\\n5분 9.55배 + 15분 5배 · 5분 우선\\n");\n'
+if '요청타입: PRIORITY_5M_15M' not in text:
+    if old_log not in text:
+        raise SystemExit('MainActivity priority log wiring not found')
+    text = text.replace(old_log, new_log, 1)
 main.write_text(text, encoding='utf-8')
 
 service = Path('android/app/src/main/java/com/nictunz/universalbacktester/BacktestForegroundService.java')
 text = service.read_text(encoding='utf-8')
-old = '''                        .putString("backtest_status", "RUNNING")\n                        .putString("backtest_error", "")\n                        .apply();\n'''
-new = '''                        .putString("backtest_status", "RUNNING")\n                        .putString("backtest_log", "")\n                        .putString("backtest_result", "")\n                        .putString("backtest_error", "")\n                        .apply();\n'''
-if old in text:
-    text = text.replace(old, new, 1)
-service.write_text(text, encoding='utf-8')
 
-print('Priority 1.1.332 UI/service hardening applied')
+needle = '    public static final String ACTION_DOWNLOAD_DB = "com.nictunz.universalbacktester.DB_DOWNLOAD";\n'
+replacement = needle + '    private static final String REQUEST_PRIORITY_5M_15M = "PRIORITY_5M_15M";\n'
+if 'REQUEST_PRIORITY_5M_15M' not in text:
+    if needle not in text:
+        raise SystemExit('Service action constants not found')
+    text = text.replace(needle, replacement, 1)
+
+old = '''                request = requestFromIntent(intent);\n                request.put("db_only", ACTION_DOWNLOAD_DB.equals(action));\n                prefs().edit().putString("backtest_request", request.toString())\n'''
+new = '''                request = requestFromIntent(intent);\n                boolean priorityRequest = REQUEST_PRIORITY_5M_15M.equals(request.optString("request_type", ""));\n                if (priorityRequest && !ACTION_START.equals(action)) {\n                    throw new IllegalArgumentException("PRIORITY_5M_15M must use ACTION_START");\n                }\n                request.put("db_only", priorityRequest ? false : ACTION_DOWNLOAD_DB.equals(action));\n                prefs().edit().putString("backtest_request", request.toString())\n'''
+if 'priorityRequest && !ACTION_START.equals(action)' not in text:
+    if old not in text:
+        raise SystemExit('Service request routing block not found')
+    text = text.replace(old, new, 1)
+
+old = '''            String response;\n            if (request.optBoolean("db_only", false)) {\n'''
+new = '''            String response;\n            boolean priorityRequest = REQUEST_PRIORITY_5M_15M.equals(request.optString("request_type", ""));\n            if (priorityRequest) {\n                String databasePath = request.optString("database_path", "");\n                File priorityDb = new File(databasePath);\n                if (!request.optBoolean("priority_live_parity", false)) {\n                    throw new IllegalArgumentException("PRIORITY_5M_15M missing priority_live_parity=true");\n                }\n                if (request.optBoolean("db_only", false)) {\n                    throw new IllegalArgumentException("PRIORITY_5M_15M cannot run as DB download");\n                }\n                if (!"5m+15m".equals(request.optString("timeframe", ""))) {\n                    throw new IllegalArgumentException("PRIORITY_5M_15M requires timeframe=5m+15m");\n                }\n                if (!priorityDb.isFile() || !priorityDb.getName().toLowerCase(java.util.Locale.US).endsWith("-5m.db")) {\n                    throw new IllegalArgumentException("PRIORITY_5M_15M requires an existing -5m.db source");\n                }\n                updateNotification("LIVE 5분+15분 통합 백테스트 실행 중");\n                response = bridge.callAttr(\n                    "run_priority_live_backtest",\n                    request.getString("symbol"), request.getString("start"), request.getString("end"),\n                    request.getString("output_dir"), databasePath,\n                    request.optDouble("initial_capital", 1000.0), request.optBoolean("compounding_enabled", true)\n                ).toString();\n            } else if (request.optBoolean("db_only", false)) {\n'''
+if 'PRIORITY_5M_15M requires timeframe=5m+15m' not in text:
+    if old not in text:
+        raise SystemExit('Service execution dispatch block not found')
+    text = text.replace(old, new, 1)
+
+# Remove the legacy boolean-only priority branch so only the explicit request type
+# can enter the integrated engine.
+legacy = '''            } else if (request.optBoolean("priority_live_parity", false)) {\n                updateNotification("LIVE 5분+15분 통합 백테스트 실행 중");\n                response = bridge.callAttr(\n                    "run_priority_live_backtest",\n                    request.getString("symbol"), request.getString("start"), request.getString("end"),\n                    request.getString("output_dir"), request.optString("database_path", ""),\n                    request.optDouble("initial_capital", 1000.0), request.optBoolean("compounding_enabled", true)\n                ).toString();\n'''
+if legacy in text:
+    text = text.replace(legacy, '', 1)
+
+needle = '        request.put("priority_live_parity", intent.getBooleanExtra("priority_live_parity", false));\n'
+replacement = needle + '        request.put("request_type", intent.getStringExtra("request_type"));\n'
+if 'request.put("request_type", intent.getStringExtra("request_type"))' not in text:
+    if needle not in text:
+        raise SystemExit('Service requestFromIntent priority field not found')
+    text = text.replace(needle, replacement, 1)
+
+service.write_text(text, encoding='utf-8')
+print('Priority 1.1.333 explicit request routing hardening applied')
