@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 import os
@@ -131,21 +132,51 @@ def build_adapter(settings: Settings):
 
 def timeframe_delta(tf: str) -> timedelta:
     units = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+    if not tf:
+        raise ValueError(f"invalid timeframe: {tf!r}")
     if tf.endswith("M"):
+        if len(tf) == 1:
+            raise ValueError(f"invalid timeframe: {tf!r}")
         return timedelta(days=30 * int(tf[:-1]))
+    if len(tf) == 1:
+        raise ValueError(f"invalid timeframe: {tf!r}")
     unit = tf[-1]
-    return timedelta(seconds=units.get(unit, 300) * int(tf[:-1]))
+    if unit not in units:
+        raise ValueError(f"unknown timeframe unit: {tf!r}")
+    return timedelta(seconds=units[unit] * int(tf[:-1]))
 
 
 def completed_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.sort_index().loc[~df.index.duplicated(keep="last")].copy()
+    if out.index.tz is None:
+        out.index = out.index.tz_localize("UTC")
     now = pd.Timestamp.now(tz="UTC")
     delta = timeframe_delta(timeframe)
     if out.index[-1] + delta > now:
         out = out.iloc[:-1]
     return out
+
+
+RUNTIME_LOOP_MAX_RETRIES = 3
+RUNTIME_LOOP_RETRY_DELAY = 2.0
+
+
+def _fetch_with_retry(runtime, symbol: str, timeframe: str, limit: int, needed_min: int) -> pd.DataFrame:
+    last_error = None
+    for attempt in range(RUNTIME_LOOP_MAX_RETRIES):
+        try:
+            frame = runtime.engine.adapter.fetch_ohlcv(symbol, timeframe, limit=limit)
+            frame = completed_candles(frame, timeframe)
+            if len(frame) >= needed_min:
+                return frame
+            last_error = f"insufficient completed candles: {len(frame)}"
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if attempt < RUNTIME_LOOP_MAX_RETRIES - 1:
+            time.sleep(RUNTIME_LOOP_RETRY_DELAY)
+    raise RuntimeError(last_error or "unknown fetch error")
 
 
 def _scanner_fetch_limit(settings: Settings) -> int:
@@ -210,7 +241,7 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
     if priority_enabled and (settings.bot_mode.upper() != "LIVE" or symbols != ["BTC/USDT:USDT"]):
         raise RuntimeError("priority LIVE requires LIVE mode and exactly BTC/USDT:USDT")
 
-    for symbol in settings.symbol_list:
+    for symbol in symbols:
         try:
             local = settings.model_copy(update={"symbol": symbol})
             adapter = build_adapter(local)
@@ -268,70 +299,75 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
 
     limit = _scanner_fetch_limit(settings)
     while True:
-        # Capture before fetching.  If an atomic phone upload lands anywhere
-        # during this scan, the next pass runs immediately and cannot miss it.
-        relay_revision = _relay_snapshot_revision()
-        frames = {}
-        for runtime in list(runtimes):
-            try:
-                frame = runtime.engine.adapter.fetch_ohlcv(
-                    runtime.symbol,
-                    settings.timeframe,
-                    limit=limit,
-                )
-                frame = completed_candles(frame, settings.timeframe)
-                needed = runtime.engine.settings
-                if len(frame) < max(
-                    needed.volatility_bars,
-                    needed.nbar_volatility_bars,
-                    needed.adx_length * 2,
-                    needed.rsi_length + 2,
-                    50,
-                ):
-                    raise RuntimeError(f"insufficient completed candles: {len(frame)}")
-                frames[runtime.symbol] = frame
-            except Exception as exc:
-                runtime.last_error = f"{type(exc).__name__}: {exc}"
-        scanner.step(frames)
-        _wait_for_relay_change(
-            relay_revision,
-            max(1, settings.poll_seconds),
-        )
+        try:
+            # Capture before fetching. If an atomic phone upload lands anywhere
+            # during this scan, the next pass runs immediately and cannot miss it.
+            relay_revision = _relay_snapshot_revision()
+            frames = {}
+            for runtime in list(runtimes):
+                try:
+                    needed = runtime.engine.settings
+                    needed_min = max(
+                        needed.volatility_bars,
+                        needed.nbar_volatility_bars,
+                        needed.adx_length * 2,
+                        needed.rsi_length + 2,
+                        50,
+                    )
+                    frame = _fetch_with_retry(
+                        runtime,
+                        runtime.symbol,
+                        settings.timeframe,
+                        limit,
+                        needed_min,
+                    )
+                    frames[runtime.symbol] = frame
+                    runtime.last_error = ""
+                except Exception as exc:
+                    runtime.last_error = f"{type(exc).__name__}: {exc}"
+            scanner.step(frames)
+            _wait_for_relay_change(
+                relay_revision,
+                max(1, settings.poll_seconds),
+            )
+        except Exception as exc:
+            print(f"RUNTIME_LOOP_ERROR {type(exc).__name__}: {exc}", flush=True)
+            time.sleep(5)
 
 
 def main():
     settings = Settings()
 
     scanner = UniversalScanner([])
-    app = create_dashboard(scanner)
+    worker_started = threading.Event()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if not worker_started.is_set():
+            worker_started.set()
+            threading.Thread(
+                target=_runtime_worker,
+                args=(scanner, settings),
+                daemon=True,
+                name="runtime-scanner",
+            ).start()
+            print("RUNTIME_WORKER_START", flush=True)
+            if settings.elite_rebate_auto_transfer_enabled:
+                threading.Thread(
+                    target=run_rebate_transfer_worker,
+                    args=(settings,),
+                    daemon=True,
+                    name="elite-rebate-transfer",
+                ).start()
+                print("ELITE_REBATE_TRANSFER_WORKER_START", flush=True)
+        yield
+
+    app = create_dashboard(scanner, lifespan=lifespan)
     install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
     install_live_settings_dashboard(app, scanner)
     install_cache_refresh_dashboard(app)
     install_dashboard_navigation(app)
-
-    worker_started = threading.Event()
-
-    @app.on_event("startup")
-    def start_runtime_worker() -> None:
-        if worker_started.is_set():
-            return
-        worker_started.set()
-        threading.Thread(
-            target=_runtime_worker,
-            args=(scanner, settings),
-            daemon=True,
-            name="runtime-scanner",
-        ).start()
-        print("RUNTIME_WORKER_START", flush=True)
-        if settings.elite_rebate_auto_transfer_enabled:
-            threading.Thread(
-                target=run_rebate_transfer_worker,
-                args=(settings,),
-                daemon=True,
-                name="elite-rebate-transfer",
-            ).start()
-            print("ELITE_REBATE_TRANSFER_WORKER_START", flush=True)
 
     print(
         f"DASHBOARD_HTTP_BIND host={settings.dashboard_host} port={settings.dashboard_port}",
