@@ -1,4 +1,4 @@
-# build-request: final-signed-release
+# build-request: final-signed-release-v2
 name: Build Android Backtester APK
 
 on:
