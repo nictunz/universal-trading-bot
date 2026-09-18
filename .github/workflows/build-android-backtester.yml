@@ -1,4 +1,4 @@
-# build-request: restore-stable-signing-secret-names
+# build-request: final-signed-release
 name: Build Android Backtester APK
 
 on:
