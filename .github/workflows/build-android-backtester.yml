@@ -125,33 +125,55 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"; SHA256=$(sha256sum "$SIGNED" | awk '{print $1}')
-          printf '{\n  "version_name": "%s",\n  "version_code": %s,\n  "sha256": "%s",\n  "file_name": "UniversalBacktester-%s.apk",\n  "source_commit": "%s"\n}\n' "$VERSION_NAME" "$VERSION_CODE" "$SHA256" "$VERSION_NAME" "$GITHUB_SHA" > "$RUNNER_TEMP/android-update.json"
-          cat "$RUNNER_TEMP/android-update.json"
+          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"
+          ANDROID_UPDATE_APK_NAME="UniversalTradingBacktester-Android-${VERSION_CODE}.apk"
+          cp "$SIGNED" "$ANDROID_UPDATE_APK_NAME"
+          APK_SHA256="$(sha256sum "$ANDROID_UPDATE_APK_NAME" | awk '{print $1}')"
+          echo "ANDROID_UPDATE_APK_NAME=$ANDROID_UPDATE_APK_NAME" >> "$GITHUB_ENV"
+          export APK_SHA256 ANDROID_UPDATE_APK_NAME
+          python - <<'PY'
+          import json, os
+          data = {
+              'schema_version': 1,
+              'package_id': 'com.nictunz.universalbacktester',
+              'version_code': int(os.environ['VERSION_CODE']),
+              'version_name': os.environ['VERSION_NAME'],
+              'commit': os.environ['GITHUB_SHA'],
+              'apk_name': os.environ['ANDROID_UPDATE_APK_NAME'],
+              'sha256': os.environ['APK_SHA256'],
+              'verified': True,
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'android-update.json'), 'w', encoding='utf-8') as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          print(json.dumps(data, ensure_ascii=False))
+          PY
       - name: Configure private update server
         shell: bash
         env:
           ANDROID_UPDATE_SSH_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_SSH_PRIVATE_KEY }}
-          ANDROID_UPDATE_SERVER_HOST: ${{ secrets.ANDROID_UPDATE_SERVER_HOST }}
-          ANDROID_UPDATE_SERVER_USER: ${{ secrets.ANDROID_UPDATE_SERVER_USER }}
-          ANDROID_UPDATE_SERVER_PORT: ${{ secrets.ANDROID_UPDATE_SERVER_PORT }}
-          ANDROID_UPDATE_SERVER_PATH: ${{ secrets.ANDROID_UPDATE_SERVER_PATH }}
         run: |
           set -euo pipefail
-          test -n "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}"; test -n "${ANDROID_UPDATE_SERVER_HOST:-}"; test -n "${ANDROID_UPDATE_SERVER_USER:-}"; test -n "${ANDROID_UPDATE_SERVER_PATH:-}"
-          KEY="$RUNNER_TEMP/android-update-server-key"; printf '%s\n' "$ANDROID_UPDATE_SSH_PRIVATE_KEY" > "$KEY"; chmod 600 "$KEY"; echo "ANDROID_UPDATE_SERVER_KEY=$KEY" >> "$GITHUB_ENV"; echo "ANDROID_UPDATE_SERVER_PORT_EFFECTIVE=${ANDROID_UPDATE_SERVER_PORT:-22}" >> "$GITHUB_ENV"
+          test -n "${ANDROID_UPDATE_SSH_PRIVATE_KEY:-}"
+          KEY="$RUNNER_TEMP/android-update-server-key"
+          printf '%s\n' "$ANDROID_UPDATE_SSH_PRIVATE_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          mkdir -p "$HOME/.ssh"
+          timeout 15 ssh-keyscan -T 10 -H 34.132.172.40 >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+          echo "ANDROID_UPDATE_SERVER_KEY=$KEY" >> "$GITHUB_ENV"
       - name: Publish verified update to server
         shell: bash
-        env:
-          ANDROID_UPDATE_SERVER_HOST: ${{ secrets.ANDROID_UPDATE_SERVER_HOST }}
-          ANDROID_UPDATE_SERVER_USER: ${{ secrets.ANDROID_UPDATE_SERVER_USER }}
-          ANDROID_UPDATE_SERVER_PATH: ${{ secrets.ANDROID_UPDATE_SERVER_PATH }}
         run: |
           set -euo pipefail
-          SIGNED="android/app/build/outputs/apk/release/UniversalBacktester-${VERSION_NAME}.apk"; PORT="$ANDROID_UPDATE_SERVER_PORT_EFFECTIVE"; DEST="${ANDROID_UPDATE_SERVER_USER}@${ANDROID_UPDATE_SERVER_HOST}"
-          ssh -i "$ANDROID_UPDATE_SERVER_KEY" -p "$PORT" -o StrictHostKeyChecking=accept-new "$DEST" "mkdir -p '$ANDROID_UPDATE_SERVER_PATH'"
-          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$SIGNED" "$DEST:$ANDROID_UPDATE_SERVER_PATH/UniversalBacktester-${VERSION_NAME}.apk"
-          scp -i "$ANDROID_UPDATE_SERVER_KEY" -P "$PORT" -o StrictHostKeyChecking=accept-new "$RUNNER_TEMP/android-update.json" "$DEST:$ANDROID_UPDATE_SERVER_PATH/android-update.json"
+          HOST=34.132.172.40
+          USER=kpj3669
+          REMOTE=/home/kpj3669/.cache/universal-trading-bot/android-updates
+          SSH_OPTS=(-o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
+          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SERVER_KEY" "$USER@$HOST" "mkdir -p '$REMOTE'"
+          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SERVER_KEY" "$ANDROID_UPDATE_APK_NAME" "$USER@$HOST:$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading"
+          scp "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SERVER_KEY" "$RUNNER_TEMP/android-update.json" "$USER@$HOST:$REMOTE/android-update.json.uploading"
+          ssh "${SSH_OPTS[@]}" -i "$ANDROID_UPDATE_SERVER_KEY" "$USER@$HOST" "mv '$REMOTE/$ANDROID_UPDATE_APK_NAME.uploading' '$REMOTE/$ANDROID_UPDATE_APK_NAME' && mv '$REMOTE/android-update.json.uploading' '$REMOTE/android-update.json'"
+          echo 'Verified Android update published to private SFTP channel.'
       - name: Upload signed update artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
