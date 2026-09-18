@@ -1,4 +1,4 @@
-# build-request: verified-rebuild-after-1.1.350-install-failure
+# build-request: verified-install-compatible-release
 name: Build Android Backtester APK
 
 on:
@@ -121,6 +121,17 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
           keytool -printcert -jarfile "$SIGNED" | tee "$RUNNER_TEMP/android-signing-cert.txt"
           sha256sum "$SIGNED" | tee "$RUNNER_TEMP/android-apk-sha256.txt"
+
+          echo "===== VERIFY APK ID / VERSION ====="
+          APK_INFO="$("$BUILD_TOOLS/aapt2" dump badging "$SIGNED" | head -1)"
+          echo "$APK_INFO"
+          echo "$APK_INFO" | grep -F "name='com.nictunz.universalbacktester'"
+          echo "$APK_INFO" | grep -F "versionCode='$VERSION_CODE'"
+          echo "$APK_INFO" | grep -F "versionName='$VERSION_NAME'"
+
+          echo "===== VERIFY SIGNING CERT CONSISTENCY ====="
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$SIGNED" | tee "$RUNNER_TEMP/android-apksigner-cert.txt"
+          test -s "$RUNNER_TEMP/android-apksigner-cert.txt"
       - name: Prepare signed update manifest
         shell: bash
         run: |
