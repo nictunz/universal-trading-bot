@@ -74,7 +74,7 @@ def test_extended_gap_alerts_after_grace_but_stays_fail_closed():
     assert runtime.notifications[0][0][0] == '🟠 LIVE 데이터 연속 장애'
 
 
-def test_persistent_gap_halts_before_signal_admission_window_expires():
+def test_persistent_gap_blocks_boundary_without_account_halt():
     runtime = runtime_stub()
     start = pd.Timestamp('2026-09-17T01:00:00Z')
     reason = 'mobile relay snapshot not found: /tmp/relay.json'
@@ -82,8 +82,8 @@ def test_persistent_gap_halts_before_signal_admission_window_expires():
     runtime._data_blocked(reason, start)
     status = runtime._data_blocked(reason, start + pd.Timedelta(seconds=25))
 
-    assert status == 'HALTED'
-    assert runtime.controller.state['halted'].startswith('data unavailable for 25.0s:')
+    assert status.startswith('DATA_BLOCKED:')
+    assert runtime.controller.state['halted'] is None
 
 
 def test_healthy_data_resets_gap_state():
