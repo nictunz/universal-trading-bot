@@ -167,8 +167,12 @@ class BacktestRequest(BaseModel):
     end: str | None = None
 
 
-def create_dashboard(scanner) -> FastAPI:
-    app = FastAPI(title="Universal Trading Bot Dashboard", version="v15")
+def create_dashboard(scanner, lifespan=None) -> FastAPI:
+    app = FastAPI(
+        title="Universal Trading Bot Dashboard",
+        version="v15",
+        lifespan=lifespan,
+    )
     history = TradeHistoryStore()
     dashboard_data = DashboardDataService(history)
 
