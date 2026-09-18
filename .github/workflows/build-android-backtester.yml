@@ -1,4 +1,4 @@
-# build-request: final-signed-release-v2
+# build-request: verified-rebuild-after-1.1.350-install-failure
 name: Build Android Backtester APK
 
 on:
