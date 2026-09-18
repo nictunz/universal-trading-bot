@@ -3,8 +3,15 @@ plugins {
     id("com.chaquo.python")
 }
 
-val envVersionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 1
-val envVersionName = System.getenv("ANDROID_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.0.0"
+// CI may provide the release version either as a Gradle project property or as
+// an environment variable. Prefer -P values so the workflow and the APK
+// manifest cannot silently diverge.
+val envVersionCode = providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()
+    ?: System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull()
+    ?: 1
+val envVersionName = providers.gradleProperty("appVersionName").orNull?.takeIf { it.isNotBlank() }
+    ?: System.getenv("ANDROID_VERSION_NAME")?.takeIf { it.isNotBlank() }
+    ?: "1.0.0"
 val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
 val releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
 val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "universal"
