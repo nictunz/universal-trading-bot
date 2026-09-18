@@ -12,7 +12,7 @@ from universal_bot.priority_signals import DataUnavailable, PROFILES
 
 class PriorityRuntime:
     DATA_ALERT_SECONDS = 15.0
-    DATA_HALT_SECONDS = 25.0
+    SIGNAL_ADMISSION_SECONDS = 30.0
     DATA_RECOVERY_CONFIRMATIONS = 3
     TRANSIENT_DATA_ERRORS = (
         'mobile relay snapshot not found:',
@@ -173,9 +173,9 @@ class PriorityRuntime:
                              심볼=self.engine.settings.symbol, 오류=reason,
                              연속횟수=self._data_blocked_count, 지속초=f'{elapsed:.1f}',
                              안내='경계 동기화 유예시간을 초과했습니다. 신규 신호 처리는 데이터 정상화까지 차단됩니다.')
-        if elapsed >= self.DATA_HALT_SECONDS:
-            self.last_status = self.controller.halt(f'data unavailable for {elapsed:.1f}s: {reason}')
-            self._halt_alert()
+        # Public/relay market-data lag is fail-closed for this boundary only.
+        # Do not persist an account-level HALT for a transient data fault:
+        # execution/position/protection faults still HALT through the controller.
         return self.last_status
 
     def scan_once(self):
@@ -191,7 +191,7 @@ class PriorityRuntime:
             self._halt_alert()
             return self.last_status
         boundary = now.floor('5min')
-        if now-boundary > pd.Timedelta(seconds=30):
+        if now-boundary > pd.Timedelta(seconds=self.SIGNAL_ADMISSION_SECONDS):
             self._data_blocked_count = 0
             self._data_blocked_since = None
             if self._alert_key and str(self._alert_key).startswith('DATA_BLOCKED:'):
