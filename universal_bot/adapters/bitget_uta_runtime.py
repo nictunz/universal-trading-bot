@@ -175,9 +175,47 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
                 "category": self.CATEGORY,
                 "symbol": self._symbol_id(symbol),
                 "leverage": str(leverage),
+                "marginMode": "crossed",
             },
         )
         return dict(data or {}) if isinstance(data, dict) else {"result": data}
+
+    def ensure_leverage(self, symbol: str, leverage: int) -> dict:
+        """Initialize/verify pair-level UTA leverage before LIVE configuration.
+
+        A newly upgraded UTA may legitimately return an empty symbolConfigList.
+        UTA has no global futures leverage, so zero here means unconfigured, not
+        actual 0x leverage. Set the requested pair leverage, then require the
+        account settings endpoint to echo the exact value before allowing LIVE.
+        """
+        leverage = int(leverage)
+        before = self.account_info(symbol)
+        current = self._account_leverage(before)
+        if abs(current - float(leverage)) < 1e-9:
+            return {"ok": True, "changed": False, "account_leverage": current}
+
+        self.set_leverage(symbol, leverage)
+        last = {}
+        for attempt in range(7):
+            last = self.account_info(symbol)
+            actual = self._account_leverage(last)
+            margin = str(last.get("marginMode") or "").lower()
+            if abs(actual - float(leverage)) < 1e-9 and margin in {"cross", "crossed"}:
+                return {
+                    "ok": True,
+                    "changed": True,
+                    "account_leverage": actual,
+                    "margin_mode": margin,
+                }
+            if attempt < 6:
+                time.sleep(0.15)
+        return {
+            "ok": False,
+            "changed": True,
+            "account_leverage": self._account_leverage(last),
+            "margin_mode": str(last.get("marginMode") or "").lower() or None,
+            "reason": f"Bitget UTA did not confirm {leverage}x crossed leverage for {self._symbol_id(symbol)}",
+        }
 
     def equity(self) -> float:
         data = self._request("GET", "/api/v3/account/assets") or {}
