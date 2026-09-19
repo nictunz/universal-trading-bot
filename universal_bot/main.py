@@ -336,7 +336,10 @@ def _runtime_worker(scanner: UniversalScanner, settings: Settings) -> None:
 
 
 def main():
+    process_start = time.monotonic()
+    print("BOOT_STAGE settings_start", flush=True)
     settings = Settings()
+    print(f"BOOT_STAGE settings_ready elapsed={time.monotonic() - process_start:.3f}s", flush=True)
 
     scanner = UniversalScanner([])
     worker_started = threading.Event()
@@ -362,15 +365,19 @@ def main():
                 print("ELITE_REBATE_TRANSFER_WORKER_START", flush=True)
         yield
 
+    print(f"BOOT_STAGE dashboard_create_start elapsed={time.monotonic() - process_start:.3f}s", flush=True)
     app = create_dashboard(scanner, lifespan=lifespan)
+    print(f"BOOT_STAGE dashboard_create_ready elapsed={time.monotonic() - process_start:.3f}s", flush=True)
     install_dashboard_auth(app)
     install_strategy_dashboard(app, scanner)
     install_live_settings_dashboard(app, scanner)
     install_cache_refresh_dashboard(app)
     install_dashboard_navigation(app)
+    print(f"BOOT_STAGE routes_ready elapsed={time.monotonic() - process_start:.3f}s", flush=True)
 
     print(
-        f"DASHBOARD_HTTP_BIND host={settings.dashboard_host} port={settings.dashboard_port}",
+        f"DASHBOARD_HTTP_BIND host={settings.dashboard_host} port={settings.dashboard_port} "
+        f"elapsed={time.monotonic() - process_start:.3f}s",
         flush=True,
     )
     uvicorn.run(
