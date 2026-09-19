@@ -312,6 +312,101 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
             results.append({**base, "leg": "sl", "triggerPrice": str(sl_price)})
         return results
 
+    def _ioc_limit_child(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        limit_price: float,
+    ) -> dict[str, Any]:
+        """UTA-v3 IOC child order.
+
+        The Classic parent implementation posts to /api/v2 and uses tradeSide.
+        UTA must stay entirely on v3 and identify the hedge leg with posSide.
+        """
+        side = side.lower()
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"invalid order side: {side}")
+        qty = self._qty(symbol, amount)
+        client_oid = self._client_oid("utb-ioc")
+        body: dict[str, Any] = {
+            "category": self.CATEGORY,
+            "symbol": self._symbol_id(symbol),
+            "orderType": "limit",
+            "timeInForce": "ioc",
+            "side": side,
+            "qty": qty,
+            "price": self._price(symbol, limit_price),
+            "clientOid": client_oid,
+        }
+        if self._position_mode(symbol) == "hedge_mode":
+            body["posSide"] = "long" if side == "buy" else "short"
+        else:
+            body["reduceOnly"] = "no"
+
+        detail: dict[str, Any] = {}
+        recovered = False
+        try:
+            data = self._request("POST", "/api/v3/trade/place-order", body=body) or {}
+        except Exception as exc:
+            if not self._is_ambiguous_order_error(exc):
+                raise
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                try:
+                    detail = self._order_detail(symbol, client_oid=client_oid)
+                    if detail:
+                        recovered = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+            if not detail:
+                raise AmbiguousOrderResult(
+                    f"Bitget UTA IOC outcome is unknown after clientOid recovery: {client_oid}",
+                    client_oid=client_oid,
+                    side=side,
+                    requested_qty=float(qty),
+                    reduce_only=False,
+                ) from exc
+            data = detail
+
+        order_id = str(data.get("orderId") or detail.get("orderId") or "")
+        if order_id and not detail:
+            deadline = time.monotonic() + 0.65
+            while time.monotonic() < deadline:
+                try:
+                    detail = self._order_detail(symbol, order_id)
+                    state = str(detail.get("orderStatus") or "").lower()
+                    if state in {"filled", "cancelled", "canceled"}:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        state = str(detail.get("orderStatus") or "").lower()
+        if state not in {"filled", "cancelled", "canceled"}:
+            raise AmbiguousOrderResult(
+                "UTA IOC has no terminal exchange acknowledgement",
+                client_oid=client_oid,
+                side=side,
+                requested_qty=float(qty),
+                reduce_only=False,
+            )
+        filled = float(detail.get("cumExecQty") or 0.0)
+        average = float(detail.get("avgPrice") or 0.0) or None
+        return {
+            "id": order_id or client_oid,
+            "clientOid": data.get("clientOid") or client_oid,
+            "amount": filled,
+            "requested": float(qty),
+            "filled": filled,
+            "average": average,
+            "price": average,
+            "status": detail.get("orderStatus") or "accepted",
+            "recovered_by_client_oid": recovered,
+            "raw": detail or data,
+        }
+
     def market_order(
         self,
         symbol: str,
