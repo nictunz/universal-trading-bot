@@ -61,15 +61,42 @@ class PriorityRuntime:
         # position/protection timeouts remain non-recoverable.
         return cls._is_market_data_timeout(RuntimeError(reason))
 
+    @staticmethod
+    def _is_retired_classic_credential_halt(reason):
+        text = str(reason or '').lower()
+        return (
+            'bitget elite api error' in text
+            and '40037' in text
+            and 'apikey does not exist' in text
+        )
+
     def _recover_persisted_data_halt(self):
-        """Clear only a recoverable data HALT after proving the account is flat."""
+        """Clear only a proven-safe persisted HALT.
+
+        Besides transient data HALTs, a stale Classic-v2 40037 may remain after
+        an intentional migration to a verified UTA-v3 account. Recover that
+        specific historical condition only when the runtime adapter is UTA-v3,
+        controller ownership state is empty, and two independent exchange
+        position reads both prove FLAT. All other execution/account HALTs remain
+        sticky and fail closed.
+        """
         c = self.controller
         reason = str(c.state.get('halted') or '')
-        if not self._is_recoverable_data_halt_reason(reason):
+        recoverable_data = self._is_recoverable_data_halt_reason(reason)
+        retired_classic = self._is_retired_classic_credential_halt(reason)
+        if not (recoverable_data or retired_classic):
             return False
         if c.state.get('owner') is not None or c.state.get('position') is not None or c.state.get('pending') is not None:
             return False
-        if c.port.snapshot() is not None:
+        if retired_classic:
+            if str(getattr(self.engine.adapter, 'API_FAMILY', '')).lower() != 'uta-v3':
+                return False
+            symbol = self.engine.settings.symbol
+            for _ in range(2):
+                p = self.engine.adapter.position(symbol)
+                if str(p.get('side') or 'FLAT') != 'FLAT' or float(p.get('size') or 0.0) > 1e-9:
+                    return False
+        elif c.port.snapshot() is not None:
             return False
         c.state['halted'] = None
         c.journal.save(c.state)
