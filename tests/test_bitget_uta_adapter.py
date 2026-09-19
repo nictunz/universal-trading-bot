@@ -314,7 +314,15 @@ def test_uta_ensure_leverage_initializes_empty_symbol_config(monkeypatch):
 
     monkeypatch.setattr(adapter, "_request", fake_request)
     monkeypatch.setattr(adapter, "_public_get", lambda path, params: [{
-        "symbol": "BTCUSDT", "maxLeverage": "150"
+        "symbol": "BTCUSDT",
+        "status": "online",
+        "quantityPrecision": "4",
+        "quantityMultiplier": "0.0001",
+        "minOrderQty": "0.0001",
+        "maxMarketOrderQty": "220",
+        "pricePrecision": "1",
+        "priceMultiplier": "0.1",
+        "maxLeverage": "150",
     }])
     result = adapter.ensure_leverage("BTC/USDT:USDT", 15)
     assert result["ok"] is True
