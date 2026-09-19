@@ -18,10 +18,33 @@ class MobileRelayMarketData:
     def __init__(self, path: str | Path | None = None, max_age_seconds: int = 90) -> None:
         self.path = Path(path).expanduser() if path else self.DEFAULT_PATH
         self.max_age_seconds = int(max_age_seconds)
+        self._cached_revision: tuple[int, int, int] | None = None
+        self._cached_payload: dict | None = None
+        self._cached_series: dict[tuple, pd.Series] = {}
+        self._cached_observed: dict[tuple, pd.Timestamp] = {}
+        self._sidecar_reader: MobileRelayMarketData | None = None
 
     @property
     def configured(self) -> bool:
         return self.path.is_file()
+
+    def _file_revision(self) -> tuple[int, int, int] | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+    def _validate_payload_freshness(self, payload: dict) -> None:
+        generated_ms = int(payload.get("generated_at_ms") or 0)
+        if generated_ms <= 0:
+            raise RuntimeError("mobile relay generated_at_ms is missing")
+        completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
+        if completed_ms < generated_ms:
+            raise RuntimeError("mobile relay completion time precedes generation time")
+        age = max(0.0, time.time() - completed_ms / 1000.0)
+        if age > self.max_age_seconds:
+            raise RuntimeError(f"mobile relay is stale: age={age:.1f}s max={self.max_age_seconds}s")
 
     def _read_snapshot_text(self) -> str:
         """Read a relay snapshot without a check-then-open race.
@@ -42,6 +65,16 @@ class MobileRelayMarketData:
         raise RuntimeError(f"mobile relay snapshot not found: {self.path}") from last_exc
 
     def _load(self) -> dict:
+        revision = self._file_revision()
+        if revision is not None and revision == self._cached_revision and self._cached_payload is not None:
+            # Freshness is time-dependent, so it must still be checked on cache hits.
+            self._validate_payload_freshness(self._cached_payload)
+            return self._cached_payload
+
+        if revision != self._cached_revision:
+            self._cached_series.clear()
+            self._cached_observed.clear()
+
         try:
             payload = json.loads(self._read_snapshot_text())
         except RuntimeError:
@@ -50,18 +83,16 @@ class MobileRelayMarketData:
             raise RuntimeError(f"invalid mobile relay JSON: {type(exc).__name__}: {exc}") from exc
         if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
             raise RuntimeError("unsupported mobile relay schema")
-        generated_ms = int(payload.get("generated_at_ms") or 0)
-        if generated_ms <= 0:
-            raise RuntimeError("mobile relay generated_at_ms is missing")
-        completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
-        if completed_ms < generated_ms:
-            raise RuntimeError("mobile relay completion time precedes generation time")
-        age = max(0.0, time.time() - completed_ms / 1000.0)
-        if age > self.max_age_seconds:
-            raise RuntimeError(f"mobile relay is stale: age={age:.1f}s max={self.max_age_seconds}s")
+        self._validate_payload_freshness(payload)
+        self._cached_revision = revision
+        self._cached_payload = payload
         return payload
 
     def _source_observed_at(self, payload: dict, symbol_key: str, exchange: str) -> pd.Timestamp:
+        cache_key = (self._cached_revision, symbol_key, exchange)
+        cached = self._cached_observed.get(cache_key)
+        if cached is not None:
+            return cached
         generated_ms = int(payload["generated_at_ms"])
         completed_ms = int(payload.get("snapshot_completed_at_ms") or generated_ms)
         observations = payload.get("source_observed_at_ms") or {}
@@ -78,7 +109,9 @@ class MobileRelayMarketData:
             raise RuntimeError(
                 f"mobile relay source is stale: {exchange} age={(completed_ms - observed_ms) / 1000.0:.1f}s"
             )
-        return pd.to_datetime(observed_ms, unit="ms", utc=True)
+        result = pd.to_datetime(observed_ms, unit="ms", utc=True)
+        self._cached_observed[cache_key] = result
+        return result
 
     @staticmethod
     def _symbol_key(symbol: str) -> str:
@@ -106,6 +139,12 @@ class MobileRelayMarketData:
             raise ValueError(f"unsupported mobile relay timeframe: {timeframe}")
         return pd.Timedelta(seconds=value * seconds)
 
+    def _get_sidecar_reader(self) -> "MobileRelayMarketData":
+        if self._sidecar_reader is None:
+            sidecar = self.path.with_name("mobile-market-relay-5m.json")
+            self._sidecar_reader = MobileRelayMarketData(sidecar, self.max_age_seconds)
+        return self._sidecar_reader
+
     def fetch_volume(self, exchange_id: str, symbol: str, timeframe: str, limit: int = 1000) -> pd.Series:
         exchange = exchange_id.strip().lower()
         if exchange not in self.SUPPORTED_EXCHANGES:
@@ -114,15 +153,19 @@ class MobileRelayMarketData:
         relay_tf = str(payload.get("timeframe") or "")
         if relay_tf != timeframe:
             if timeframe == "5m" and self.path.name == "mobile-market-relay.json":
-                sidecar = self.path.with_name("mobile-market-relay-5m.json")
-                # Do not pre-check sidecar existence: the sidecar reader owns the
-                # retry/fail-closed policy and avoids the same TOCTOU race.
-                return MobileRelayMarketData(sidecar, self.max_age_seconds).fetch_volume(
+                # The persistent sidecar reader preserves its own revision cache while
+                # retaining the same retry/fail-closed policy.
+                return self._get_sidecar_reader().fetch_volume(
                     exchange_id, symbol, timeframe, limit
                 )
             raise RuntimeError(f"mobile relay timeframe mismatch: relay={relay_tf} requested={timeframe}")
         markets = payload.get("markets") or {}
         symbol_key = self._symbol_key(symbol)
+        requested_limit = max(1, int(limit))
+        cache_key = (self._cached_revision, exchange, symbol_key, timeframe, requested_limit)
+        cached = self._cached_series.get(cache_key)
+        if cached is not None:
+            return cached
         streams = markets.get(symbol_key) or {}
         rows = streams.get(exchange) or []
         if not rows:
@@ -149,7 +192,9 @@ class MobileRelayMarketData:
         series = series[(series.index + delta) <= observed]
         if series.empty:
             raise RuntimeError(f"mobile relay has no completed candles for {exchange} {symbol_key}")
-        return series.tail(max(1, int(limit)))
+        result = series.tail(requested_limit)
+        self._cached_series[cache_key] = result
+        return result
 
     def latest_common_timestamp(self, symbol: str, timeframe: str) -> pd.Timestamp:
         latest: list[pd.Timestamp] = []
