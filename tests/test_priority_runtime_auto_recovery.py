@@ -4,9 +4,10 @@ from universal_bot.priority_runtime import PriorityRuntime
 
 
 class Adapter:
-    def __init__(self, position=None, fail_data=False):
+    def __init__(self, position=None, fail_data=False, api_family='classic-v2'):
         self._position = position or {'side': 'FLAT', 'size': 0.0}
         self.fail_data = fail_data
+        self.API_FAMILY = api_family
 
     def fetch_ohlcv(self, symbol, timeframe, limit=500):
         if self.fail_data:
@@ -22,14 +23,14 @@ class Adapter:
         return dict(self._position)
 
 
-def make_runtime(reason, *, position=None, safety_reason=None, owner=None, pending=None):
+def make_runtime(reason, *, position=None, safety_reason=None, owner=None, pending=None, api_family='classic-v2'):
     runtime = PriorityRuntime.__new__(PriorityRuntime)
     saved = []
     notifications = []
     safety = SimpleNamespace(halted=bool(safety_reason), reason=safety_reason or '',
                              consecutive_errors=0, protection_ok=True)
     runtime.engine = SimpleNamespace(
-        settings=SimpleNamespace(symbol='BTC/USDT:USDT'), adapter=Adapter(position), safety=safety,
+        settings=SimpleNamespace(symbol='BTC/USDT:USDT'), adapter=Adapter(position, api_family=api_family), safety=safety,
         _notify_live=lambda *args, **kwargs: notifications.append((args, kwargs)),
     )
     state = {'halted': reason, 'owner': owner, 'position': None, 'pending': pending}
@@ -124,3 +125,36 @@ def test_account_request_timeout_remains_fail_closed():
     reason = 'RequestTimeout: bitget GET https://api.bitget.com/api/v2/mix/account/account'
     assert PriorityRuntime._is_transient_data_error(RuntimeError(reason)) is False
     assert PriorityRuntime._is_recoverable_data_halt_reason(reason) is False
+
+
+def classic_40037_reason():
+    return 'Bitget Elite API error HTTP 400 40037: Apikey does not exist'
+
+
+def test_persisted_classic_40037_recovers_only_on_uta_v3_flat():
+    runtime, saved, _ = make_runtime(classic_40037_reason(), api_family='uta-v3')
+    assert runtime._recover_persisted_data_halt() is True
+    assert runtime.controller.state['halted'] is None
+    assert saved[-1]['halted'] is None
+
+
+def test_persisted_classic_40037_stays_halted_on_classic_adapter():
+    runtime, saved, _ = make_runtime(classic_40037_reason(), api_family='classic-v2')
+    assert runtime._recover_persisted_data_halt() is False
+    assert runtime.controller.state['halted'] == classic_40037_reason()
+    assert saved == []
+
+
+def test_persisted_classic_40037_stays_halted_with_position_or_pending():
+    runtime, saved, _ = make_runtime(
+        classic_40037_reason(), api_family='uta-v3',
+        position={'side': 'LONG', 'size': 0.01}
+    )
+    assert runtime._recover_persisted_data_halt() is False
+    assert saved == []
+
+    runtime, saved, _ = make_runtime(
+        classic_40037_reason(), api_family='uta-v3', pending='open_5m'
+    )
+    assert runtime._recover_persisted_data_halt() is False
+    assert saved == []
