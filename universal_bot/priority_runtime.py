@@ -240,6 +240,7 @@ class PriorityRuntime:
             boundary + pd.Timedelta(seconds=self.SIGNAL_ADMISSION_SECONDS),
             now + pd.Timedelta(seconds=self.BOUNDARY_RETRY_SECONDS),
         )
+        monotonic_deadline = time.monotonic() + max(0.0, (deadline - now).total_seconds())
         while True:
             frames, volumes = {}, {}
             try:
@@ -260,19 +261,21 @@ class PriorityRuntime:
             except DataUnavailable as exc:
                 attempt_now = self.clock()
                 self._data_blocked(str(exc), attempt_now)
-                if attempt_now >= deadline:
+                if attempt_now >= deadline or time.monotonic() >= monotonic_deadline:
                     return self.last_status
             except Exception as exc:
                 attempt_now = self.clock()
                 if self._is_transient_data_error(exc):
                     self._data_blocked(str(exc), attempt_now)
-                    if attempt_now >= deadline:
+                    if attempt_now >= deadline or time.monotonic() >= monotonic_deadline:
                         return self.last_status
                 else:
                     self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
                     self._halt_alert()
                     return self.last_status
-            remaining = max(0.0, (deadline - attempt_now).total_seconds())
+            remaining_wall = max(0.0, (deadline - attempt_now).total_seconds())
+            remaining_mono = max(0.0, monotonic_deadline - time.monotonic())
+            remaining = min(remaining_wall, remaining_mono)
             if remaining <= 0:
                 return self.last_status
             time.sleep(min(self.BOUNDARY_RETRY_INTERVAL_SECONDS, remaining))
