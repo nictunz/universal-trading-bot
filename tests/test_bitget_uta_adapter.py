@@ -282,3 +282,72 @@ def test_uta_hedge_position_rejects_dual_active_sides(monkeypatch):
         assert "multiple active hedge positions" in str(exc)
     else:
         raise AssertionError("dual hedge positions must fail closed")
+
+
+def test_uta_ensure_leverage_initializes_empty_symbol_config(monkeypatch):
+    adapter = _adapter()
+    settings_reads = 0
+    set_body = {}
+
+    def fake_request(method, path, params=None, body=None):
+        nonlocal settings_reads
+        if path == "/api/v3/account/settings":
+            settings_reads += 1
+            configured = settings_reads >= 2
+            return {
+                "accountMode": "unified",
+                "accountLevel": "basic",
+                "holdMode": "hedge_mode",
+                "symbolConfigList": ([{
+                    "category": "USDT-FUTURES",
+                    "symbol": "BTCUSDT",
+                    "marginMode": "crossed",
+                    "leverage": "15",
+                }] if configured else []),
+            }
+        if path == "/api/v3/market/instruments":
+            return [{"symbol": "BTCUSDT", "maxLeverage": "150"}]
+        if path == "/api/v3/account/set-leverage":
+            set_body.update(body)
+            return "success"
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    monkeypatch.setattr(adapter, "_public_get", lambda path, params: [{
+        "symbol": "BTCUSDT", "maxLeverage": "150"
+    }])
+    result = adapter.ensure_leverage("BTC/USDT:USDT", 15)
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["account_leverage"] == 15.0
+    assert set_body == {
+        "category": "USDT-FUTURES",
+        "symbol": "BTCUSDT",
+        "leverage": "15",
+        "marginMode": "crossed",
+    }
+
+
+def test_uta_ensure_leverage_does_not_write_when_already_correct(monkeypatch):
+    adapter = _adapter()
+    writes = []
+
+    def fake_request(method, path, params=None, body=None):
+        if path == "/api/v3/account/settings":
+            return {
+                "accountMode": "unified",
+                "holdMode": "hedge_mode",
+                "symbolConfigList": [{
+                    "category": "USDT-FUTURES",
+                    "symbol": "BTCUSDT",
+                    "marginMode": "crossed",
+                    "leverage": "15",
+                }],
+            }
+        writes.append((method, path, body))
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    result = adapter.ensure_leverage("BTC/USDT:USDT", 15)
+    assert result == {"ok": True, "changed": False, "account_leverage": 15.0}
+    assert writes == []
