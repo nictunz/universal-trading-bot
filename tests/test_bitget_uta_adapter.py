@@ -197,3 +197,88 @@ def test_uta_position_mapping(monkeypatch):
     assert pos["size"] == 0.01
     assert pos["entry_price"] == 100000.0
     assert pos["position_mode"] == "one_way_mode"
+
+
+def test_uta_ioc_child_uses_v3_hedge_payload(monkeypatch):
+    adapter = _adapter()
+    calls = []
+    monkeypatch.setattr(adapter, "_qty", lambda symbol, amount: "0.001")
+    monkeypatch.setattr(adapter, "_price", lambda symbol, price: "100030.0")
+    monkeypatch.setattr(adapter, "_position_mode", lambda symbol: "hedge_mode")
+
+    def fake_request(method, path, params=None, body=None):
+        calls.append((method, path, params, body))
+        if path == "/api/v3/trade/place-order":
+            return {"orderId": "ioc-1", "clientOid": body["clientOid"]}
+        if path == "/api/v3/trade/order-info":
+            return {
+                "orderId": "ioc-1",
+                "orderStatus": "filled",
+                "cumExecQty": "0.001",
+                "avgPrice": "100020",
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    out = adapter._ioc_limit_child("BTC/USDT:USDT", "buy", 0.001, 100030.0)
+    place = next(x for x in calls if x[1] == "/api/v3/trade/place-order")
+    body = place[3]
+    assert body["category"] == "USDT-FUTURES"
+    assert body["symbol"] == "BTCUSDT"
+    assert body["orderType"] == "limit"
+    assert body["timeInForce"] == "ioc"
+    assert body["qty"] == "0.001"
+    assert body["side"] == "buy"
+    assert body["posSide"] == "long"
+    assert "productType" not in body
+    assert "marginCoin" not in body
+    assert "tradeSide" not in body
+    assert out["filled"] == 0.001
+    assert out["average"] == 100020.0
+
+
+def test_uta_hedge_market_open_and_close_payloads(monkeypatch):
+    adapter = _adapter()
+    placed = []
+    monkeypatch.setattr(adapter, "_qty", lambda symbol, amount: "0.001")
+    monkeypatch.setattr(adapter, "_position_mode", lambda symbol: "hedge_mode")
+
+    def fake_request(method, path, params=None, body=None):
+        if path == "/api/v3/trade/place-order":
+            placed.append(dict(body))
+            return {"orderId": str(len(placed)), "clientOid": body["clientOid"]}
+        if path == "/api/v3/trade/order-info":
+            return {"orderStatus": "filled", "cumExecQty": "0.001", "avgPrice": "100000"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    adapter.market_order("BTC/USDT:USDT", "buy", 0.001)
+    adapter.market_order("BTC/USDT:USDT", "sell", 0.001, reduce_only=True)
+    adapter.market_order("BTC/USDT:USDT", "sell", 0.001)
+    adapter.market_order("BTC/USDT:USDT", "buy", 0.001, reduce_only=True)
+
+    assert (placed[0]["side"], placed[0]["posSide"]) == ("buy", "long")
+    assert (placed[1]["side"], placed[1]["posSide"]) == ("sell", "long")
+    assert (placed[2]["side"], placed[2]["posSide"]) == ("sell", "short")
+    assert (placed[3]["side"], placed[3]["posSide"]) == ("buy", "short")
+    assert all("tradeSide" not in body for body in placed)
+    assert all("reduceOnly" not in body for body in placed)
+
+
+def test_uta_hedge_position_rejects_dual_active_sides(monkeypatch):
+    adapter = _adapter()
+
+    def fake_request(method, path, params=None, body=None):
+        assert path == "/api/v3/position/current-position"
+        return {"list": [
+            {"posSide": "long", "holdMode": "hedge_mode", "total": "0.01", "avgPrice": "100000"},
+            {"posSide": "short", "holdMode": "hedge_mode", "total": "0.01", "avgPrice": "100000"},
+        ]}
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    try:
+        adapter.position("BTC/USDT:USDT")
+    except RuntimeError as exc:
+        assert "multiple active hedge positions" in str(exc)
+    else:
+        raise AssertionError("dual hedge positions must fail closed")
