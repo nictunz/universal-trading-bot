@@ -359,3 +359,38 @@ def test_uta_ensure_leverage_does_not_write_when_already_correct(monkeypatch):
     result = adapter.ensure_leverage("BTC/USDT:USDT", 15)
     assert result == {"ok": True, "changed": False, "account_leverage": 15.0}
     assert writes == []
+
+
+def test_uta_configure_live_accepts_guarded_hedge_mode_with_legacy_one_way_flag(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_contract", lambda symbol: {
+        "minOrderQty": "0.0001", "maxLeverage": "150"
+    })
+    monkeypatch.setattr(adapter, "account_info", lambda symbol: {
+        "accountMode": "unified",
+        "accountLevel": "basic",
+        "holdMode": "hedge_mode",
+        "posMode": "hedge_mode",
+        "marginMode": "crossed",
+        "leverage": "15",
+        "crossedMarginLeverage": "15",
+    })
+    result = adapter.configure_live("BTC/USDT:USDT", 15, "crossed", require_one_way=True)
+    assert result["ok"] is True
+    assert result["position_mode"] == "hedge_mode"
+    assert result["single_active_side_guard"] is True
+    assert result["account_leverage"] == 15.0
+
+
+def test_uta_configure_live_rejects_unknown_position_mode(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "account_info", lambda symbol: {
+        "accountMode": "unified",
+        "accountLevel": "basic",
+        "posMode": "",
+        "marginMode": "crossed",
+        "leverage": "15",
+    })
+    result = adapter.configure_live("BTC/USDT:USDT", 15, "crossed", require_one_way=True)
+    assert result["ok"] is False
+    assert "unsupported" in result["reason"]
