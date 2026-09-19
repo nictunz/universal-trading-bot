@@ -121,11 +121,20 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
                     "supported": True,
                     "reason": f"Bitget UTA margin mode is {account_margin}, expected crossed",
                 }
-            if require_one_way and pos_mode != "one_way_mode":
+            # UTA hedge_mode is supported as a transport mode. The bot still
+            # enforces a single active directional leg: position() fails closed
+            # if both long and short are simultaneously active. Keep the legacy
+            # one-way requirement strict for unknown modes, but do not reject
+            # verified UTA hedge_mode solely because the exchange names it hedge.
+            single_active_side_guard = pos_mode in {"one_way_mode", "hedge_mode"}
+            if require_one_way and not single_active_side_guard:
                 return {
                     "ok": False,
                     "supported": True,
-                    "reason": f"LIVE_REQUIRE_ONE_WAY_MODE=true but Bitget UTA account is {pos_mode or 'unknown'}",
+                    "reason": (
+                        "LIVE_REQUIRE_ONE_WAY_MODE=true but Bitget UTA position mode "
+                        f"is unsupported: {pos_mode or 'unknown'}"
+                    ),
                 }
             contract = self._contract(symbol)
             actual_leverage = self._account_leverage(account)
@@ -139,6 +148,7 @@ class BitgetUtaAdapter(_ClassicRuntimeAdapter):
                 "account_level": account_level,
                 "margin_mode": account_margin or "crossed",
                 "position_mode": pos_mode or "unknown",
+                "single_active_side_guard": single_active_side_guard,
                 "requested_leverage": int(leverage),
                 "account_leverage": actual_leverage,
                 "symbol": sid,
