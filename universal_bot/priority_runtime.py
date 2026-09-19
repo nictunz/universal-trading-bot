@@ -4,6 +4,8 @@ Not registered by main.py. Do not run the existing scanner's engine.step in
 parallel with this worker. The deployment owner must replace that route, not
 append a second account trader.
 """
+import time
+
 import pandas as pd
 
 from universal_bot.priority_controller import EngineExecutionPort, PriorityController, PriorityJournal
@@ -14,6 +16,8 @@ class PriorityRuntime:
     DATA_ALERT_SECONDS = 15.0
     SIGNAL_ADMISSION_SECONDS = 30.0
     DATA_RECOVERY_CONFIRMATIONS = 3
+    BOUNDARY_RETRY_SECONDS = 28.0
+    BOUNDARY_RETRY_INTERVAL_SECONDS = 0.35
     TRANSIENT_DATA_ERRORS = (
         'mobile relay snapshot not found:',
         'mobile relay is stale:',
@@ -228,25 +232,50 @@ class PriorityRuntime:
         if c.state['watermark'] and boundary <= pd.Timestamp(c.state['watermark']):
             self.last_status = 'DUPLICATE_OR_OLD'
             return self.last_status
-        frames, volumes = {}, {}
-        try:
-            for tf in c.signals.due(boundary):
-                frames[tf] = self.engine.adapter.fetch_ohlcv(self.engine.settings.symbol,tf,limit=500)
-                volumes[tf] = self.engine.adapter.fetch_volume_sources(self.engine.settings.symbol,tf,limit=500)
-            self.last_status = c.step(frames,volumes,boundary,now)
-            if self.last_status == 'HALTED':
-                self._halt_alert()
-            else:
-                self._healthy(self.last_status)
-        except DataUnavailable as exc:
-            self._data_blocked(str(exc), now)
-        except Exception as exc:
-            if self._is_transient_data_error(exc):
-                self._data_blocked(str(exc), now)
-            else:
-                self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
-                self._halt_alert()
-        return self.last_status
+        # A relay/exchange can publish the just-closed candle a few seconds
+        # after the clock boundary. Retry only transient market-data failures
+        # inside the same 30s admission window. Signal validation still rejects
+        # incomplete/future candles, so this cannot trade an unconfirmed bar.
+        deadline = min(
+            boundary + pd.Timedelta(seconds=self.SIGNAL_ADMISSION_SECONDS),
+            now + pd.Timedelta(seconds=self.BOUNDARY_RETRY_SECONDS),
+        )
+        while True:
+            frames, volumes = {}, {}
+            try:
+                for tf in c.signals.due(boundary):
+                    frames[tf] = self.engine.adapter.fetch_ohlcv(
+                        self.engine.settings.symbol, tf, limit=500
+                    )
+                    volumes[tf] = self.engine.adapter.fetch_volume_sources(
+                        self.engine.settings.symbol, tf, limit=500
+                    )
+                attempt_now = self.clock()
+                self.last_status = c.step(frames, volumes, boundary, attempt_now)
+                if self.last_status == 'HALTED':
+                    self._halt_alert()
+                else:
+                    self._healthy(self.last_status)
+                return self.last_status
+            except DataUnavailable as exc:
+                attempt_now = self.clock()
+                self._data_blocked(str(exc), attempt_now)
+                if attempt_now >= deadline:
+                    return self.last_status
+            except Exception as exc:
+                attempt_now = self.clock()
+                if self._is_transient_data_error(exc):
+                    self._data_blocked(str(exc), attempt_now)
+                    if attempt_now >= deadline:
+                        return self.last_status
+                else:
+                    self.last_status = c.halt(type(exc).__name__ + ': ' + str(exc))
+                    self._halt_alert()
+                    return self.last_status
+            remaining = max(0.0, (deadline - attempt_now).total_seconds())
+            if remaining <= 0:
+                return self.last_status
+            time.sleep(min(self.BOUNDARY_RETRY_INTERVAL_SECONDS, remaining))
 
     def snapshot(self):
         return dict(mode='PRIORITY_RUNTIME', status=self.last_status,
