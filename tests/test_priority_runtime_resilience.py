@@ -215,6 +215,11 @@ def test_boundary_completed_bar_lag_never_retries_past_admission(monkeypatch):
             '5m: missing completed OHLCV bars'
         )
     )
+    mono = iter([100.0, 100.2, 100.2, 100.2])
+    monkeypatch.setattr(
+        'universal_bot.priority_runtime.time.monotonic',
+        lambda: next(mono, 100.2),
+    )
     monkeypatch.setattr('universal_bot.priority_runtime.time.sleep', lambda seconds: None)
 
     status = runtime.scan_once()
