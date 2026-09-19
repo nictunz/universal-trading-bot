@@ -158,3 +158,65 @@ def test_data_halt_with_pending_operation_never_auto_recovers():
     assert runtime._recover_persisted_data_halt() is False
     assert runtime.controller.state['halted'] is not None
     assert saved == []
+
+
+def test_boundary_completed_bar_lag_retries_then_processes(monkeypatch):
+    runtime = runtime_stub()
+    boundary = pd.Timestamp('2026-09-19T03:30:00Z')
+    ticks = iter([
+        boundary + pd.Timedelta(seconds=1),
+        boundary + pd.Timedelta(seconds=1),
+        boundary + pd.Timedelta(seconds=2),
+        boundary + pd.Timedelta(seconds=2),
+    ])
+    runtime.clock = lambda: next(ticks, boundary + pd.Timedelta(seconds=2))
+    runtime.controller.poll = lambda now: 'RUNNING'
+    runtime.controller.state['watermark'] = None
+    runtime.controller.signals = SimpleNamespace(due=lambda b: ('5m',))
+    calls = {'ohlcv': 0}
+
+    def fetch_ohlcv(symbol, tf, limit):
+        calls['ohlcv'] += 1
+        return object()
+
+    runtime.engine.adapter = SimpleNamespace(
+        fetch_ohlcv=fetch_ohlcv,
+        fetch_volume_sources=lambda symbol, tf, limit: object(),
+    )
+
+    def step(frames, volumes, b, now):
+        if calls['ohlcv'] == 1:
+            raise __import__('universal_bot.priority_signals', fromlist=['DataUnavailable']).DataUnavailable(
+                '5m: missing completed OHLCV bars'
+            )
+        return 'NO_ELIGIBLE_SIGNAL'
+
+    runtime.controller.step = step
+    monkeypatch.setattr('universal_bot.priority_runtime.time.sleep', lambda seconds: None)
+
+    assert runtime.scan_once() == 'NO_ELIGIBLE_SIGNAL'
+    assert calls['ohlcv'] == 2
+    assert runtime.controller.state['halted'] is None
+
+
+def test_boundary_completed_bar_lag_never_retries_past_admission(monkeypatch):
+    runtime = runtime_stub()
+    boundary = pd.Timestamp('2026-09-19T03:30:00Z')
+    runtime.clock = lambda: boundary + pd.Timedelta(seconds=29.9)
+    runtime.controller.poll = lambda now: 'RUNNING'
+    runtime.controller.state['watermark'] = None
+    runtime.controller.signals = SimpleNamespace(due=lambda b: ('5m',))
+    runtime.engine.adapter = SimpleNamespace(
+        fetch_ohlcv=lambda symbol, tf, limit: object(),
+        fetch_volume_sources=lambda symbol, tf, limit: object(),
+    )
+    runtime.controller.step = lambda *args: (_ for _ in ()).throw(
+        __import__('universal_bot.priority_signals', fromlist=['DataUnavailable']).DataUnavailable(
+            '5m: missing completed OHLCV bars'
+        )
+    )
+    monkeypatch.setattr('universal_bot.priority_runtime.time.sleep', lambda seconds: None)
+
+    status = runtime.scan_once()
+    assert status.startswith('DATA_BLOCKED:')
+    assert runtime.controller.state['halted'] is None
